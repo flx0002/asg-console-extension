@@ -67,7 +67,7 @@ public class ShadowAiDetectController {
     private ShadowAiDetectEventService detectEventService;
     private ShadowAiDnsPolicyService dnsPolicyService;
 
-    @Value("${higress-console.collector-token:wnt-asg-collector-2026}")
+    @Value("${asg.collector-token:wnt-asg-collector-2026}")
     private String collectorToken;
 
     @Resource
