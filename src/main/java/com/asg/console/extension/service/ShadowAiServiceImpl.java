@@ -44,6 +44,7 @@ import com.alibaba.higress.sdk.model.ai.AiRoute;
 import com.alibaba.higress.sdk.model.consumer.AllowList;
 import com.alibaba.higress.sdk.model.consumer.AllowListOperation;
 import com.alibaba.higress.sdk.service.WasmPluginInstanceService;
+import com.asg.console.extension.constant.AsgPluginConstants;
 import com.alibaba.higress.sdk.service.ai.AiRouteService;
 import com.alibaba.higress.sdk.model.consumer.Consumer;
 import com.alibaba.higress.sdk.service.consumer.ConsumerService;
@@ -181,7 +182,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             keyAuthInstance.setConfigurations(configurations);
         }
 
-        configurations.put(com.alibaba.higress.sdk.constant.plugin.config.KeyAuthConfig.IDENTIFY_ONLY, identifyOnly);
+        configurations.put(AsgPluginConstants.IDENTIFY_ONLY, identifyOnly);
         wasmPluginInstanceService.addOrUpdate(keyAuthInstance);
     }
 
@@ -254,7 +255,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         boolean identifyOnly = false;
         if (authEnabled && keyAuthInstance.getConfigurations() != null) {
             Object identifyOnlyObj = keyAuthInstance.getConfigurations().get(
-                com.alibaba.higress.sdk.constant.plugin.config.KeyAuthConfig.IDENTIFY_ONLY);
+                AsgPluginConstants.IDENTIFY_ONLY);
             if (identifyOnlyObj instanceof Boolean) {
                 identifyOnly = (Boolean) identifyOnlyObj;
             }
@@ -587,10 +588,10 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         }
 
         WasmPluginInstance instance = wasmPluginInstanceService.query(
-            WasmPluginInstanceScope.GLOBAL, null, BuiltInPluginName.SHADOW_AI_DETECT, false);
+            WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.SHADOW_AI_DETECT, false);
 
         if (instance == null) {
-            instance = wasmPluginInstanceService.createEmptyInstance(BuiltInPluginName.SHADOW_AI_DETECT);
+            instance = wasmPluginInstanceService.createEmptyInstance(AsgPluginConstants.SHADOW_AI_DETECT);
             instance.setGlobalTarget();
             instance.setEnabled(true);
         }
@@ -608,7 +609,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     @Override
     public String getDetectMode() {
         WasmPluginInstance instance = wasmPluginInstanceService.query(
-            WasmPluginInstanceScope.GLOBAL, null, BuiltInPluginName.SHADOW_AI_DETECT, false);
+            WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.SHADOW_AI_DETECT, false);
 
         if (instance != null && instance.getConfigurations() != null) {
             Object mode = instance.getConfigurations().get("mode");
