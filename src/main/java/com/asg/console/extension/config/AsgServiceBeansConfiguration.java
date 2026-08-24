@@ -15,6 +15,7 @@ import com.alibaba.higress.sdk.service.WasmPluginInstanceService;
 import com.alibaba.higress.sdk.service.ai.AiRouteService;
 import com.alibaba.higress.sdk.service.consumer.ConsumerService;
 import com.alibaba.higress.sdk.service.kubernetes.KubernetesClientService;
+import com.asg.console.extension.support.UpstreamApiClientAccessor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
@@ -58,7 +59,7 @@ public class AsgServiceBeansConfiguration {
     @Bean
     public AuditLogCollectorService auditLogCollectorService(KubernetesClientService kubernetesClientService,
             AuditChainService auditChainService) {
-        return new AuditLogCollectorService(kubernetesClientService.getApiClient(), auditChainService);
+        return new AuditLogCollectorService(UpstreamApiClientAccessor.getApiClient(kubernetesClientService), auditChainService);
     }
 
     /**
