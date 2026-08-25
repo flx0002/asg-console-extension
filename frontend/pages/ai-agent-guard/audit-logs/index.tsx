@@ -64,7 +64,12 @@ const AuditLogsPage: React.FC = () => {
       width: 100,
       sorter: (a: AuditLogEntry, b: AuditLogEntry) => (a.riskScore || 0) - (b.riskScore || 0),
       render: (v: number) => {
-        const color = v >= 80 ? 'red' : v >= 50 ? 'orange' : 'green';
+        let color: string = 'green';
+        if (v >= 80) {
+          color = 'red';
+        } else if (v >= 50) {
+          color = 'orange';
+        }
         return <Tag color={color}>{v ?? 0}</Tag>;
       },
     },
@@ -85,7 +90,9 @@ const AuditLogsPage: React.FC = () => {
       dataIndex: 'violationCount',
       key: 'violationCount',
       width: 80,
-      render: (v: number) => v > 0 ? <Badge count={v} style={{ backgroundColor: '#ff4d4f' }} /> : 0,
+      render: (v: number) => {
+        return v > 0 ? <Badge count={v} style={{ backgroundColor: '#ff4d4f' }} /> : 0;
+      },
     },
     {
       title: t('agentGuard.lastActiveTime'),
