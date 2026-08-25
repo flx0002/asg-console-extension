@@ -1,0 +1,41 @@
+{
+  "navbar": {
+    "commercial": "WNTASG IN CLOUD"
+  },
+  "index": {
+    "title": "WntASG Console"
+  },
+  "dashboard": {
+    "noBuiltInDashboard": "WntASG Console built-in dashboard is not installed. Please configure one manually.",
+    "configNotes": {
+      "brief": "It is recommended to configure WntASG dashboard with Prometheus + Grafana.",
+      "item1_k8s": "When adding Prometheus collection configurations to get metrics of WntASG Gateway Pods, please add following relabel_config items:",
+      "item1_standalone": "You can use the following URL in Prometheus to get metrics of WntASG Gateway: http://{GatewayIP}:{MetricsPort}/stats/prometheus The default value of MetricsPort is 15020.",
+      "item3": "We recommend you using the built-in dashboard configuration of WntASG. You can input the UID of the Prometheus data source in Grafana and download the JSON configuration file for import. (<1>How to obtain the UID of a data source?</1>)"
+    }
+  },
+  "llmProvider": {
+    "providerForm": {
+      "label": {
+        "failoverEnabledExtra": "If enabled, when the count of failed requests with a certain auth token exceeds the threshold, WntASG will no long send requests with it, until following health check requests get a certain number of successes."
+      },
+      "secretRefModal": {
+        "content_brief": "WntASG supports referring to a field in a Secret resource when configuring tokens. Details are as following:",
+        "content_sameNs": "If the Secret and WntASG share the same namespace:",
+        "content_diffNs": "If the Secret and WntASG belong to different namespaces:",
+        "roleConfig": "WntASG can read Secret data in any namespace by default. But if the role configuration is modified, please make sure the ServiceAccount bound to WntASG Controller is allowed to read the configured Secret resource."
+      }
+    }
+  },
+  "system": {
+    "higress-config": {
+      "note_k8s": "Note: Changes to \"mesh\" or \"meshNetworks\" won't come effective until WntASG Gateway is restarted.",
+      "note_standalone": "Note: Changes to \"mesh\" or \"meshNetworks\" won't come effective until WntASG is completely restarted."
+    }
+  },
+  "mcp": {
+    "detail": {
+      "dnsDesc": "WntASG does not provide domain resolution capabilities. Users need to configure business domains in DNS services themselves. You can choose appropriate record types (such as CNAME records, A records, etc.) according to actual scenarios and point them to the gateway access entry address to achieve traffic forwarding"
+    }
+  }
+}
