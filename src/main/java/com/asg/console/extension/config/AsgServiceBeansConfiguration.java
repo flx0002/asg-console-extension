@@ -35,8 +35,10 @@ public class AsgServiceBeansConfiguration {
 
     @Bean
     public ShadowAiService shadowAiService(WasmPluginInstanceService wasmPluginInstanceService,
-            ConsumerService consumerService, AiRouteService aiRouteService) {
-        return new ShadowAiServiceImpl(wasmPluginInstanceService, consumerService, aiRouteService, null);
+            ConsumerService consumerService, AiRouteService aiRouteService,
+            AuditChainService auditChainService) {
+        return new ShadowAiServiceImpl(wasmPluginInstanceService, consumerService, aiRouteService, null,
+            auditChainService);
     }
 
     @Bean

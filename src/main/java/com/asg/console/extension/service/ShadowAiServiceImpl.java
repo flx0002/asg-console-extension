@@ -18,10 +18,12 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.CollectionUtils;
@@ -52,6 +54,7 @@ import com.alibaba.higress.sdk.util.MapUtil;
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
+import com.asg.console.extension.context.HttpContext;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -69,18 +72,28 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     private static final String OUTPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_output_token";
     private static final String SHADOW_AI_DETECT_METRIC_PREFIX = "shadow_ai_detect_category_";
 
+    /** Fixed virtual session holding all shadow AI admin (authorization) operations. */
+    private static final String ADMIN_OPS_SESSION_ID = "admin_ops";
+    /** Record type tag for admin operations, queryable via the audit chain recordType filter. */
+    private static final String ADMIN_OPS_RECORD_TYPE = "admin_operation";
+    /** Fallback operator when the console request carries no resolvable identity. */
+    private static final String OPERATOR_CONSOLE = "console";
+
     private final WasmPluginInstanceService wasmPluginInstanceService;
     private final ConsumerService consumerService;
     private final AiRouteService aiRouteService;
     private final String prometheusBaseUrl;
+    private final AuditChainService auditChainService;
 
     public ShadowAiServiceImpl(WasmPluginInstanceService wasmPluginInstanceService,
-        ConsumerService consumerService, AiRouteService aiRouteService, String prometheusBaseUrl) {
+        ConsumerService consumerService, AiRouteService aiRouteService, String prometheusBaseUrl,
+        AuditChainService auditChainService) {
         this.wasmPluginInstanceService = wasmPluginInstanceService;
         this.consumerService = consumerService;
         this.aiRouteService = aiRouteService;
         this.prometheusBaseUrl = StringUtils.defaultIfBlank(prometheusBaseUrl,
             "http://higress-console-prometheus.higress-system:9090/prometheus");
+        this.auditChainService = auditChainService;
     }
 
     @Override
@@ -158,6 +171,8 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         // Set identify_only configuration on the route-level key-auth instance.
         boolean identifyOnly = MODE_MONITORING.equals(mode);
         updateKeyAuthIdentifyOnly(routeResourceName, identifyOnly);
+
+        writeAdminAudit("set_mode", routeName, null, mode);
 
         return getStatus(routeName);
     }
@@ -237,6 +252,8 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             .build();
 
         consumerService.updateAllowList(operation, allowList);
+
+        writeAdminAudit(action, routeName, consumerName, null);
 
         return getStatus(routeName);
     }
@@ -604,6 +621,8 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         instance.setConfigurations(configurations);
 
         wasmPluginInstanceService.addOrUpdate(instance);
+
+        writeAdminAudit("set_detect_mode", null, null, mode);
     }
 
     @Override
@@ -618,6 +637,76 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             }
         }
         return MODE_MONITORING;
+    }
+
+    /**
+     * Write an admin operation entry to the audit chain (IR-003).
+     *
+     * <p>All shadow AI authorization operations (setMode / performAction / setDetectMode)
+     * are recorded under the fixed virtual session {@link #ADMIN_OPS_SESSION_ID} so they
+     * can be queried via the audit chain API, e.g.
+     * {@code GET /v1/audit-chain/logs?sessionId=admin_ops&recordType=admin_operation}.
+     * The entry mirrors the Wasm plugin AuditLogEntry field names (event_id, timestamp_ms,
+     * session_id, record_types, user_id, identity_trusted) so existing queries work.</p>
+     *
+     * @param action the operation performed (set_mode / authorize / block / set_detect_mode)
+     * @param routeName target AI route, may be null for global operations
+     * @param consumerName target consumer, may be null
+     * @param mode target mode, may be null
+     */
+    private void writeAdminAudit(String action, String routeName, String consumerName, String mode) {
+        try {
+            long timestampMs = System.currentTimeMillis();
+            String operator = resolveOperator();
+            String eventId = timestampMs + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 6);
+
+            JSONObject entry = new JSONObject();
+            entry.put("event_id", eventId);
+            entry.put("timestamp_ms", timestampMs);
+            entry.put("session_id", ADMIN_OPS_SESSION_ID);
+            entry.put("record_types", Collections.singletonList(ADMIN_OPS_RECORD_TYPE));
+            entry.put("blocked", false);
+            entry.put("identity_trusted", true);
+            entry.put("user_id", operator);
+            entry.put("user_name", operator);
+            entry.put("action", action);
+            entry.put("source", "shadow_ai_console");
+            if (StringUtils.isNotEmpty(routeName)) {
+                entry.put("route_name", routeName);
+            }
+            if (StringUtils.isNotEmpty(consumerName)) {
+                entry.put("consumer_name", consumerName);
+            }
+            if (StringUtils.isNotEmpty(mode)) {
+                entry.put("mode", mode);
+            }
+
+            auditChainService.writeAuditLog(entry.toJSONString(), eventId, ADMIN_OPS_SESSION_ID,
+                timestampMs, operator, true, null);
+        } catch (Exception e) {
+            log.error("Failed to write admin audit log for action: {}", action, e);
+        }
+    }
+
+    /**
+     * Best-effort resolution of the console operator from the current request:
+     * Basic auth header username, falling back to {@link #OPERATOR_CONSOLE}.
+     */
+    private static String resolveOperator() {
+        try {
+            HttpContext context = HttpContext.getCurrent();
+            if (context != null && context.getRequest() != null) {
+                String auth = context.getRequest().getHeader("Authorization");
+                if (StringUtils.isNotBlank(auth) && auth.startsWith("Basic ")) {
+                    String decoded = new String(Base64.getDecoder().decode(auth.substring(6)), StandardCharsets.UTF_8);
+                    int separator = decoded.indexOf(':');
+                    return separator > 0 ? decoded.substring(0, separator) : decoded;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Failed to resolve operator identity, falling back to {}", OPERATOR_CONSOLE, e);
+        }
+        return OPERATOR_CONSOLE;
     }
 
     private static String getCategoryLabel(String category) {
