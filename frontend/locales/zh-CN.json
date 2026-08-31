@@ -73,7 +73,21 @@
     "riskMedium": "中",
     "riskLow": "低",
     "statusBlocked": "已阻断",
-    "statusAllowed": "已放行"
+    "statusAllowed": "已放行",
+    "eventDetailCardTitle": "检测事件明细",
+    "eventColTime": "事件时间",
+    "eventColDomain": "访问域名",
+    "eventColDetectType": "检测类型",
+    "eventColSource": "来源",
+    "eventColSrcIp": "源IP",
+    "eventProtocol": "协议",
+    "eventMethod": "请求方法",
+    "eventUri": "请求URI",
+    "eventSrcPort": "源端口",
+    "eventDstPort": "目的端口",
+    "eventTotalCount": "共 {{total}} 条事件",
+    "eventNoData": "暂无检测事件",
+    "statusMonitored": "已监控"
   },
   "agentGuard": {
     "pluginDesc": "智能体执行链安全防护：Session关联、风险累积、限流配额、审计日志",

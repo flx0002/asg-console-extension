@@ -73,7 +73,21 @@
     "riskMedium": "Medium",
     "riskLow": "Low",
     "statusBlocked": "Blocked",
-    "statusAllowed": "Allowed"
+    "statusAllowed": "Allowed",
+    "eventDetailCardTitle": "Detect Event Details",
+    "eventColTime": "Event Time",
+    "eventColDomain": "Access Domain",
+    "eventColDetectType": "Detect Type",
+    "eventColSource": "Source",
+    "eventColSrcIp": "Source IP",
+    "eventProtocol": "Protocol",
+    "eventMethod": "Method",
+    "eventUri": "Request URI",
+    "eventSrcPort": "Source Port",
+    "eventDstPort": "Destination Port",
+    "eventTotalCount": "Total {{total}} events",
+    "eventNoData": "No detect events",
+    "statusMonitored": "Monitored"
   },
   "agentGuard": {
     "pluginDesc": "Agent Execution Chain Security: Session correlation, risk accumulation, rate limiting, audit logging",

@@ -34,3 +34,35 @@ export interface ShadowAiDetectedAccess {
   status: string;
   requestCount: number;
 }
+
+export interface ShadowAiDetectEvent {
+  id: number;
+  eventTime: string | number[];
+  detectType: string;
+  domain: string;
+  category?: string;
+  riskLevel?: string;
+  status?: string;
+  source?: string;
+  srcIp?: string;
+  sessionId?: string;
+  detail?: string;
+  createdAt?: string | number[];
+}
+
+export interface ShadowAiDetectEventPage {
+  items: ShadowAiDetectEvent[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export interface ShadowAiDetectEventQuery {
+  page?: number;
+  size?: number;
+  domain?: string;
+  status?: string;
+  category?: string;
+  riskLevel?: string;
+  source?: string;
+}

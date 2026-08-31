@@ -1,5 +1,5 @@
 import request from './request';
-import { ShadowAiStatus, ShadowAiModeRequest, ShadowAiActionRequest, ShadowAiDetectedAccess } from '@/interfaces/shadow-ai';
+import { ShadowAiStatus, ShadowAiModeRequest, ShadowAiActionRequest, ShadowAiDetectedAccess, ShadowAiDetectEventPage, ShadowAiDetectEventQuery } from '@/interfaces/shadow-ai';
 
 export const getShadowAiStatus = (): Promise<ShadowAiStatus[]> => {
   return request.get<any, ShadowAiStatus[]>('/v1/shadow-ai/status');
@@ -27,4 +27,8 @@ export const setShadowAiDetectMode = (mode: 'monitoring' | 'enforcement'): Promi
 
 export const getShadowAiDetectMode = (): Promise<string> => {
   return request.get<any, string>('/v1/shadow-ai/detect-mode');
+};
+
+export const getShadowAiDetectEvents = (params: ShadowAiDetectEventQuery = {}): Promise<ShadowAiDetectEventPage> => {
+  return request.get<any, ShadowAiDetectEventPage>('/v1/shadow-ai/detect-events', { params });
 };
