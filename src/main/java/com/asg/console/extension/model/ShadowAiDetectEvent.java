@@ -9,6 +9,7 @@
 package com.asg.console.extension.model;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import javax.persistence.Column;
 import javax.persistence.Entity;
@@ -17,6 +18,7 @@ import javax.persistence.GenerationType;
 import javax.persistence.Id;
 import javax.persistence.Index;
 import javax.persistence.Table;
+import javax.persistence.Transient;
 
 import lombok.Data;
 
@@ -81,4 +83,13 @@ public class ShadowAiDetectEvent {
     /** Record creation time. */
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
+
+    /**
+     * Weak audit-chain link for bypass/dns events (IR-025/S5, not persisted):
+     * {handlingAudited, auditAction, auditEventId, auditTimeMs} for the domain
+     * handling audit, and {hostEventCount, hostLastEventMs} for same-source
+     * host aggregation. Gateway-side events are linked via sessionId instead.
+     */
+    @Transient
+    private Map<String, Object> auditLink;
 }

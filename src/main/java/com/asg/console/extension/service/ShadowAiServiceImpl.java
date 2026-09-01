@@ -17,7 +17,11 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
@@ -37,6 +41,7 @@ import com.alibaba.higress.sdk.model.CommonPageQuery;
 import com.alibaba.higress.sdk.model.PaginatedResult;
 import com.asg.console.extension.model.ShadowAiActionRequest;
 import com.asg.console.extension.model.ShadowAiDetectedAccess;
+import com.asg.console.extension.model.ShadowAiDnsPolicy;
 import com.asg.console.extension.model.ShadowAiEntry;
 import com.asg.console.extension.model.ShadowAiModeRequest;
 import com.asg.console.extension.model.ShadowAiStatus;
@@ -68,9 +73,19 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     private static final String CONSUMER_NONE = "none";
 
     private static final String PROMETHEUS_QUERY_PATH = "/api/v1/query";
+    private static final String PROMETHEUS_RANGE_PATH = "/api/v1/query_range";
     private static final String INPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_input_token";
     private static final String OUTPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_output_token";
     private static final String SHADOW_AI_DETECT_METRIC_PREFIX = "shadow_ai_detect_category_";
+
+    /** PromQL for the hourly detection trend: per-status increase of the detect counter over each 1h bucket. */
+    private static final String SHADOW_AI_TREND_QUERY =
+        "sum by (status) (increase(shadow_ai_detect_category_domain_risk_status_requests[1h]))";
+    /** Bypass collector exposes its own counter with a different name and labels. */
+    private static final String SHADOW_AI_BYPASS_TREND_QUERY =
+        "sum by (status) (increase(shadow_ai_detect_bypass_requests_total[1h]))";
+    /** Stable legend ordering for trend series. */
+    private static final List<String> TREND_STATUS_ORDER = Arrays.asList("blocked", "allowed", "monitored");
 
     /** Fixed virtual session holding all shadow AI admin (authorization) operations. */
     private static final String ADMIN_OPS_SESSION_ID = "admin_ops";
@@ -84,16 +99,18 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     private final AiRouteService aiRouteService;
     private final String prometheusBaseUrl;
     private final AuditChainService auditChainService;
+    private final ShadowAiDnsPolicyService dnsPolicyService;
 
     public ShadowAiServiceImpl(WasmPluginInstanceService wasmPluginInstanceService,
         ConsumerService consumerService, AiRouteService aiRouteService, String prometheusBaseUrl,
-        AuditChainService auditChainService) {
+        AuditChainService auditChainService, ShadowAiDnsPolicyService dnsPolicyService) {
         this.wasmPluginInstanceService = wasmPluginInstanceService;
         this.consumerService = consumerService;
         this.aiRouteService = aiRouteService;
         this.prometheusBaseUrl = StringUtils.defaultIfBlank(prometheusBaseUrl,
             "http://higress-console-prometheus.higress-system:9090/prometheus");
         this.auditChainService = auditChainService;
+        this.dnsPolicyService = dnsPolicyService;
     }
 
     @Override
@@ -329,13 +346,18 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             boolean isAuthorized = !CONSUMER_NONE.equals(data.consumer)
                 && authorizedConsumers.contains(data.consumer);
 
+            // IR-003: authorized accesses are removed from the shadow AI list.
+            if (isAuthorized) {
+                continue;
+            }
+
             entries.add(ShadowAiEntry.builder()
                 .consumer(data.consumer)
                 .model(data.model)
                 .inputTokens(data.inputTokens)
                 .outputTokens(data.outputTokens)
                 .requestCount(data.requestCount)
-                .authorized(isAuthorized)
+                .authorized(false)
                 .build());
         }
 
@@ -486,6 +508,8 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     @Override
     public List<ShadowAiDetectedAccess> getDetectedAccesses() {
         List<ShadowAiDetectedAccess> result = new ArrayList<>();
+        // IR-003: accesses to authorized domains are removed from the shadow AI list.
+        List<String> authorizedDomains = loadAuthorizedDomains();
         try {
             // After adding stats_tags, Prometheus exports the metric as:
             // shadow_ai_detect_category_domain_risk_status_requests{category="...", domain="...", risk="...", status="..."}
@@ -553,6 +577,10 @@ public class ShadowAiServiceImpl implements ShadowAiService {
                 // Restore dots and hyphens that were sanitized in metric values
                 domain = restoreDomainFromMetric(domain);
 
+                if (isDomainAuthorized(domain, authorizedDomains)) {
+                    continue;
+                }
+
                 result.add(ShadowAiDetectedAccess.builder()
                     .sni(domain)
                     .category(category)
@@ -599,6 +627,190 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     }
 
     @Override
+    public List<Map<String, Object>> getDetectedTrend(int hours) {
+        // Clamp the lookback window: 1h ~ 7d, default 24h.
+        int window = Math.min(Math.max(hours, 1), 168);
+        List<Map<String, Object>> result = new ArrayList<>();
+        try {
+            long end = System.currentTimeMillis() / 1000L;
+            long start = end - window * 3600L;
+            // Two sources: gateway-side WasmPlugin counter and bypass collector counter.
+            // They are separate Prometheus metrics, so aggregate by (status, timestamp).
+            Map<String, Long> counts = new HashMap<>();
+            Map<String, Long> timestamps = new HashMap<>();
+            mergeTrendSeries(counts, timestamps, queryRange(SHADOW_AI_TREND_QUERY, start, end, 3600));
+            mergeTrendSeries(counts, timestamps, queryRange(SHADOW_AI_BYPASS_TREND_QUERY, start, end, 3600));
+            if (counts.isEmpty()) {
+                return result;
+            }
+            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("MM-dd HH:00").withZone(ZoneId.systemDefault());
+            for (Map.Entry<String, Long> e : counts.entrySet()) {
+                Map<String, Object> p = new HashMap<>();
+                p.put("time", fmt.format(Instant.ofEpochSecond(timestamps.get(e.getKey()))));
+                p.put("status", e.getKey().substring(0, e.getKey().indexOf('|')));
+                p.put("count", e.getValue());
+                result.add(p);
+            }
+            // Stable ordering: status (blocked/allowed/monitored first), then time ascending.
+            result.sort((a, b) -> {
+                int sa = TREND_STATUS_ORDER.indexOf(a.get("status"));
+                int sb = TREND_STATUS_ORDER.indexOf(b.get("status"));
+                if (sa != sb) {
+                    return Integer.compare(sa < 0 ? Integer.MAX_VALUE : sa, sb < 0 ? Integer.MAX_VALUE : sb);
+                }
+                return String.valueOf(a.get("time")).compareTo(String.valueOf(b.get("time")));
+            });
+        } catch (Exception e) {
+            log.error("Error querying shadow AI detection trend", e);
+        }
+        return result;
+    }
+
+    /** Accumulate one range-query series array into the (status|ts -> count) aggregation maps. */
+    private void mergeTrendSeries(Map<String, Long> counts, Map<String, Long> timestamps, JSONArray series) {
+        if (series == null) {
+            return;
+        }
+        for (int i = 0; i < series.size(); i++) {
+            JSONObject item = series.getJSONObject(i);
+            String status = item.getJSONObject("metric").getString("status");
+            JSONArray values = item.getJSONArray("values");
+            if (StringUtils.isEmpty(status) || values == null) {
+                continue;
+            }
+            for (int j = 0; j < values.size(); j++) {
+                JSONArray point = values.getJSONArray(j);
+                if (point == null || point.size() < 2) {
+                    continue;
+                }
+                long ts = point.getLongValue(0);
+                long count = (long) parsePromValue(point.getString(1));
+                String key = status + "|" + ts;
+                counts.merge(key, count, Long::sum);
+                timestamps.putIfAbsent(key, ts);
+            }
+        }
+    }
+
+    /**
+     * Prometheus range query: evaluates the PromQL at each step over [start, end]
+     * and returns the raw result array (one series per label combination).
+     */
+    private JSONArray queryRange(String query, long start, long end, long stepSeconds) {
+        try {
+            String queryUrl = prometheusBaseUrl + PROMETHEUS_RANGE_PATH + "?query="
+                + java.net.URLEncoder.encode(query, "UTF-8")
+                + "&start=" + start + "&end=" + end + "&step=" + stepSeconds;
+            HttpURLConnection connection = (HttpURLConnection)new URL(queryUrl).openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(15000);
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode != 200) {
+                log.warn("Prometheus query_range returned non-200 status: {}", responseCode);
+                return null;
+            }
+
+            StringBuilder responseBody = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    responseBody.append(line);
+                }
+            }
+
+            JSONObject response = JSON.parseObject(responseBody.toString());
+            if (!"success".equals(response.getString("status"))) {
+                log.warn("Prometheus query_range was not successful");
+                return null;
+            }
+            JSONObject data = response.getJSONObject("data");
+            return data == null ? null : data.getJSONArray("result");
+        } catch (Exception e) {
+            log.error("Error querying Prometheus range: {}", query, e);
+            return null;
+        }
+    }
+
+    private static double parsePromValue(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return 0;
+        }
+        try {
+            return Double.parseDouble(raw);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Load the authorized domain list from the DNS detection policy
+     * (shadow_ai_dns_policy). Failures degrade to an empty list so the
+     * detected list stays complete when the policy cannot be read.
+     */
+    private List<String> loadAuthorizedDomains() {
+        try {
+            if (dnsPolicyService == null) {
+                return Collections.emptyList();
+            }
+            ShadowAiDnsPolicy policy = dnsPolicyService.getPolicy();
+            if (policy == null || StringUtils.isBlank(policy.getAuthorizedDomains())) {
+                return Collections.emptyList();
+            }
+            return Arrays.stream(policy.getAuthorizedDomains().split(","))
+                .map(String::trim)
+                .filter(StringUtils::isNotBlank)
+                .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.warn("Failed to load authorized domains, keep detected list unfiltered", e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Normalize a domain for authorization matching: metric label values may
+     * carry underscores where the Wasm plugin sanitized dots/hyphens.
+     */
+    private static String normalizeDomain(String domain) {
+        if (StringUtils.isEmpty(domain)) {
+            return "";
+        }
+        String normalized = domain.trim().toLowerCase()
+            .replace('_', '.').replace('-', '.');
+        while (normalized.startsWith(".")) {
+            normalized = normalized.substring(1);
+        }
+        while (normalized.endsWith(".")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    /**
+     * Whether a detected domain is covered by the authorized domain list
+     * (exact match or subdomain).
+     */
+    private static boolean isDomainAuthorized(String domain, List<String> authorizedDomains) {
+        if (CollectionUtils.isEmpty(authorizedDomains)) {
+            return false;
+        }
+        String normalized = normalizeDomain(domain);
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        for (String authorized : authorizedDomains) {
+            String normalizedAuthorized = normalizeDomain(authorized);
+            if (!normalizedAuthorized.isEmpty()
+                && (normalized.equals(normalizedAuthorized) || normalized.endsWith("." + normalizedAuthorized))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
     public void setDetectMode(String mode) {
         if (!MODE_MONITORING.equals(mode) && !MODE_ENFORCEMENT.equals(mode)) {
             throw new IllegalArgumentException("mode must be either 'monitoring' or 'enforcement'.");
@@ -623,6 +835,88 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         wasmPluginInstanceService.addOrUpdate(instance);
 
         writeAdminAudit("set_detect_mode", null, null, mode);
+    }
+
+    @Override
+    public Map<String, Object> getAuthorizedDomains() {
+        Map<String, Object> result = new HashMap<>();
+        List<String> domains = new ArrayList<>();
+        String mode = MODE_MONITORING;
+        try {
+            ShadowAiDnsPolicy policy = dnsPolicyService.getPolicy();
+            if (policy != null) {
+                if (StringUtils.isNotEmpty(policy.getMode())) {
+                    mode = policy.getMode();
+                }
+                if (StringUtils.isNotBlank(policy.getAuthorizedDomains())) {
+                    domains = Arrays.stream(policy.getAuthorizedDomains().split(",")).map(String::trim)
+                        .filter(StringUtils::isNotBlank).collect(Collectors.toList());
+                }
+            }
+        } catch (Exception e) {
+            // Degrade to the default view instead of failing the console page.
+            log.warn("Failed to load DNS policy for authorized domains view", e);
+        }
+        result.put("mode", mode);
+        result.put("domains", domains);
+        return result;
+    }
+
+    @Override
+    public Map<String, Object> updateAuthorizedDomains(String mode, List<String> addDomains,
+        List<String> removeDomains) {
+        ShadowAiDnsPolicy policy = dnsPolicyService.getPolicy();
+        String currentMode = policy != null && StringUtils.isNotEmpty(policy.getMode())
+            ? policy.getMode()
+            : MODE_MONITORING;
+
+        // Merge: keep existing order, normalize new entries, skip duplicates.
+        List<String> merged = new ArrayList<>();
+        if (policy != null && StringUtils.isNotBlank(policy.getAuthorizedDomains())) {
+            Arrays.stream(policy.getAuthorizedDomains().split(",")).map(String::trim)
+                .filter(StringUtils::isNotBlank).forEach(merged::add);
+        }
+        List<String> added = new ArrayList<>();
+        List<String> removed = new ArrayList<>();
+        if (CollectionUtils.isNotEmpty(addDomains)) {
+            for (String raw : addDomains) {
+                if (StringUtils.isBlank(raw)) {
+                    continue;
+                }
+                String domain = raw.trim().toLowerCase();
+                if (!merged.contains(domain)) {
+                    merged.add(domain);
+                    added.add(domain);
+                }
+            }
+        }
+        if (CollectionUtils.isNotEmpty(removeDomains)) {
+            for (String raw : removeDomains) {
+                if (StringUtils.isBlank(raw)) {
+                    continue;
+                }
+                String domain = raw.trim().toLowerCase();
+                if (merged.remove(domain)) {
+                    removed.add(domain);
+                }
+            }
+        }
+
+        String targetMode = StringUtils.isNotEmpty(mode) ? mode : currentMode;
+        dnsPolicyService.updatePolicy(targetMode, merged);
+
+        // Each effective change is audited, mirroring the consumer authorization trail.
+        for (String domain : added) {
+            writeAdminAudit("authorize_domain", null, domain, null);
+        }
+        for (String domain : removed) {
+            writeAdminAudit("deauthorize_domain", null, domain, null);
+        }
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("mode", targetMode);
+        result.put("domains", merged);
+        return result;
     }
 
     @Override

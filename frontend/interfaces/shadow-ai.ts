@@ -66,3 +66,24 @@ export interface ShadowAiDetectEventQuery {
   riskLevel?: string;
   source?: string;
 }
+
+// Long-format trend point for the detection trend chart (IR-004):
+// { time: "MM-dd HH:00", status: 'blocked' | 'allowed' | 'monitored', count }
+export interface ShadowAiTrendPoint {
+  time: string;
+  status: string;
+  count: number;
+}
+
+// Authorized-domain view of the DNS/bypass policy (IR-003 unified authorization)
+export interface ShadowAiDnsPolicyView {
+  mode: string;
+  domains: string[];
+}
+
+// Incremental update of the authorized-domain list (add or remove entries)
+export interface ShadowAiAuthzUpdate {
+  mode?: string;
+  addDomains?: string[];
+  removeDomains?: string[];
+}

@@ -14,6 +14,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import javax.annotation.Resource;
@@ -33,6 +34,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.asg.console.extension.aop.AllowAnonymous;
+import com.asg.console.extension.constant.AsgPluginConstants;
 import com.asg.console.extension.controller.dto.DetectEventReportRequest;
 import com.asg.console.extension.controller.dto.DnsPolicyResponse;
 import com.asg.console.extension.controller.dto.DnsPolicyUpdateRequest;
@@ -44,6 +46,12 @@ import com.asg.console.extension.model.ShadowAiDnsPolicy;
 import com.asg.console.extension.service.ShadowAiDetectEventService;
 import com.asg.console.extension.service.ShadowAiDnsPolicyService;
 import com.alibaba.higress.sdk.exception.ValidationException;
+import com.alibaba.higress.sdk.model.WasmPluginInstance;
+import com.alibaba.higress.sdk.model.WasmPluginInstanceScope;
+import com.alibaba.higress.sdk.service.WasmPluginInstanceService;
+import com.alibaba.fastjson.JSON;
+import com.alibaba.fastjson.JSONArray;
+import com.alibaba.fastjson.JSONObject;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -66,6 +74,7 @@ public class ShadowAiDetectController {
 
     private ShadowAiDetectEventService detectEventService;
     private ShadowAiDnsPolicyService dnsPolicyService;
+    private WasmPluginInstanceService wasmPluginInstanceService;
 
     @Value("${asg.collector-token:wnt-asg-collector-2026}")
     private String collectorToken;
@@ -78,6 +87,11 @@ public class ShadowAiDetectController {
     @Resource
     public void setDnsPolicyService(ShadowAiDnsPolicyService dnsPolicyService) {
         this.dnsPolicyService = dnsPolicyService;
+    }
+
+    @Resource
+    public void setWasmPluginInstanceService(WasmPluginInstanceService wasmPluginInstanceService) {
+        this.wasmPluginInstanceService = wasmPluginInstanceService;
     }
 
     /**
@@ -134,6 +148,9 @@ public class ShadowAiDetectController {
         @RequestParam(value = "size", defaultValue = "20") int size) {
         Page<ShadowAiDetectEvent> result =
             detectEventService.query(domain, status, category, riskLevel, source, page, size);
+        // IR-025/S5: attach weak audit-chain links (domain handling audit +
+        // same-source host aggregation) for bypass/dns events.
+        detectEventService.attachAuditLinks(result.getContent());
         PageResult<ShadowAiDetectEvent> pageResult =
             new PageResult<>(result.getContent(), result.getTotalElements(), result.getNumber(), result.getSize());
         return ResponseEntity.ok(Response.success(pageResult));
@@ -178,6 +195,46 @@ public class ShadowAiDetectController {
             domains = Arrays.stream(policy.getAuthorizedDomains().split(",")).filter(StringUtils::isNotBlank)
                 .collect(Collectors.toList());
         }
-        return new DnsPolicyResponse(policy.getMode(), domains);
+        DnsPolicyResponse response = new DnsPolicyResponse();
+        response.setMode(policy.getMode());
+        response.setAuthorizedDomains(domains);
+        // IR-001 alignment: expose the gateway AI domain category library so the
+        // bypass collector classifies with the same categories/risk levels.
+        response.setCategories(loadGatewayCategories());
+        return response;
+    }
+
+    /**
+     * Load the AI domain category library from the shadow-ai-detect global plugin
+     * configuration. Each item: {name, label, risk_level, domains, suffixes, ...}.
+     * Returns null (collector falls back to its local library) on any failure.
+     */
+    private List<Map<String, Object>> loadGatewayCategories() {
+        try {
+            WasmPluginInstance instance = wasmPluginInstanceService.query(
+                WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.SHADOW_AI_DETECT, false);
+            if (instance == null || instance.getConfigurations() == null) {
+                return null;
+            }
+            Object raw = instance.getConfigurations().get("categories");
+            if (raw == null) {
+                return null;
+            }
+            JSONArray arr = JSON.parseArray(JSON.toJSONString(raw));
+            if (arr == null || arr.isEmpty()) {
+                return null;
+            }
+            List<Map<String, Object>> categories = new ArrayList<>();
+            for (int i = 0; i < arr.size(); i++) {
+                JSONObject item = arr.getJSONObject(i);
+                if (item != null && StringUtils.isNotBlank(item.getString("name"))) {
+                    categories.add(item);
+                }
+            }
+            return categories.isEmpty() ? null : categories;
+        } catch (Exception e) {
+            log.warn("Failed to load gateway AI categories, bypass collector will use its local library", e);
+            return null;
+        }
     }
 }

@@ -102,6 +102,41 @@ public class ShadowAiController {
         return ControllerUtil.buildResponseEntity(detectedList);
     }
 
+    @GetMapping("/detected-trend")
+    @Operation(summary = "Hourly shadow AI detection trend (IR-004)")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Trend points listed successfully"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<List<Map<String, Object>>>> getDetectedTrend(
+        @org.springframework.web.bind.annotation.RequestParam(value = "hours", defaultValue = "24") int hours) {
+        return ControllerUtil.buildResponseEntity(shadowAiService.getDetectedTrend(hours));
+    }
+
+    @GetMapping("/authorized-domains")
+    @Operation(summary = "List authorized shadow AI domains (DNS/bypass policy, IR-003)")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Authorized domains listed successfully"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<Map<String, Object>>> getAuthorizedDomains() {
+        return ControllerUtil.buildResponseEntity(shadowAiService.getAuthorizedDomains());
+    }
+
+    @PutMapping("/authorized-domains")
+    @Operation(summary = "Add or remove authorized shadow AI domains (IR-003 unified authorization)")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Authorized domains updated successfully"),
+        @ApiResponse(responseCode = "400", description = "Invalid request parameters"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Response<Map<String, Object>>> updateAuthorizedDomains(
+        @RequestBody Map<String, Object> body) {
+        if (body == null) {
+            throw new IllegalArgumentException("request body is required");
+        }
+        String mode = body.get("mode") != null ? String.valueOf(body.get("mode")) : null;
+        List<String> addDomains = (List<String>) body.get("addDomains");
+        List<String> removeDomains = (List<String>) body.get("removeDomains");
+        return ControllerUtil.buildResponseEntity(
+            shadowAiService.updateAuthorizedDomains(mode, addDomains, removeDomains));
+    }
+
     @PutMapping("/detect-mode")
     @Operation(summary = "Set shadow AI detection mode (monitoring or enforcement)")
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Detection mode updated successfully"),

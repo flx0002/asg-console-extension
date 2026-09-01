@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { Card, Table, Switch, Tag, Button, Modal, message, Statistic, Row, Col, Space, Spin, Empty, Tooltip } from 'antd';
-import { SafetyCertificateOutlined, EyeOutlined, StopOutlined, CheckCircleOutlined, WarningOutlined, ReloadOutlined } from '@ant-design/icons';
+import { SafetyCertificateOutlined, EyeOutlined, StopOutlined, WarningOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { getShadowAiStatus, setShadowAiMode, performShadowAiAction } from '@/services';
 import { ShadowAiStatus, ShadowAiEntry } from '@/interfaces/shadow-ai';
@@ -58,13 +58,15 @@ const ShadowAiRoutePage: React.FC = () => {
     });
   }, [t, refresh]);
 
-  // Compute summary statistics for route-based view
+  // Compute summary statistics for route-based view.
+  // Authorized consumers are removed from the shadow AI list (IR-003), so
+  // every entry here is an unauthorized access.
   const totalCalls = (statusList || []).reduce((sum, route) =>
     sum + route.shadowAiList.reduce((s, entry) => s + entry.requestCount, 0), 0);
   const shadowCount = (statusList || []).reduce((sum, route) =>
-    sum + route.shadowAiList.filter(e => !e.authorized).length, 0);
-  const authorizedCount = (statusList || []).reduce((sum, route) =>
-    sum + route.shadowAiList.filter(e => e.authorized).length, 0);
+    sum + route.shadowAiList.length, 0);
+  const blockedCount = (statusList || []).reduce((sum, route) =>
+    sum + route.shadowAiList.filter(e => e.status === 'blocked').length, 0);
 
   if (loading && !statusList) {
     return (
@@ -108,11 +110,9 @@ const ShadowAiRoutePage: React.FC = () => {
     },
     {
       title: t('shadowAi.status'),
-      dataIndex: 'authorized',
-      key: 'authorized',
-      render: (authorized: boolean) => authorized
-        ? <Tag color="green" icon={<CheckCircleOutlined />}>{t('shadowAi.authorized')}</Tag>
-        : <Tag color="red" icon={<WarningOutlined />}>{t('shadowAi.shadowAi')}</Tag>,
+      dataIndex: 'consumer',
+      key: 'status',
+      render: () => <Tag color="red" icon={<WarningOutlined />}>{t('shadowAi.shadowAi')}</Tag>,
     },
     {
       title: t('shadowAi.action'),
@@ -120,29 +120,17 @@ const ShadowAiRoutePage: React.FC = () => {
       render: (_: unknown, record: ShadowAiEntry) => {
         const actionKey = `${routeStatus.routeName}-${record.consumer}`;
         const isLoading = actionLoading === actionKey;
-        return record.authorized
-          ? (
-            <Button
-              size="small"
-              danger
-              icon={<StopOutlined />}
-              loading={isLoading}
-              onClick={() => handleAction(routeStatus.routeName, record.consumer, 'block')}
-            >
-              {t('shadowAi.block')}
-            </Button>
-          )
-          : (
-            <Button
-              size="small"
-              type="primary"
-              icon={<SafetyCertificateOutlined />}
-              loading={isLoading}
-              onClick={() => handleAction(routeStatus.routeName, record.consumer, 'authorize')}
-            >
-              {t('shadowAi.authorize')}
-            </Button>
-          );
+        return (
+          <Button
+            size="small"
+            type="primary"
+            icon={<SafetyCertificateOutlined />}
+            loading={isLoading}
+            onClick={() => handleAction(routeStatus.routeName, record.consumer, 'authorize')}
+          >
+            {t('shadowAi.authorize')}
+          </Button>
+        );
       },
     },
   ];
@@ -172,10 +160,10 @@ const ShadowAiRoutePage: React.FC = () => {
         <Col span={8}>
           <Card>
             <Statistic
-              title={t('shadowAi.authorizedCount')}
-              value={authorizedCount}
+              title={t('shadowAi.blockedCount')}
+              value={blockedCount}
               valueStyle={{ color: '#3f8600' }}
-              prefix={<CheckCircleOutlined />}
+              prefix={<StopOutlined />}
             />
           </Card>
         </Col>

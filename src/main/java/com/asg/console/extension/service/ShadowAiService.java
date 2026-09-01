@@ -13,6 +13,7 @@
 package com.asg.console.extension.service;
 
 import java.util.List;
+import java.util.Map;
 
 import com.asg.console.extension.model.ShadowAiActionRequest;
 import com.asg.console.extension.model.ShadowAiDetectedAccess;
@@ -30,6 +31,24 @@ public interface ShadowAiService {
     ShadowAiStatus performAction(ShadowAiActionRequest request);
 
     List<ShadowAiDetectedAccess> getDetectedAccesses();
+
+    /**
+     * Hourly detection trend over the requested lookback window (IR-004).
+     * Returns long-format points: {time="MM-dd HH:00", status, count}.
+     */
+    List<Map<String, Object>> getDetectedTrend(int hours);
+
+    /**
+     * Current authorized-domain view of the DNS/bypass policy (IR-003 unified
+     * authorization). Returns {mode, domains}.
+     */
+    Map<String, Object> getAuthorizedDomains();
+
+    /**
+     * Add/remove authorized domains on the DNS/bypass policy (IR-003).
+     * Returns the updated {mode, domains} view; each change is audited.
+     */
+    Map<String, Object> updateAuthorizedDomains(String mode, List<String> addDomains, List<String> removeDomains);
 
     void setDetectMode(String mode);
 

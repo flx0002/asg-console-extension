@@ -9,8 +9,8 @@
 package com.asg.console.extension.controller.dto;
 
 import java.util.List;
+import java.util.Map;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -19,7 +19,6 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class DnsPolicyResponse {
 
     /** monitoring (record only) or enforcement (block unauthorized). */
@@ -27,4 +26,12 @@ public class DnsPolicyResponse {
 
     /** Domains allowed even in enforcement mode. */
     private List<String> authorizedDomains;
+
+    /**
+     * Gateway-side AI domain category library from the shadow-ai-detect global
+     * plugin configuration (IR-001 alignment): items contain name, label,
+     * risk_level, domains, suffixes. Consumed by the bypass collector so its
+     * classification matches the gateway; null when unavailable.
+     */
+    private List<Map<String, Object>> categories;
 }

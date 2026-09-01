@@ -8,6 +8,7 @@ import com.asg.console.extension.service.AuditLogCollectorService;
 import com.asg.console.extension.service.BehaviorAnalysisService;
 import com.asg.console.extension.service.BehaviorAnalysisServiceImpl;
 import com.asg.console.extension.service.RedisAuditSyncService;
+import com.asg.console.extension.service.ShadowAiDnsPolicyService;
 import com.asg.console.extension.service.ShadowAiService;
 import com.asg.console.extension.service.ShadowAiServiceImpl;
 import com.asg.console.extension.service.impl.AgentAuditPersistenceService;
@@ -36,9 +37,9 @@ public class AsgServiceBeansConfiguration {
     @Bean
     public ShadowAiService shadowAiService(WasmPluginInstanceService wasmPluginInstanceService,
             ConsumerService consumerService, AiRouteService aiRouteService,
-            AuditChainService auditChainService) {
+            AuditChainService auditChainService, ShadowAiDnsPolicyService shadowAiDnsPolicyService) {
         return new ShadowAiServiceImpl(wasmPluginInstanceService, consumerService, aiRouteService, null,
-            auditChainService);
+            auditChainService, shadowAiDnsPolicyService);
     }
 
     @Bean

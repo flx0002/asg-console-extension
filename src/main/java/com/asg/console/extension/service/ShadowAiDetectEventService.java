@@ -25,5 +25,12 @@ public interface ShadowAiDetectEventService {
     Page<ShadowAiDetectEvent> query(String domain, String status, String category, String riskLevel, String source,
         int page, int size);
 
+    /**
+     * Attach weak audit-chain links to bypass/dns events (IR-025/S5):
+     * domain handling audit (authorize/deauthorize_domain) and same-source
+     * host aggregation. Gateway-side events keep their sessionId link.
+     */
+    void attachAuditLinks(List<ShadowAiDetectEvent> events);
+
     long count(LocalDateTime start, LocalDateTime end);
 }
