@@ -99,4 +99,5 @@ export const asgMenuRoutes: any[] = [
       },
     ],
   },
+  // 配置备份与恢复不在此处作为顶级菜单：由 inject.sh 注入为「系统配置」(menu.systemSettings) 的子菜单
 ];

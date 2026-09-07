@@ -103,6 +103,93 @@ else:
 PYEOF
 
 echo
+echo "=== 2b. 配置备份与恢复 → 系统配置(menu.systemSettings) 子菜单（幂等，含历史迁移）==="
+python3 - "$SRC/pages/_defaultProps.tsx" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+lines = s.split('\n')
+changed = False
+
+# a0. 升级历史注入的 children（仅含 configVersionCenter）→ 加入系统设置页面子项（幂等）
+OLD_CHILDREN = """        children: [
+          {
+            name: 'menu.configVersionCenter',
+            path: '/config-versions',
+          },
+        ],"""
+NEW_CHILDREN = """        children: [
+          {
+            name: 'menu.systemSettings',
+            path: '/system',
+          },
+          {
+            name: 'menu.configVersionCenter',
+            path: '/config-versions',
+          },
+        ],"""
+if OLD_CHILDREN in s:
+    s = s.replace(OLD_CHILDREN, NEW_CHILDREN, 1)
+    lines = s.split('\n')
+    changed = True
+    print('  ✓ system settings page restored as first child under systemSettings')
+
+# a. 移除历史版本注入的 menu.configVersion 顶级块（若存在）
+start = None
+for i, l in enumerate(lines):
+    if "name: 'menu.configVersion'," in l:
+        start = i
+        break
+if start is not None:
+    k = start
+    while k > 0 and lines[k].strip() != '{':
+        k -= 1
+    j = start
+    while j < len(lines) and lines[j] != '      },':
+        j += 1
+    del lines[k:j + 1]
+    s = '\n'.join(lines)
+    changed = True
+    print('  ✓ removed legacy menu.configVersion top-level block')
+else:
+    print('  SKIP: no legacy configVersion top-level block')
+
+# b. systemSettings 叶子项 → 加 children（幂等；首个子项保留原系统设置页面入口，
+#    ProLayout 父项带 children 后仅展开不跳转，必须显式保留 /system 子项）
+LEAF = """      {
+        name: 'menu.systemSettings',
+        path: '/system',
+        icon: <SettingOutlined />,
+      },"""
+PARENT = """      {
+        name: 'menu.systemSettings',
+        path: '/system',
+        icon: <SettingOutlined />,
+        children: [
+          {
+            name: 'menu.systemSettings',
+            path: '/system',
+          },
+          {
+            name: 'menu.configVersionCenter',
+            path: '/config-versions',
+          },
+        ],
+      },"""
+if 'menu.configVersionCenter' in s:
+    print('  SKIP: systemSettings children already injected')
+elif LEAF in s:
+    s = s.replace(LEAF, PARENT, 1)
+    changed = True
+    print('  ✓ config backup submenu added under systemSettings')
+else:
+    raise SystemExit('!! systemSettings leaf block not found — fork menu structure changed?')
+
+if changed:
+    open(p, 'w', encoding='utf-8').write(s)
+PYEOF
+
+echo
 echo "=== 3. services/index.ts 追加 export（幂等）==="
 python3 - "$SRC/services/index.ts" <<'PYEOF'
 import sys
@@ -113,6 +200,7 @@ exports = [
     "export * from './agent-guard';",
     "export * from './audit-chain-service';",
     "export * from './behavior-analysis';",
+    "export * from './config-version';",
 ]
 missing = [e for e in exports if e not in s]
 if missing:

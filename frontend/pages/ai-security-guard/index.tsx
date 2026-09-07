@@ -217,6 +217,14 @@ const AiSecurityGuardPage: React.FC = () => {
   return (
     <div style={{ padding: '0 0 24px' }}>
       {/* Section 1: Plugin Status */}
+      <Card style={{ marginBottom: 16 }}>
+        <Button
+          type="link"
+          onClick={() => window.location.assign('/config-versions')}
+        >
+          {t('configVersion.entry')}
+        </Button>
+      </Card>
       <Card title={t('aiContentSec.pluginStatus')} style={{ marginBottom: 16 }} loading={loading}>
         <Space size="large" align="center">
           <Switch
