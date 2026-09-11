@@ -23,7 +23,7 @@ public class DetectEventReportRequest {
     @Data
     public static class DetectEvent {
 
-        /** Detection type, e.g. dns_shadow_ai. */
+        /** Detection type, e.g. dns_ai_shadow. */
         private String detectType;
 
         /** Access domain (required). */

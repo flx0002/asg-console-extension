@@ -8,9 +8,9 @@ import com.asg.console.extension.service.AuditLogCollectorService;
 import com.asg.console.extension.service.BehaviorAnalysisService;
 import com.asg.console.extension.service.BehaviorAnalysisServiceImpl;
 import com.asg.console.extension.service.RedisAuditSyncService;
-import com.asg.console.extension.service.ShadowAiDnsPolicyService;
-import com.asg.console.extension.service.ShadowAiService;
-import com.asg.console.extension.service.ShadowAiServiceImpl;
+import com.asg.console.extension.service.AiShadowDnsPolicyService;
+import com.asg.console.extension.service.AiShadowService;
+import com.asg.console.extension.service.AiShadowServiceImpl;
 import com.asg.console.extension.service.impl.AgentAuditPersistenceService;
 import com.alibaba.higress.sdk.service.WasmPluginInstanceService;
 import com.alibaba.higress.sdk.service.ai.AiRouteService;
@@ -35,11 +35,11 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 public class AsgServiceBeansConfiguration {
 
     @Bean
-    public ShadowAiService shadowAiService(WasmPluginInstanceService wasmPluginInstanceService,
+    public AiShadowService aiShadowService(WasmPluginInstanceService wasmPluginInstanceService,
             ConsumerService consumerService, AiRouteService aiRouteService,
-            AuditChainService auditChainService, ShadowAiDnsPolicyService shadowAiDnsPolicyService) {
-        return new ShadowAiServiceImpl(wasmPluginInstanceService, consumerService, aiRouteService, null,
-            auditChainService, shadowAiDnsPolicyService);
+            AuditChainService auditChainService, AiShadowDnsPolicyService aiShadowDnsPolicyService) {
+        return new AiShadowServiceImpl(wasmPluginInstanceService, consumerService, aiRouteService, null,
+            auditChainService, aiShadowDnsPolicyService);
     }
 
     @Bean

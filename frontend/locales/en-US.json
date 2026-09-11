@@ -1,8 +1,8 @@
 {
   "menu": {
-    "shadowAiManagement": "Shadow AI Management",
-    "shadowAiDetected": "AI Service Traffic Detection",
-    "shadowAiRoute": "Route Authorization Management",
+    "aiShadowManagement": "Shadow AI Management",
+    "aiShadowDetected": "AI Service Traffic Detection",
+    "aiShadowRoute": "Route Authorization Management",
     "aiContentSecurity": "AI Content Security",
     "aiAgentGuard": "AI Agent Guard",
     "aiAgentGuardConfig": "Protection Config",
@@ -22,7 +22,7 @@
     "aiKeywordFilter": "AI Keyword Filter",
     "aiWafProtection": "AI WAF Protection"
   },
-  "shadowAi": {
+  "aiShadow": {
     "title": "Shadow AI Management",
     "description": "Discover and manage unauthorized AI application usage",
     "monitoringMode": "Monitoring Mode",
@@ -36,7 +36,7 @@
     "status": "Status",
     "action": "Action",
     "authorized": "Authorized",
-    "shadowAi": "Shadow AI",
+    "aiShadow": "Shadow AI",
     "unknownSource": "Unknown Source",
     "authorize": "Authorize",
     "block": "Block",
@@ -48,7 +48,7 @@
     "actionSuccess": "Action completed successfully",
     "actionFailed": "Action failed",
     "totalAiCalls": "Total AI Calls",
-    "shadowAiCount": "Shadow AI Count",
+    "aiShadowCount": "Shadow AI Count",
     "authorizedCount": "Authorized Count",
     "blockedCount": "Blocked Count",
     "trendCardTitle": "Detection Trend (last 24 hours)",

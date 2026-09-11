@@ -23,8 +23,8 @@ import lombok.Data;
  */
 @Data
 @Entity
-@Table(name = "shadow_ai_dns_policy")
-public class ShadowAiDnsPolicy {
+@Table(name = "ai_shadow_dns_policy")
+public class AiShadowDnsPolicy {
 
     public static final String MODE_MONITORING = "monitoring";
     public static final String MODE_ENFORCEMENT = "enforcement";

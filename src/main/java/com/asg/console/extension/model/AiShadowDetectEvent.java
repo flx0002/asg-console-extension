@@ -28,13 +28,13 @@ import lombok.Data;
  */
 @Data
 @Entity
-@Table(name = "shadow_ai_detect_event", indexes = {
+@Table(name = "ai_shadow_detect_event", indexes = {
     @Index(name = "idx_sade_event_time", columnList = "event_time"),
     @Index(name = "idx_sade_domain", columnList = "domain"),
     @Index(name = "idx_sade_status", columnList = "status"),
     @Index(name = "idx_sade_session", columnList = "session_id")
 })
-public class ShadowAiDetectEvent {
+public class AiShadowDetectEvent {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -44,7 +44,7 @@ public class ShadowAiDetectEvent {
     @Column(name = "event_time", nullable = false)
     private LocalDateTime eventTime;
 
-    /** Detection type, e.g. dns_shadow_ai. */
+    /** Detection type, e.g. dns_ai_shadow. */
     @Column(name = "detect_type", nullable = false, length = 64)
     private String detectType;
 

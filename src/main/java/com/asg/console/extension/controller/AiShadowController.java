@@ -26,11 +26,11 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.util.ControllerUtil;
-import com.asg.console.extension.model.ShadowAiActionRequest;
-import com.asg.console.extension.model.ShadowAiDetectedAccess;
-import com.asg.console.extension.model.ShadowAiModeRequest;
-import com.asg.console.extension.model.ShadowAiStatus;
-import com.asg.console.extension.service.ShadowAiService;
+import com.asg.console.extension.model.AiShadowActionRequest;
+import com.asg.console.extension.model.AiShadowDetectedAccess;
+import com.asg.console.extension.model.AiShadowModeRequest;
+import com.asg.console.extension.model.AiShadowStatus;
+import com.asg.console.extension.service.AiShadowService;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -40,25 +40,25 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
 import java.util.Map;
 
-@RestController("ShadowAiController")
-@RequestMapping("/v1/shadow-ai")
+@RestController("AiShadowController")
+@RequestMapping("/v1/ai-shadow")
 @Validated
 @Tag(name = "Shadow AI APIs")
-public class ShadowAiController {
+public class AiShadowController {
 
-    private ShadowAiService shadowAiService;
+    private AiShadowService aiShadowService;
 
     @Resource
-    public void setShadowAiService(ShadowAiService shadowAiService) {
-        this.shadowAiService = shadowAiService;
+    public void setAiShadowService(AiShadowService aiShadowService) {
+        this.aiShadowService = aiShadowService;
     }
 
     @GetMapping("/status")
     @Operation(summary = "List all AI routes' shadow AI status")
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Shadow AI status listed successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<List<ShadowAiStatus>>> listStatus() {
-        List<ShadowAiStatus> statusList = shadowAiService.getStatus();
+    public ResponseEntity<Response<List<AiShadowStatus>>> listStatus() {
+        List<AiShadowStatus> statusList = aiShadowService.getStatus();
         return ControllerUtil.buildResponseEntity(statusList);
     }
 
@@ -67,9 +67,9 @@ public class ShadowAiController {
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Shadow AI status found"),
         @ApiResponse(responseCode = "404", description = "Route not found"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<ShadowAiStatus>> getStatus(
+    public ResponseEntity<Response<AiShadowStatus>> getStatus(
         @PathVariable("routeName") @NotBlank String routeName) {
-        ShadowAiStatus status = shadowAiService.getStatus(routeName);
+        AiShadowStatus status = aiShadowService.getStatus(routeName);
         return ControllerUtil.buildResponseEntity(status);
     }
 
@@ -78,8 +78,8 @@ public class ShadowAiController {
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Mode updated successfully"),
         @ApiResponse(responseCode = "400", description = "Invalid request parameters"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<ShadowAiStatus>> setMode(@RequestBody ShadowAiModeRequest request) {
-        ShadowAiStatus status = shadowAiService.setMode(request);
+    public ResponseEntity<Response<AiShadowStatus>> setMode(@RequestBody AiShadowModeRequest request) {
+        AiShadowStatus status = aiShadowService.setMode(request);
         return ControllerUtil.buildResponseEntity(status);
     }
 
@@ -88,8 +88,8 @@ public class ShadowAiController {
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Action performed successfully"),
         @ApiResponse(responseCode = "400", description = "Invalid request parameters"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<ShadowAiStatus>> performAction(@RequestBody ShadowAiActionRequest request) {
-        ShadowAiStatus status = shadowAiService.performAction(request);
+    public ResponseEntity<Response<AiShadowStatus>> performAction(@RequestBody AiShadowActionRequest request) {
+        AiShadowStatus status = aiShadowService.performAction(request);
         return ControllerUtil.buildResponseEntity(status);
     }
 
@@ -97,8 +97,8 @@ public class ShadowAiController {
     @Operation(summary = "List detected unauthorized AI service accesses")
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Detected accesses listed successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<List<ShadowAiDetectedAccess>>> listDetectedAccesses() {
-        List<ShadowAiDetectedAccess> detectedList = shadowAiService.getDetectedAccesses();
+    public ResponseEntity<Response<List<AiShadowDetectedAccess>>> listDetectedAccesses() {
+        List<AiShadowDetectedAccess> detectedList = aiShadowService.getDetectedAccesses();
         return ControllerUtil.buildResponseEntity(detectedList);
     }
 
@@ -108,7 +108,7 @@ public class ShadowAiController {
         @ApiResponse(responseCode = "500", description = "Internal server error")})
     public ResponseEntity<Response<List<Map<String, Object>>>> getDetectedTrend(
         @org.springframework.web.bind.annotation.RequestParam(value = "hours", defaultValue = "24") int hours) {
-        return ControllerUtil.buildResponseEntity(shadowAiService.getDetectedTrend(hours));
+        return ControllerUtil.buildResponseEntity(aiShadowService.getDetectedTrend(hours));
     }
 
     @GetMapping("/authorized-domains")
@@ -116,7 +116,7 @@ public class ShadowAiController {
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Authorized domains listed successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
     public ResponseEntity<Response<Map<String, Object>>> getAuthorizedDomains() {
-        return ControllerUtil.buildResponseEntity(shadowAiService.getAuthorizedDomains());
+        return ControllerUtil.buildResponseEntity(aiShadowService.getAuthorizedDomains());
     }
 
     @PutMapping("/authorized-domains")
@@ -134,7 +134,7 @@ public class ShadowAiController {
         List<String> addDomains = (List<String>) body.get("addDomains");
         List<String> removeDomains = (List<String>) body.get("removeDomains");
         return ControllerUtil.buildResponseEntity(
-            shadowAiService.updateAuthorizedDomains(mode, addDomains, removeDomains));
+            aiShadowService.updateAuthorizedDomains(mode, addDomains, removeDomains));
     }
 
     @PutMapping("/detect-mode")
@@ -144,7 +144,7 @@ public class ShadowAiController {
         @ApiResponse(responseCode = "500", description = "Internal server error")})
     public ResponseEntity<Response<String>> setDetectMode(@RequestBody Map<String, String> body) {
         String mode = body.get("mode");
-        shadowAiService.setDetectMode(mode);
+        aiShadowService.setDetectMode(mode);
         return ControllerUtil.buildResponseEntity(mode);
     }
 
@@ -153,7 +153,7 @@ public class ShadowAiController {
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Detection mode retrieved successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
     public ResponseEntity<Response<String>> getDetectMode() {
-        String mode = shadowAiService.getDetectMode();
+        String mode = aiShadowService.getDetectMode();
         return ControllerUtil.buildResponseEntity(mode);
     }
 }

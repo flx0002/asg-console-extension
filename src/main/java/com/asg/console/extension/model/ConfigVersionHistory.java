@@ -54,7 +54,7 @@ public class ConfigVersionHistory {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** Config domain, e.g. plugin-instance / ai-route / route / domain / consumer / system / shadow-ai. */
+    /** Config domain, e.g. plugin-instance / ai-route / route / domain / consumer / system / ai-shadow. */
     @Column(name = "category", nullable = false, length = 64)
     private String category;
 

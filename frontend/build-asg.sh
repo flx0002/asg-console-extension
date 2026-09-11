@@ -19,7 +19,7 @@ echo
 echo "=== [3/5] 品牌标记校验 ==="
 test -f "$CON/frontend/public/titleLogo.png" || { echo "!! 缺少品牌 logo（titleLogo.png），品牌重放未生效"; exit 1; }
 grep -q "WntASG" "$CON/frontend/src/components/Footer/index.tsx" || { echo "!! Footer 无品牌名，brand.patch 未生效"; exit 1; }
-grep -q "getShadowAiDetectEvents" "$CON/frontend/src/services/shadow-ai.ts" || { echo "!! 功能注入不完整（缺 shadow-ai services）"; exit 1; }
+grep -q "getAiShadowDetectEvents" "$CON/frontend/src/services/ai-shadow.ts" || { echo "!! 功能注入不完整（缺 ai-shadow services）"; exit 1; }
 echo "  ✓ logo / Footer 品牌名 / ASG 功能 services 全部就位"
 
 echo

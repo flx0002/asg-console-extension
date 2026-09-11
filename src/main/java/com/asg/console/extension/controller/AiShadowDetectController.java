@@ -41,10 +41,10 @@ import com.asg.console.extension.controller.dto.DnsPolicyUpdateRequest;
 import com.asg.console.extension.controller.dto.PageResult;
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.exception.AuthException;
-import com.asg.console.extension.model.ShadowAiDetectEvent;
-import com.asg.console.extension.model.ShadowAiDnsPolicy;
-import com.asg.console.extension.service.ShadowAiDetectEventService;
-import com.asg.console.extension.service.ShadowAiDnsPolicyService;
+import com.asg.console.extension.model.AiShadowDetectEvent;
+import com.asg.console.extension.model.AiShadowDnsPolicy;
+import com.asg.console.extension.service.AiShadowDetectEventService;
+import com.asg.console.extension.service.AiShadowDnsPolicyService;
 import com.alibaba.higress.sdk.exception.ValidationException;
 import com.alibaba.higress.sdk.model.WasmPluginInstance;
 import com.alibaba.higress.sdk.model.WasmPluginInstanceScope;
@@ -62,30 +62,30 @@ import lombok.extern.slf4j.Slf4j;
  * (persisted to MySQL and correlated with the audit chain), query for the
  * management console, and DNS detection policy control (IR-004 / IR-025).
  */
-@RestController("ShadowAiDetectController")
-@RequestMapping("/v1/shadow-ai")
+@RestController("AiShadowDetectController")
+@RequestMapping("/v1/ai-shadow")
 @Tag(name = "Shadow AI Detect APIs")
 @Slf4j
-public class ShadowAiDetectController {
+public class AiShadowDetectController {
 
-    public static final String DEFAULT_DETECT_TYPE = "dns_shadow_ai";
+    public static final String DEFAULT_DETECT_TYPE = "dns_ai_shadow";
     public static final String DEFAULT_SOURCE = "dns";
     public static final String DEFAULT_STATUS = "allowed";
 
-    private ShadowAiDetectEventService detectEventService;
-    private ShadowAiDnsPolicyService dnsPolicyService;
+    private AiShadowDetectEventService detectEventService;
+    private AiShadowDnsPolicyService dnsPolicyService;
     private WasmPluginInstanceService wasmPluginInstanceService;
 
     @Value("${asg.collector-token:wnt-asg-collector-2026}")
     private String collectorToken;
 
     @Resource
-    public void setDetectEventService(ShadowAiDetectEventService detectEventService) {
+    public void setDetectEventService(AiShadowDetectEventService detectEventService) {
         this.detectEventService = detectEventService;
     }
 
     @Resource
-    public void setDnsPolicyService(ShadowAiDnsPolicyService dnsPolicyService) {
+    public void setDnsPolicyService(AiShadowDnsPolicyService dnsPolicyService) {
         this.dnsPolicyService = dnsPolicyService;
     }
 
@@ -108,12 +108,12 @@ public class ShadowAiDetectController {
         if (request == null || request.getEvents() == null || request.getEvents().isEmpty()) {
             throw new ValidationException("events must not be empty");
         }
-        List<ShadowAiDetectEvent> events = new ArrayList<>(request.getEvents().size());
+        List<AiShadowDetectEvent> events = new ArrayList<>(request.getEvents().size());
         for (DetectEventReportRequest.DetectEvent source : request.getEvents()) {
             if (StringUtils.isBlank(source.getDomain())) {
                 throw new ValidationException("domain is required for each event");
             }
-            ShadowAiDetectEvent event = new ShadowAiDetectEvent();
+            AiShadowDetectEvent event = new AiShadowDetectEvent();
             event.setDetectType(StringUtils.defaultIfBlank(source.getDetectType(), DEFAULT_DETECT_TYPE));
             event.setDomain(source.getDomain().trim().toLowerCase());
             event.setCategory(source.getCategory());
@@ -129,7 +129,7 @@ public class ShadowAiDetectController {
             }
             events.add(event);
         }
-        List<ShadowAiDetectEvent> saved = detectEventService.saveEvents(events);
+        List<AiShadowDetectEvent> saved = detectEventService.saveEvents(events);
         return ResponseEntity.ok(Response.success(saved.size()));
     }
 
@@ -138,7 +138,7 @@ public class ShadowAiDetectController {
      */
     @GetMapping("/detect-events")
     @Operation(summary = "Query shadow AI detect events")
-    public ResponseEntity<Response<PageResult<ShadowAiDetectEvent>>> queryEvents(
+    public ResponseEntity<Response<PageResult<AiShadowDetectEvent>>> queryEvents(
         @RequestParam(value = "domain", required = false) String domain,
         @RequestParam(value = "status", required = false) String status,
         @RequestParam(value = "category", required = false) String category,
@@ -146,12 +146,12 @@ public class ShadowAiDetectController {
         @RequestParam(value = "source", required = false) String source,
         @RequestParam(value = "page", defaultValue = "0") int page,
         @RequestParam(value = "size", defaultValue = "20") int size) {
-        Page<ShadowAiDetectEvent> result =
+        Page<AiShadowDetectEvent> result =
             detectEventService.query(domain, status, category, riskLevel, source, page, size);
         // IR-025/S5: attach weak audit-chain links (domain handling audit +
         // same-source host aggregation) for bypass/dns events.
         detectEventService.attachAuditLinks(result.getContent());
-        PageResult<ShadowAiDetectEvent> pageResult =
+        PageResult<AiShadowDetectEvent> pageResult =
             new PageResult<>(result.getContent(), result.getTotalElements(), result.getNumber(), result.getSize());
         return ResponseEntity.ok(Response.success(pageResult));
     }
@@ -179,7 +179,7 @@ public class ShadowAiDetectController {
         if (request == null) {
             throw new ValidationException("request body is required");
         }
-        ShadowAiDnsPolicy policy = dnsPolicyService.updatePolicy(request.getMode(), request.getAuthorizedDomains());
+        AiShadowDnsPolicy policy = dnsPolicyService.updatePolicy(request.getMode(), request.getAuthorizedDomains());
         return ResponseEntity.ok(Response.success(toPolicyResponse(policy)));
     }
 
@@ -189,7 +189,7 @@ public class ShadowAiDetectController {
         }
     }
 
-    private DnsPolicyResponse toPolicyResponse(ShadowAiDnsPolicy policy) {
+    private DnsPolicyResponse toPolicyResponse(AiShadowDnsPolicy policy) {
         List<String> domains = new ArrayList<>();
         if (StringUtils.isNotBlank(policy.getAuthorizedDomains())) {
             domains = Arrays.stream(policy.getAuthorizedDomains().split(",")).filter(StringUtils::isNotBlank)
@@ -205,14 +205,14 @@ public class ShadowAiDetectController {
     }
 
     /**
-     * Load the AI domain category library from the shadow-ai-detect global plugin
+     * Load the AI domain category library from the ai-shadow-detect global plugin
      * configuration. Each item: {name, label, risk_level, domains, suffixes, ...}.
      * Returns null (collector falls back to its local library) on any failure.
      */
     private List<Map<String, Object>> loadGatewayCategories() {
         try {
             WasmPluginInstance instance = wasmPluginInstanceService.query(
-                WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.SHADOW_AI_DETECT, false);
+                WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.AI_SHADOW_DETECT, false);
             if (instance == null || instance.getConfigurations() == null) {
                 return null;
             }

@@ -13,16 +13,16 @@ import java.util.List;
 
 import org.springframework.data.domain.Page;
 
-import com.asg.console.extension.model.ShadowAiDetectEvent;
+import com.asg.console.extension.model.AiShadowDetectEvent;
 
 /**
  * Service for shadow AI detection event persistence and query.
  */
-public interface ShadowAiDetectEventService {
+public interface AiShadowDetectEventService {
 
-    List<ShadowAiDetectEvent> saveEvents(List<ShadowAiDetectEvent> events);
+    List<AiShadowDetectEvent> saveEvents(List<AiShadowDetectEvent> events);
 
-    Page<ShadowAiDetectEvent> query(String domain, String status, String category, String riskLevel, String source,
+    Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel, String source,
         int page, int size);
 
     /**
@@ -30,7 +30,7 @@ public interface ShadowAiDetectEventService {
      * domain handling audit (authorize/deauthorize_domain) and same-source
      * host aggregation. Gateway-side events keep their sessionId link.
      */
-    void attachAuditLinks(List<ShadowAiDetectEvent> events);
+    void attachAuditLinks(List<AiShadowDetectEvent> events);
 
     long count(LocalDateTime start, LocalDateTime end);
 }

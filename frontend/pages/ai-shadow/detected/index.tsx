@@ -3,8 +3,8 @@ import { Card, Table, Switch, Tag, Button, message, Statistic, Row, Col, Space, 
 import { EyeOutlined, WarningOutlined, ReloadOutlined, LineChartOutlined, CheckOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Line } from '@ant-design/charts';
 import { useRequest } from 'ahooks';
-import { getShadowAiDetectedAccesses, setShadowAiDetectMode, getShadowAiDetectMode, getShadowAiDetectEvents, getShadowAiDetectedTrend, getShadowAiAuthorizedDomains, updateShadowAiAuthorizedDomains } from '@/services';
-import { ShadowAiDetectedAccess, ShadowAiDetectEvent, ShadowAiTrendPoint } from '@/interfaces/shadow-ai';
+import { getAiShadowDetectedAccesses, setAiShadowDetectMode, getAiShadowDetectMode, getAiShadowDetectEvents, getAiShadowDetectedTrend, getAiShadowAuthorizedDomains, updateAiShadowAuthorizedDomains } from '@/services';
+import { AiShadowDetectedAccess, AiShadowDetectEvent, AiShadowTrendPoint } from '@/interfaces/ai-shadow';
 import { useTranslation } from 'react-i18next';
 
 const REFRESH_INTERVAL = 30000;
@@ -32,7 +32,7 @@ const parseDetail = (detail?: string): Record<string, unknown> | null => {
   }
 };
 
-const ShadowAiDetectedPage: React.FC = () => {
+const AiShadowDetectedPage: React.FC = () => {
   const { t } = useTranslation();
   const [detectMode, setDetectModeState] = useState<string>('monitoring');
   const [eventPage, setEventPage] = useState(0);
@@ -40,21 +40,21 @@ const ShadowAiDetectedPage: React.FC = () => {
 
   // Load current detect mode on mount
   useEffect(() => {
-    getShadowAiDetectMode().then((mode) => {
+    getAiShadowDetectMode().then((mode) => {
       if (mode === 'monitoring' || mode === 'enforcement') {
         setDetectModeState(mode);
       }
     }).catch(() => {});
   }, []);
 
-  const { data: detectedList, loading: detectedLoading, refresh: refreshDetected } = useRequest(() => getShadowAiDetectedAccesses(), {
+  const { data: detectedList, loading: detectedLoading, refresh: refreshDetected } = useRequest(() => getAiShadowDetectedAccesses(), {
     pollingInterval: REFRESH_INTERVAL,
     pollingWhenHidden: false,
     onError: () => {},
   });
 
   const { data: eventPageData, loading: eventsLoading, refresh: refreshEvents } = useRequest(
-    () => getShadowAiDetectEvents({ page: eventPage, size: eventSize }),
+    () => getAiShadowDetectEvents({ page: eventPage, size: eventSize }),
     {
       refreshDeps: [eventPage, eventSize],
       pollingInterval: REFRESH_INTERVAL,
@@ -64,25 +64,25 @@ const ShadowAiDetectedPage: React.FC = () => {
   );
 
   // Hourly detection trend over the last 24 hours (IR-004)
-  const { data: trendData, loading: trendLoading } = useRequest(() => getShadowAiDetectedTrend(24), {
+  const { data: trendData, loading: trendLoading } = useRequest(() => getAiShadowDetectedTrend(24), {
     pollingInterval: REFRESH_INTERVAL,
     pollingWhenHidden: false,
     onError: () => {},
   });
 
   // Authorized domains of the DNS/bypass policy (IR-003 unified authorization entry)
-  const { data: authzData, refresh: refreshAuthz } = useRequest(() => getShadowAiAuthorizedDomains(), {
+  const { data: authzData, refresh: refreshAuthz } = useRequest(() => getAiShadowAuthorizedDomains(), {
     onError: () => {},
   });
   const [authzInput, setAuthzInput] = useState('');
 
   // Map raw status values to localized labels and stable colors for the chart
   const trendLabel = (status: string) => {
-    if (status === 'blocked') return t('shadowAi.statusBlocked');
-    if (status === 'monitored') return t('shadowAi.statusMonitored');
-    return t('shadowAi.statusAllowed');
+    if (status === 'blocked') return t('aiShadow.statusBlocked');
+    if (status === 'monitored') return t('aiShadow.statusMonitored');
+    return t('aiShadow.statusAllowed');
   };
-  const trendChartData = (trendData || []).map((p: ShadowAiTrendPoint) => ({
+  const trendChartData = (trendData || []).map((p: AiShadowTrendPoint) => ({
     time: p.time,
     status: trendLabel(p.status),
     count: p.count,
@@ -91,11 +91,11 @@ const ShadowAiDetectedPage: React.FC = () => {
   const handleDetectModeSwitch = useCallback(async (currentMode: string) => {
     const newMode = currentMode === 'monitoring' ? 'enforcement' : 'monitoring';
     try {
-      await setShadowAiDetectMode(newMode as 'monitoring' | 'enforcement');
+      await setAiShadowDetectMode(newMode as 'monitoring' | 'enforcement');
       setDetectModeState(newMode);
-      message.success(t('shadowAi.modeSwitchSuccess'));
+      message.success(t('aiShadow.modeSwitchSuccess'));
     } catch {
-      message.error(t('shadowAi.actionFailed'));
+      message.error(t('aiShadow.actionFailed'));
     }
   }, [t]);
 
@@ -104,23 +104,23 @@ const ShadowAiDetectedPage: React.FC = () => {
   const handleAuthorizeDomain = useCallback(async (domain: string) => {
     if (!domain) return;
     try {
-      await updateShadowAiAuthorizedDomains({ addDomains: [domain] });
-      message.success(t('shadowAi.authzSuccess', { domain }));
+      await updateAiShadowAuthorizedDomains({ addDomains: [domain] });
+      message.success(t('aiShadow.authzSuccess', { domain }));
       refreshAuthz();
       refreshDetected();
     } catch {
-      message.error(t('shadowAi.actionFailed'));
+      message.error(t('aiShadow.actionFailed'));
     }
   }, [t, refreshAuthz, refreshDetected]);
 
   const handleRemoveDomain = useCallback(async (domain: string) => {
     try {
-      await updateShadowAiAuthorizedDomains({ removeDomains: [domain] });
-      message.success(t('shadowAi.deauthzSuccess', { domain }));
+      await updateAiShadowAuthorizedDomains({ removeDomains: [domain] });
+      message.success(t('aiShadow.deauthzSuccess', { domain }));
       refreshAuthz();
       refreshDetected();
     } catch {
-      message.error(t('shadowAi.actionFailed'));
+      message.error(t('aiShadow.actionFailed'));
     }
   }, [t, refreshAuthz, refreshDetected]);
 
@@ -146,63 +146,63 @@ const ShadowAiDetectedPage: React.FC = () => {
 
   const detectedColumns = [
     {
-      title: t('shadowAi.detectedSni'),
+      title: t('aiShadow.detectedSni'),
       dataIndex: 'sni',
       key: 'sni',
       render: (text: string) => <span style={{ fontFamily: 'monospace' }}>{text}</span>,
     },
     {
-      title: t('shadowAi.detectedCategory'),
+      title: t('aiShadow.detectedCategory'),
       dataIndex: 'categoryLabel',
       key: 'categoryLabel',
     },
     {
-      title: t('shadowAi.detectedRiskLevel'),
+      title: t('aiShadow.detectedRiskLevel'),
       dataIndex: 'riskLevel',
       key: 'riskLevel',
       render: (level: string) => {
         const colorMap: Record<string, string> = { critical: '#cf1322', high: '#fa541c', medium: '#faad14', low: '#52c41a' };
         const labelMap: Record<string, string> = {
-          critical: t('shadowAi.riskCritical'),
-          high: t('shadowAi.riskHigh'),
-          medium: t('shadowAi.riskMedium'),
-          low: t('shadowAi.riskLow'),
+          critical: t('aiShadow.riskCritical'),
+          high: t('aiShadow.riskHigh'),
+          medium: t('aiShadow.riskMedium'),
+          low: t('aiShadow.riskLow'),
         };
         return <Tag color={colorMap[level] || 'default'}>{labelMap[level] || level}</Tag>;
       },
     },
     {
-      title: t('shadowAi.detectedStatus'),
+      title: t('aiShadow.detectedStatus'),
       dataIndex: 'status',
       key: 'status',
       render: (status: string) => {
         const isBlocked = status === 'blocked';
         return (
           <Tag color={isBlocked ? 'red' : 'green'}>
-            {isBlocked ? t('shadowAi.statusBlocked') : t('shadowAi.statusAllowed')}
+            {isBlocked ? t('aiShadow.statusBlocked') : t('aiShadow.statusAllowed')}
           </Tag>
         );
       },
     },
     {
-      title: t('shadowAi.detectedRequestCount'),
+      title: t('aiShadow.detectedRequestCount'),
       dataIndex: 'requestCount',
       key: 'requestCount',
       render: (val: number) => val?.toLocaleString() ?? '-',
-      sorter: (a: ShadowAiDetectedAccess, b: ShadowAiDetectedAccess) => a.requestCount - b.requestCount,
+      sorter: (a: AiShadowDetectedAccess, b: AiShadowDetectedAccess) => a.requestCount - b.requestCount,
     },
     {
-      title: t('shadowAi.detectedActions'),
+      title: t('aiShadow.detectedActions'),
       key: 'actions',
       width: 100,
-      render: (_: unknown, record: ShadowAiDetectedAccess) => (
+      render: (_: unknown, record: AiShadowDetectedAccess) => (
         <Button
           type="link"
           size="small"
           icon={<CheckOutlined />}
           onClick={() => handleAuthorizeDomain(record.sni)}
         >
-          {t('shadowAi.authzBtn')}
+          {t('aiShadow.authzBtn')}
         </Button>
       ),
     },
@@ -211,27 +211,27 @@ const ShadowAiDetectedPage: React.FC = () => {
   const riskTag = (level?: string) => {
     const colorMap: Record<string, string> = { critical: '#cf1322', high: '#fa541c', medium: '#faad14', low: '#52c41a' };
     const labelMap: Record<string, string> = {
-      critical: t('shadowAi.riskCritical'),
-      high: t('shadowAi.riskHigh'),
-      medium: t('shadowAi.riskMedium'),
-      low: t('shadowAi.riskLow'),
+      critical: t('aiShadow.riskCritical'),
+      high: t('aiShadow.riskHigh'),
+      medium: t('aiShadow.riskMedium'),
+      low: t('aiShadow.riskLow'),
     };
     return <Tag color={colorMap[level || ''] || 'default'}>{labelMap[level || ''] || level || '-'}</Tag>;
   };
 
   const statusTag = (status?: string) => {
-    if (status === 'blocked') return <Tag color="red">{t('shadowAi.statusBlocked')}</Tag>;
-    if (status === 'monitored') return <Tag color="blue">{t('shadowAi.statusMonitored')}</Tag>;
-    if (status === 'allowed') return <Tag color="green">{t('shadowAi.statusAllowed')}</Tag>;
+    if (status === 'blocked') return <Tag color="red">{t('aiShadow.statusBlocked')}</Tag>;
+    if (status === 'monitored') return <Tag color="blue">{t('aiShadow.statusMonitored')}</Tag>;
+    if (status === 'allowed') return <Tag color="green">{t('aiShadow.statusAllowed')}</Tag>;
     return <Tag>{status || '-'}</Tag>;
   };
 
   const detailLabelMap: Record<string, string> = {
-    protocol: t('shadowAi.eventProtocol'),
-    method: t('shadowAi.eventMethod'),
-    uri: t('shadowAi.eventUri'),
-    srcPort: t('shadowAi.eventSrcPort'),
-    dstPort: t('shadowAi.eventDstPort'),
+    protocol: t('aiShadow.eventProtocol'),
+    method: t('aiShadow.eventMethod'),
+    uri: t('aiShadow.eventUri'),
+    srcPort: t('aiShadow.eventSrcPort'),
+    dstPort: t('aiShadow.eventDstPort'),
     ja3: 'JA3',
     ja4: 'JA4',
   };
@@ -253,7 +253,7 @@ const ShadowAiDetectedPage: React.FC = () => {
   };
 
   // Weak audit-chain link (IR-025/S5): handling audit + same-source host info
-  const renderAuditLink = (record: ShadowAiDetectEvent) => {
+  const renderAuditLink = (record: AiShadowDetectEvent) => {
     const link = record.auditLink as
       | { handlingAudited?: boolean; auditAction?: string; auditEventId?: string; auditTimeMs?: number; hostEventCount?: number; hostLastEventMs?: number }
       | undefined;
@@ -268,26 +268,26 @@ const ShadowAiDetectedPage: React.FC = () => {
       <Descriptions size="small" column={1} bordered style={{ maxWidth: 640, marginTop: record.detail ? 8 : 0 }}
         title={undefined}>
         {hasSession && (
-          <Descriptions.Item label={t('shadowAi.auditSessionLabel')}>
+          <Descriptions.Item label={t('aiShadow.auditSessionLabel')}>
             <span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{record.sessionId}</span>
           </Descriptions.Item>
         )}
         {link && (
-          <Descriptions.Item label={t('shadowAi.auditHandlingLabel')}>
+          <Descriptions.Item label={t('aiShadow.auditHandlingLabel')}>
             {link.handlingAudited
               ? <>
                   <Tag color={link.auditAction === 'authorize_domain' ? 'green' : 'orange'}>
-                    {link.auditAction === 'authorize_domain' ? t('shadowAi.auditAuthorized') : t('shadowAi.auditDeauthorized')}
+                    {link.auditAction === 'authorize_domain' ? t('aiShadow.auditAuthorized') : t('aiShadow.auditDeauthorized')}
                   </Tag>
                   <span style={{ fontFamily: 'monospace' }}>{fmtMs(link.auditTimeMs)} · #{link.auditEventId}</span>
                 </>
-              : <span style={{ color: '#999' }}>{t('shadowAi.auditNoHandling')}</span>}
+              : <span style={{ color: '#999' }}>{t('aiShadow.auditNoHandling')}</span>}
           </Descriptions.Item>
         )}
         {link && link.hostEventCount !== undefined && (
-          <Descriptions.Item label={t('shadowAi.auditHostLabel')}>
+          <Descriptions.Item label={t('aiShadow.auditHostLabel')}>
             <span style={{ fontFamily: 'monospace' }}>
-              {record.srcIp} · {t('shadowAi.auditHostEvents')} {link.hostEventCount} · {t('shadowAi.auditHostLast')} {fmtMs(link.hostLastEventMs)}
+              {record.srcIp} · {t('aiShadow.auditHostEvents')} {link.hostEventCount} · {t('aiShadow.auditHostLast')} {fmtMs(link.hostLastEventMs)}
             </span>
           </Descriptions.Item>
         )}
@@ -297,47 +297,47 @@ const ShadowAiDetectedPage: React.FC = () => {
 
   const eventColumns = [
     {
-      title: t('shadowAi.eventColTime'),
+      title: t('aiShadow.eventColTime'),
       dataIndex: 'eventTime',
       key: 'eventTime',
       width: 170,
-      render: (val: ShadowAiDetectEvent['eventTime']) => formatEventTime(val),
+      render: (val: AiShadowDetectEvent['eventTime']) => formatEventTime(val),
     },
     {
-      title: t('shadowAi.eventColDomain'),
+      title: t('aiShadow.eventColDomain'),
       dataIndex: 'domain',
       key: 'domain',
       render: (text: string) => <span style={{ fontFamily: 'monospace' }}>{text}</span>,
     },
     {
-      title: t('shadowAi.eventColDetectType'),
+      title: t('aiShadow.eventColDetectType'),
       dataIndex: 'detectType',
       key: 'detectType',
       width: 150,
       render: (text: string) => <span style={{ fontFamily: 'monospace' }}>{text}</span>,
     },
     {
-      title: t('shadowAi.eventColSource'),
+      title: t('aiShadow.eventColSource'),
       dataIndex: 'source',
       key: 'source',
       width: 90,
     },
     {
-      title: t('shadowAi.eventColSrcIp'),
+      title: t('aiShadow.eventColSrcIp'),
       dataIndex: 'srcIp',
       key: 'srcIp',
       width: 140,
       render: (text?: string) => <span style={{ fontFamily: 'monospace' }}>{text || '-'}</span>,
     },
     {
-      title: t('shadowAi.detectedRiskLevel'),
+      title: t('aiShadow.detectedRiskLevel'),
       dataIndex: 'riskLevel',
       key: 'riskLevel',
       width: 90,
       render: (level: string) => riskTag(level),
     },
     {
-      title: t('shadowAi.detectedStatus'),
+      title: t('aiShadow.detectedStatus'),
       dataIndex: 'status',
       key: 'status',
       width: 100,
@@ -355,7 +355,7 @@ const ShadowAiDetectedPage: React.FC = () => {
         <Col span={8}>
           <Card>
             <Statistic
-              title={t('shadowAi.totalDetectedAccesses')}
+              title={t('aiShadow.totalDetectedAccesses')}
               value={totalDetected}
               prefix={<EyeOutlined />}
             />
@@ -364,7 +364,7 @@ const ShadowAiDetectedPage: React.FC = () => {
         <Col span={8}>
           <Card>
             <Statistic
-              title={t('shadowAi.criticalRiskAccesses')}
+              title={t('aiShadow.criticalRiskAccesses')}
               value={criticalDetected}
               valueStyle={{ color: '#cf1322' }}
               prefix={<WarningOutlined />}
@@ -374,7 +374,7 @@ const ShadowAiDetectedPage: React.FC = () => {
         <Col span={8}>
           <Card>
             <Statistic
-              title={t('shadowAi.highRiskAccesses')}
+              title={t('aiShadow.highRiskAccesses')}
               value={highDetected}
               valueStyle={{ color: '#fa541c' }}
               prefix={<WarningOutlined />}
@@ -387,13 +387,13 @@ const ShadowAiDetectedPage: React.FC = () => {
         title={
           <Space>
             <LineChartOutlined />
-            <span>{t('shadowAi.trendCardTitle')}</span>
+            <span>{t('aiShadow.trendCardTitle')}</span>
           </Space>
         }
         style={{ marginBottom: 16 }}
       >
         {trendChartData.length === 0 ? (
-          <Empty description={t('shadowAi.trendNoData')} />
+          <Empty description={t('aiShadow.trendNoData')} />
         ) : (
           <Line
             data={trendChartData}
@@ -413,27 +413,27 @@ const ShadowAiDetectedPage: React.FC = () => {
       <Card
         title={
           <Space>
-            <span>{t('shadowAi.detectedCardTitle')}</span>
+            <span>{t('aiShadow.detectedCardTitle')}</span>
             <Tag color={isEnforcement ? 'red' : 'blue'}>
-              {isEnforcement ? t('shadowAi.enforcementMode') : t('shadowAi.monitoringMode')}
+              {isEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}
             </Tag>
           </Space>
         }
         extra={
           <Space>
             <span style={{ fontSize: 13, color: '#666' }}>
-              {isEnforcement ? t('shadowAi.detectEnforcementDesc') : t('shadowAi.detectMonitoringDesc')}
+              {isEnforcement ? t('aiShadow.detectEnforcementDesc') : t('aiShadow.detectMonitoringDesc')}
             </span>
-            <Tooltip title={isEnforcement ? t('shadowAi.enforcementMode') : t('shadowAi.monitoringMode')}>
+            <Tooltip title={isEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}>
               <Switch
                 checked={isEnforcement}
-                checkedChildren={t('shadowAi.enforcementMode')}
-                unCheckedChildren={t('shadowAi.monitoringMode')}
+                checkedChildren={t('aiShadow.enforcementMode')}
+                unCheckedChildren={t('aiShadow.monitoringMode')}
                 onChange={() => handleDetectModeSwitch(detectMode)}
               />
             </Tooltip>
             <Button icon={<ReloadOutlined />} onClick={refreshDetected} loading={detectedLoading}>
-              {t('shadowAi.refresh')}
+              {t('aiShadow.refresh')}
             </Button>
           </Space>
         }
@@ -445,7 +445,7 @@ const ShadowAiDetectedPage: React.FC = () => {
           rowKey={(record) => `${record.sni}-${record.category}`}
           pagination={false}
           size="small"
-          locale={{ emptyText: t('shadowAi.noDetectedData') }}
+          locale={{ emptyText: t('aiShadow.noDetectedData') }}
         />
       </Card>
 
@@ -453,9 +453,9 @@ const ShadowAiDetectedPage: React.FC = () => {
         title={
           <Space>
             <SafetyCertificateOutlined />
-            <span>{t('shadowAi.authzCardTitle')}</span>
+            <span>{t('aiShadow.authzCardTitle')}</span>
             <Tag color={authzData?.mode === 'enforcement' ? 'red' : 'blue'}>
-              {authzData?.mode === 'enforcement' ? t('shadowAi.enforcementMode') : t('shadowAi.monitoringMode')}
+              {authzData?.mode === 'enforcement' ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}
             </Tag>
           </Space>
         }
@@ -465,17 +465,17 @@ const ShadowAiDetectedPage: React.FC = () => {
           <Input
             style={{ width: 320 }}
             value={authzInput}
-            placeholder={t('shadowAi.authzAddPlaceholder')}
+            placeholder={t('aiShadow.authzAddPlaceholder')}
             onChange={(e) => setAuthzInput(e.target.value)}
             onPressEnter={handleAddDomain}
           />
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAddDomain}>
-            {t('shadowAi.authzAddBtn')}
+            {t('aiShadow.authzAddBtn')}
           </Button>
         </Space>
         <div>
           {(authzData?.domains || []).length === 0 ? (
-            <Empty description={t('shadowAi.authzNoData')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <Empty description={t('aiShadow.authzNoData')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
           ) : (
             (authzData?.domains || []).map((domain: string) => (
               <Tag
@@ -492,10 +492,10 @@ const ShadowAiDetectedPage: React.FC = () => {
       </Card>
 
       <Card
-        title={t('shadowAi.eventDetailCardTitle')}
+        title={t('aiShadow.eventDetailCardTitle')}
         extra={
           <Button icon={<ReloadOutlined />} onClick={refreshEvents} loading={eventsLoading}>
-            {t('shadowAi.refresh')}
+            {t('aiShadow.refresh')}
           </Button>
         }
       >
@@ -506,13 +506,13 @@ const ShadowAiDetectedPage: React.FC = () => {
           size="small"
           loading={eventsLoading}
           expandable={{
-            expandedRowRender: (record: ShadowAiDetectEvent) => (
+            expandedRowRender: (record: AiShadowDetectEvent) => (
               <>
                 {renderDetail(record.detail)}
                 {renderAuditLink(record)}
               </>
             ),
-            rowExpandable: (record: ShadowAiDetectEvent) => !!record.detail || !!record.auditLink || !!record.sessionId,
+            rowExpandable: (record: AiShadowDetectEvent) => !!record.detail || !!record.auditLink || !!record.sessionId,
           }}
           pagination={{
             current: eventPage + 1,
@@ -524,13 +524,13 @@ const ShadowAiDetectedPage: React.FC = () => {
               setEventPage(p - 1);
               setEventSize(s);
             },
-            showTotal: (total: number) => t('shadowAi.eventTotalCount', { total }),
+            showTotal: (total: number) => t('aiShadow.eventTotalCount', { total }),
           }}
-          locale={{ emptyText: t('shadowAi.eventNoData') }}
+          locale={{ emptyText: t('aiShadow.eventNoData') }}
         />
       </Card>
     </div>
   );
 };
 
-export default ShadowAiDetectedPage;
+export default AiShadowDetectedPage;

@@ -12,8 +12,6 @@
  */
 package com.asg.console.extension.model;
 
-import java.util.List;
-
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -23,15 +21,17 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ShadowAiStatus {
+public class AiShadowEntry {
 
-    private String routeName;
+    private String consumer;
 
-    private String mode;
+    private String model;
 
-    private Boolean authEnabled;
+    private Long inputTokens;
 
-    private List<String> authorizedConsumers;
+    private Long outputTokens;
 
-    private List<ShadowAiEntry> shadowAiList;
+    private Long requestCount;
+
+    private Boolean authorized;
 }

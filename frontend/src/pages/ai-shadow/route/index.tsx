@@ -2,17 +2,17 @@ import React, { useState, useCallback } from 'react';
 import { Card, Table, Switch, Tag, Button, Modal, message, Statistic, Row, Col, Space, Spin, Empty, Tooltip } from 'antd';
 import { SafetyCertificateOutlined, EyeOutlined, StopOutlined, WarningOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
-import { getShadowAiStatus, setShadowAiMode, performShadowAiAction } from '@/services';
-import { ShadowAiStatus, ShadowAiEntry } from '@/interfaces/shadow-ai';
+import { getAiShadowStatus, setAiShadowMode, performAiShadowAction } from '@/services';
+import { AiShadowStatus, AiShadowEntry } from '@/interfaces/ai-shadow';
 import { useTranslation } from 'react-i18next';
 
 const REFRESH_INTERVAL = 30000;
 
-const ShadowAiRoutePage: React.FC = () => {
+const AiShadowRoutePage: React.FC = () => {
   const { t } = useTranslation();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const { data: statusList, loading, error, refresh } = useRequest(() => getShadowAiStatus(), {
+  const { data: statusList, loading, error, refresh } = useRequest(() => getAiShadowStatus(), {
     pollingInterval: REFRESH_INTERVAL,
     pollingWhenHidden: false,
     onError: () => {},
@@ -21,36 +21,36 @@ const ShadowAiRoutePage: React.FC = () => {
   const handleModeSwitch = useCallback(async (routeName: string, currentMode: string) => {
     const newMode = currentMode === 'monitoring' ? 'enforcement' : 'monitoring';
     try {
-      await setShadowAiMode({ routeName, mode: newMode as 'monitoring' | 'enforcement' });
-      message.success(t('shadowAi.modeSwitchSuccess'));
+      await setAiShadowMode({ routeName, mode: newMode as 'monitoring' | 'enforcement' });
+      message.success(t('aiShadow.modeSwitchSuccess'));
       refresh();
     } catch {
-      message.error(t('shadowAi.actionFailed'));
+      message.error(t('aiShadow.actionFailed'));
     }
   }, [t, refresh]);
 
   const handleAction = useCallback(async (routeName: string, consumerName: string, action: 'authorize' | 'block') => {
     const isAuthorize = action === 'authorize';
-    const title = isAuthorize ? t('shadowAi.authorizeConfirm') : t('shadowAi.blockConfirm');
+    const title = isAuthorize ? t('aiShadow.authorizeConfirm') : t('aiShadow.blockConfirm');
     const content = isAuthorize
-      ? t('shadowAi.authorizeConfirmMsg', { consumer: consumerName })
-      : t('shadowAi.blockConfirmMsg', { consumer: consumerName });
+      ? t('aiShadow.authorizeConfirmMsg', { consumer: consumerName })
+      : t('aiShadow.blockConfirmMsg', { consumer: consumerName });
 
     Modal.confirm({
       title,
       content,
-      okText: isAuthorize ? t('shadowAi.authorize') : t('shadowAi.block'),
+      okText: isAuthorize ? t('aiShadow.authorize') : t('aiShadow.block'),
       okType: isAuthorize ? 'primary' : 'danger',
       cancelText: t('misc.cancel'),
       onOk: async () => {
         const actionKey = `${routeName}-${consumerName}`;
         setActionLoading(actionKey);
         try {
-          await performShadowAiAction({ routeName, consumerName, action });
-          message.success(t('shadowAi.actionSuccess'));
+          await performAiShadowAction({ routeName, consumerName, action });
+          message.success(t('aiShadow.actionSuccess'));
           refresh();
         } catch {
-          message.error(t('shadowAi.actionFailed'));
+          message.error(t('aiShadow.actionFailed'));
         } finally {
           setActionLoading(null);
         }
@@ -62,11 +62,11 @@ const ShadowAiRoutePage: React.FC = () => {
   // Authorized consumers are removed from the shadow AI list (IR-003), so
   // every entry here is an unauthorized access.
   const totalCalls = (statusList || []).reduce((sum, route) =>
-    sum + route.shadowAiList.reduce((s, entry) => s + entry.requestCount, 0), 0);
+    sum + route.aiShadowList.reduce((s, entry) => s + entry.requestCount, 0), 0);
   const shadowCount = (statusList || []).reduce((sum, route) =>
-    sum + route.shadowAiList.length, 0);
+    sum + route.aiShadowList.length, 0);
   const blockedCount = (statusList || []).reduce((sum, route) =>
-    sum + route.shadowAiList.filter(e => e.status === 'blocked').length, 0);
+    sum + route.aiShadowList.filter(e => e.status === 'blocked').length, 0);
 
   if (loading && !statusList) {
     return (
@@ -79,45 +79,45 @@ const ShadowAiRoutePage: React.FC = () => {
   if (error && !statusList) {
     return (
       <div style={{ width: '100%', height: '50vh', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-        <Empty description={t('shadowAi.noData')} />
+        <Empty description={t('aiShadow.noData')} />
       </div>
     );
   }
 
-  const getColumns = (routeStatus: ShadowAiStatus) => [
+  const getColumns = (routeStatus: AiShadowStatus) => [
     {
-      title: t('shadowAi.consumer'),
+      title: t('aiShadow.consumer'),
       dataIndex: 'consumer',
       key: 'consumer',
-      render: (text: string) => (!text || text === 'none') ? t('shadowAi.unknownSource') : text,
+      render: (text: string) => ((!text || text === 'none') ? t('aiShadow.unknownSource') : text),
     },
     {
-      title: t('shadowAi.model'),
+      title: t('aiShadow.model'),
       dataIndex: 'model',
       key: 'model',
     },
     {
-      title: t('shadowAi.inputTokens'),
+      title: t('aiShadow.inputTokens'),
       dataIndex: 'inputTokens',
       key: 'inputTokens',
       render: (val: number) => val?.toLocaleString() ?? '-',
     },
     {
-      title: t('shadowAi.outputTokens'),
+      title: t('aiShadow.outputTokens'),
       dataIndex: 'outputTokens',
       key: 'outputTokens',
       render: (val: number) => val?.toLocaleString() ?? '-',
     },
     {
-      title: t('shadowAi.status'),
+      title: t('aiShadow.status'),
       dataIndex: 'consumer',
       key: 'status',
-      render: () => <Tag color="red" icon={<WarningOutlined />}>{t('shadowAi.shadowAi')}</Tag>,
+      render: () => <Tag color="red" icon={<WarningOutlined />}>{t('aiShadow.aiShadow')}</Tag>,
     },
     {
-      title: t('shadowAi.action'),
+      title: t('aiShadow.action'),
       key: 'action',
-      render: (_: unknown, record: ShadowAiEntry) => {
+      render: (_: unknown, record: AiShadowEntry) => {
         const actionKey = `${routeStatus.routeName}-${record.consumer}`;
         const isLoading = actionLoading === actionKey;
         return (
@@ -128,7 +128,7 @@ const ShadowAiRoutePage: React.FC = () => {
             loading={isLoading}
             onClick={() => handleAction(routeStatus.routeName, record.consumer, 'authorize')}
           >
-            {t('shadowAi.authorize')}
+            {t('aiShadow.authorize')}
           </Button>
         );
       },
@@ -141,7 +141,7 @@ const ShadowAiRoutePage: React.FC = () => {
         <Col span={8}>
           <Card>
             <Statistic
-              title={t('shadowAi.totalAiCalls')}
+              title={t('aiShadow.totalAiCalls')}
               value={totalCalls}
               prefix={<EyeOutlined />}
             />
@@ -150,7 +150,7 @@ const ShadowAiRoutePage: React.FC = () => {
         <Col span={8}>
           <Card>
             <Statistic
-              title={t('shadowAi.shadowAiCount')}
+              title={t('aiShadow.aiShadowCount')}
               value={shadowCount}
               valueStyle={{ color: '#cf1322' }}
               prefix={<WarningOutlined />}
@@ -160,7 +160,7 @@ const ShadowAiRoutePage: React.FC = () => {
         <Col span={8}>
           <Card>
             <Statistic
-              title={t('shadowAi.blockedCount')}
+              title={t('aiShadow.blockedCount')}
               value={blockedCount}
               valueStyle={{ color: '#3f8600' }}
               prefix={<StopOutlined />}
@@ -172,15 +172,15 @@ const ShadowAiRoutePage: React.FC = () => {
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={refresh} loading={loading}>
-            {t('shadowAi.refresh')}
+            {t('aiShadow.refresh')}
           </Button>
-          <span style={{ color: '#999', fontSize: 12 }}>{t('shadowAi.autoRefresh')}</span>
+          <span style={{ color: '#999', fontSize: 12 }}>{t('aiShadow.autoRefresh')}</span>
         </Space>
       </div>
 
       {(!statusList || statusList.length === 0) ? (
         <Card>
-          <Empty description={t('shadowAi.noData')} />
+          <Empty description={t('aiShadow.noData')} />
         </Card>
       ) : (
         statusList.map((routeStatus) => {
@@ -190,22 +190,22 @@ const ShadowAiRoutePage: React.FC = () => {
               key={routeStatus.routeName}
               title={
                 <Space>
-                  <span>{t('shadowAi.routeName')}: {routeStatus.routeName}</span>
+                  <span>{t('aiShadow.routeName')}: {routeStatus.routeName}</span>
                   <Tag color={isRouteEnforcement ? 'red' : 'blue'}>
-                    {isRouteEnforcement ? t('shadowAi.enforcementMode') : t('shadowAi.monitoringMode')}
+                    {isRouteEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}
                   </Tag>
                 </Space>
               }
               extra={
                 <Space>
                   <span style={{ fontSize: 13, color: '#666' }}>
-                    {isRouteEnforcement ? t('shadowAi.enforcementDesc') : t('shadowAi.monitoringDesc')}
+                    {isRouteEnforcement ? t('aiShadow.enforcementDesc') : t('aiShadow.monitoringDesc')}
                   </span>
-                  <Tooltip title={isRouteEnforcement ? t('shadowAi.enforcementMode') : t('shadowAi.monitoringMode')}>
+                  <Tooltip title={isRouteEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}>
                     <Switch
                       checked={isRouteEnforcement}
-                      checkedChildren={t('shadowAi.enforcementMode')}
-                      unCheckedChildren={t('shadowAi.monitoringMode')}
+                      checkedChildren={t('aiShadow.enforcementMode')}
+                      unCheckedChildren={t('aiShadow.monitoringMode')}
                       onChange={() => handleModeSwitch(routeStatus.routeName, routeStatus.mode)}
                     />
                   </Tooltip>
@@ -214,12 +214,12 @@ const ShadowAiRoutePage: React.FC = () => {
               style={{ marginBottom: 16 }}
             >
               <Table
-                dataSource={routeStatus.shadowAiList}
+                dataSource={routeStatus.aiShadowList}
                 columns={getColumns(routeStatus)}
                 rowKey={(record) => `${record.consumer}-${record.model}`}
                 pagination={false}
                 size="small"
-                locale={{ emptyText: t('shadowAi.noData') }}
+                locale={{ emptyText: t('aiShadow.noData') }}
               />
             </Card>
           );
@@ -229,4 +229,4 @@ const ShadowAiRoutePage: React.FC = () => {
   );
 };
 
-export default ShadowAiRoutePage;
+export default AiShadowRoutePage;

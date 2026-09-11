@@ -7,11 +7,13 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import lombok.extern.slf4j.Slf4j;
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.ScanParams;
 import redis.clients.jedis.ScanResult;
+import redis.clients.jedis.Tuple;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 
 /**
@@ -23,6 +25,12 @@ public class AgentGuardServiceImpl implements AgentGuardService {
     private static final String SESSION_KEY_PREFIX = "agent_session:";
     private static final String SESSION_KEY_SUFFIX = ":meta";
     private static final String AUDIT_LOG_KEY = "agent_guard:audit_logs";
+    /** 审计 ZSET 键前缀 agent_audit:<sessionId> */
+    private static final String AUDIT_ZSET_PREFIX = "agent_audit:";
+    /** 身份维度索引前缀（非会话，扫描会话时需排除） */
+    private static final String AUDIT_USER_INDEX_PREFIX = "user:";
+    /** 智能体维度索引前缀（非会话，扫描会话时需排除） */
+    private static final String AUDIT_AGENT_INDEX_PREFIX = "agent:";
     /** Hard limit on the number of sessions returned to bound memory usage. */
     private static final int MAX_SESSIONS_LIMIT = 1000;
 
@@ -59,6 +67,35 @@ public class AgentGuardServiceImpl implements AgentGuardService {
                         }
                     } catch (Exception e) {
                         log.warn("Failed to parse session key: {}", key, e);
+                    }
+                }
+                if (sessions.size() >= MAX_SESSIONS_LIMIT) {
+                    break;
+                }
+                cursor = scanResult.getCursor();
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+
+            // 兼容扫描审计 ZSET 会话（R1）：Wasm 自动生成的会话仅落
+            // agent_audit:<sessionId> ZSET，不写 agent_session:*:meta，
+            // 若不扫描会导致会话列表恒为空。
+            ScanParams auditScan = new ScanParams().match(AUDIT_ZSET_PREFIX + "*").count(100);
+            cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scanResult = jedis.scan(cursor, auditScan);
+                for (String key : scanResult.getResult()) {
+                    if (sessions.size() >= MAX_SESSIONS_LIMIT) {
+                        break;
+                    }
+                    if (!isSessionZsetKey(key)) {
+                        continue;
+                    }
+                    try {
+                        Map<String, Object> sessionInfo = parseAuditZsetSession(jedis, key);
+                        if (sessionInfo != null) {
+                            sessions.add(sessionInfo);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Failed to parse audit zset session key: {}", key, e);
                     }
                 }
                 if (sessions.size() >= MAX_SESSIONS_LIMIT) {
@@ -141,6 +178,43 @@ public class AgentGuardServiceImpl implements AgentGuardService {
                 cursor = scanResult.getCursor();
             } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
 
+            // 兼容扫描审计 ZSET 会话（R1），同上
+            ScanParams auditScan = new ScanParams().match(AUDIT_ZSET_PREFIX + "*").count(100);
+            cursor = ScanParams.SCAN_POINTER_START;
+            do {
+                ScanResult<String> scanResult = jedis.scan(cursor, auditScan);
+                for (String key : scanResult.getResult()) {
+                    if (logs.size() >= effectiveLimit) {
+                        break;
+                    }
+                    if (!isSessionZsetKey(key)) {
+                        continue;
+                    }
+                    try {
+                        Map<String, Object> sessionInfo = parseAuditZsetSession(jedis, key);
+                        if (sessionInfo != null) {
+                            Map<String, Object> logEntry = new LinkedHashMap<>();
+                            logEntry.put("sessionId", sessionInfo.get("sessionId"));
+                            logEntry.put("riskScore", sessionInfo.get("riskScore"));
+                            logEntry.put("requestCount", sessionInfo.get("requestCount"));
+                            logEntry.put("stepCount", sessionInfo.get("stepCount"));
+                            logEntry.put("violationCount", sessionInfo.get("violationCount"));
+                            logEntry.put("lastActiveTime", sessionInfo.get("lastActiveTime"));
+                            logEntry.put("createdAt", sessionInfo.get("createdAt"));
+                            logEntry.put("ttl", sessionInfo.get("ttl"));
+                            logEntry.put("source", "redis_audit_zset");
+                            logs.add(logEntry);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Failed to parse audit zset session key: {}", key, e);
+                    }
+                }
+                if (logs.size() >= effectiveLimit) {
+                    break;
+                }
+                cursor = scanResult.getCursor();
+            } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
+
             return logs;
         } catch (JedisConnectionException e) {
             log.error("Failed to connect to Redis", e);
@@ -157,6 +231,56 @@ public class AgentGuardServiceImpl implements AgentGuardService {
         } catch (JedisConnectionException e) {
             log.error("Failed to connect to Redis", e);
         }
+    }
+
+    /**
+     * 判断 audit 键是否为会话维度 ZSET。
+     * agent_audit:user:* 与 agent_audit:agent:* 为身份/智能体维度索引，非会话，需排除。
+     */
+    private boolean isSessionZsetKey(String key) {
+        if (!key.startsWith(AUDIT_ZSET_PREFIX)) {
+            return false;
+        }
+        String suffix = key.substring(AUDIT_ZSET_PREFIX.length());
+        return !suffix.startsWith(AUDIT_USER_INDEX_PREFIX)
+            && !suffix.startsWith(AUDIT_AGENT_INDEX_PREFIX);
+    }
+
+    /**
+     * 从审计 ZSET（agent_audit:<sessionId>）构造会话信息。
+     * Wasm 侧自动生成的会话（如 auto-agent_*）不会写入 agent_session:*:meta，
+     * 仅存在审计 ZSET；此处兼容解析，避免会话列表为空（R1）。
+     */
+    private Map<String, Object> parseAuditZsetSession(Jedis jedis, String key) {
+        long count = jedis.zcard(key);
+        if (count <= 0) {
+            return null;
+        }
+        String sessionId = key.substring(AUDIT_ZSET_PREFIX.length());
+        long ttl = jedis.ttl(key);
+
+        long lastActiveSec = 0;
+        Set<Tuple> last = jedis.zrangeWithScores(key, -1, -1);
+        if (!last.isEmpty()) {
+            Tuple t = last.iterator().next();
+            lastActiveSec = (long) (t.getScore() / 1000 / 1000); // score = timestampMs*1000 + seq
+        }
+        if (lastActiveSec <= 0) {
+            lastActiveSec = System.currentTimeMillis() / 1000;
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sessionId", sessionId);
+        result.put("riskScore", 0);
+        result.put("requestCount", count);
+        result.put("stepCount", count);
+        result.put("tokenCount", 0);
+        result.put("violationCount", 0);
+        result.put("lastActiveTime", formatTimestamp(String.valueOf(lastActiveSec)));
+        result.put("createdAt", formatTimestamp(String.valueOf(lastActiveSec)));
+        result.put("ttl", ttl);
+        result.put("source", "redis_audit_zset");
+        return result;
     }
 
     private Map<String, Object> parseSessionKey(Jedis jedis, String key) {

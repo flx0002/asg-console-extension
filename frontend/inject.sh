@@ -15,6 +15,52 @@ cp "$EXT_DIR/theme.ts" "$SRC/theme.ts"
 echo "  ✓ 页面 $(find "$EXT_DIR/pages" -name '*.tsx' | wc -l) 个 / services $(ls "$EXT_DIR/services" | wc -l) 个 / interfaces / theme"
 
 echo
+echo
+echo "=== 1b. 清理历史注入的旧命名残留（shadow-ai → ai-shadow 改名遗留）==="
+# inject.sh 为追加式：只复制新文件、只追加菜单，不会移除历史注入内容。
+# 改名后若不清理，控制台会同时存在「影子AI」新旧两组菜单，且旧页面仍请求
+# 已下线的 /v1/shadow-ai/* 接口 → 404（功能失效）。
+rm -rf "$SRC/pages/shadow-ai" "$SRC/interfaces/shadow-ai.ts" "$SRC/services/shadow-ai.ts"
+echo "  [ok] 清理旧复制产物: pages/shadow-ai, interfaces/shadow-ai.ts, services/shadow-ai.ts"
+
+# 旧菜单顶级块 menu.shadowAiManagement（含 /shadow-ai/* 子路由）
+python3 - "$SRC/pages/_defaultProps.tsx" <<'PYEOF'
+import sys
+p = sys.argv[1]
+lines = open(p, encoding='utf-8').read().split('\n')
+start = None
+for i, l in enumerate(lines):
+    if "name: 'menu.shadowAiManagement'," in l:
+        start = i
+        break
+if start is None:
+    print('  SKIP: no legacy shadowAiManagement menu block')
+else:
+    k = start
+    while k > 0 and lines[k].strip() != '{':
+        k -= 1
+    j = start
+    while j < len(lines) and lines[j] != '      },':
+        j += 1
+    del lines[k:j + 1]
+    open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+    print('  [ok] removed legacy menu.shadowAiManagement top-level block')
+PYEOF
+
+# services/index.ts 中遗留的旧导出
+python3 - "$SRC/services/index.ts" <<'PYEOF'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+old = "export * from './shadow-ai';\n"
+if old in s:
+    s = s.replace(old, '')
+    open(p, 'w', encoding='utf-8').write(s)
+    print("  [ok] removed legacy export './shadow-ai'")
+else:
+    print("  SKIP: no legacy './shadow-ai' export")
+PYEOF
+
 echo "=== 2. 菜单注入（_defaultProps.tsx：5 个 ASG 菜单 + 服务/插件菜单重排）==="
 python3 - "$SRC/pages/_defaultProps.tsx" "$EXT_DIR/menu.config.ts" <<'PYEOF'
 import sys, re
@@ -24,7 +70,7 @@ s = open(props_path, encoding='utf-8').read()
 orig = s
 
 # ---- 幂等检查：已注入则跳过 ----
-if "name: 'menu.shadowAiManagement'" in s:
+if "name: 'menu.aiShadowManagement'" in s:
     print("  SKIP: menu already injected")
 else:
     # A. icon import 重组（字母序，追加缺失的 4 个）
@@ -196,7 +242,7 @@ import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 exports = [
-    "export * from './shadow-ai';",
+    "export * from './ai-shadow';",
     "export * from './agent-guard';",
     "export * from './audit-chain-service';",
     "export * from './behavior-analysis';",

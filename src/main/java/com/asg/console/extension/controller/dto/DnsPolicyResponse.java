@@ -28,7 +28,7 @@ public class DnsPolicyResponse {
     private List<String> authorizedDomains;
 
     /**
-     * Gateway-side AI domain category library from the shadow-ai-detect global
+     * Gateway-side AI domain category library from the ai-shadow-detect global
      * plugin configuration (IR-001 alignment): items contain name, label,
      * risk_level, domains, suffixes. Consumed by the bypass collector so its
      * classification matches the gateway; null when unavailable.

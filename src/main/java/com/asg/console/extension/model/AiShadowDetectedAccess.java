@@ -21,17 +21,17 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ShadowAiEntry {
+public class AiShadowDetectedAccess {
 
-    private String consumer;
+    private String sni;
 
-    private String model;
+    private String category;
 
-    private Long inputTokens;
+    private String categoryLabel;
 
-    private Long outputTokens;
+    private String riskLevel;
+
+    private String status;
 
     private Long requestCount;
-
-    private Boolean authorized;
 }

@@ -14,16 +14,16 @@ import {
 
 export const asgMenuRoutes: any[] = [
   {
-    name: 'menu.shadowAiManagement',
+    name: 'menu.aiShadowManagement',
     icon: <EyeOutlined />,
     children: [
       {
-        name: 'menu.shadowAiDetected',
-        path: '/shadow-ai/detected',
+        name: 'menu.aiShadowDetected',
+        path: '/ai-shadow/detected',
       },
       {
-        name: 'menu.shadowAiRoute',
-        path: '/shadow-ai/route',
+        name: 'menu.aiShadowRoute',
+        path: '/ai-shadow/route',
       },
     ],
   },

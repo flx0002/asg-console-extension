@@ -21,7 +21,7 @@ import lombok.NoArgsConstructor;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ShadowAiActionRequest {
+public class AiShadowActionRequest {
 
     private String routeName;
 

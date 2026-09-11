@@ -28,36 +28,36 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
-import com.asg.console.extension.model.ShadowAiDetectEvent;
-import com.asg.console.extension.repository.ShadowAiDetectEventRepository;
+import com.asg.console.extension.model.AiShadowDetectEvent;
+import com.asg.console.extension.repository.AiShadowDetectEventRepository;
 import com.alibaba.higress.sdk.exception.ValidationException;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Default implementation of {@link ShadowAiDetectEventService}.
+ * Default implementation of {@link AiShadowDetectEventService}.
  */
 @Slf4j
 @Service
-public class ShadowAiDetectEventServiceImpl implements ShadowAiDetectEventService {
+public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventService {
 
-    private ShadowAiDetectEventRepository eventRepository;
+    private AiShadowDetectEventRepository eventRepository;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     @Resource
-    public void setEventRepository(ShadowAiDetectEventRepository eventRepository) {
+    public void setEventRepository(AiShadowDetectEventRepository eventRepository) {
         this.eventRepository = eventRepository;
     }
 
     @Override
-    public List<ShadowAiDetectEvent> saveEvents(List<ShadowAiDetectEvent> events) {
+    public List<AiShadowDetectEvent> saveEvents(List<AiShadowDetectEvent> events) {
         if (events == null || events.isEmpty()) {
             return new ArrayList<>();
         }
         LocalDateTime now = LocalDateTime.now();
-        for (ShadowAiDetectEvent event : events) {
+        for (AiShadowDetectEvent event : events) {
             if (event.getEventTime() == null) {
                 event.setEventTime(now);
             }
@@ -65,13 +65,13 @@ public class ShadowAiDetectEventServiceImpl implements ShadowAiDetectEventServic
                 event.setCreatedAt(now);
             }
         }
-        List<ShadowAiDetectEvent> saved = eventRepository.saveAll(events);
+        List<AiShadowDetectEvent> saved = eventRepository.saveAll(events);
         log.info("Persisted {} shadow AI detect events to MySQL", saved.size());
         return saved;
     }
 
     @Override
-    public Page<ShadowAiDetectEvent> query(String domain, String status, String category, String riskLevel,
+    public Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel,
         String source, int page, int size) {
         if (page < 0) {
             page = 0;
@@ -79,21 +79,23 @@ public class ShadowAiDetectEventServiceImpl implements ShadowAiDetectEventServic
         if (size <= 0 || size > 500) {
             size = 20;
         }
-        Specification<ShadowAiDetectEvent> spec = buildSpec(domain, status, category, riskLevel, source);
+        Specification<AiShadowDetectEvent> spec = buildSpec(domain, status, category, riskLevel, source);
         return eventRepository.findAll(spec, PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "eventTime")));
     }
 
     @Override
     @SuppressWarnings("unchecked")
-    public void attachAuditLinks(List<ShadowAiDetectEvent> events) {
+    public void attachAuditLinks(List<AiShadowDetectEvent> events) {
         if (events == null || events.isEmpty()) {
             return;
         }
         Set<String> domains = new HashSet<>();
         Set<String> srcIps = new HashSet<>();
-        for (ShadowAiDetectEvent event : events) {
+        Set<String> sessionIds = new HashSet<>();
+        for (AiShadowDetectEvent event : events) {
             if (StringUtils.isNotBlank(event.getSessionId())) {
-                // Gateway-side event: already strongly linked via sessionId.
+                // Gateway-side event: link to audit log by session (strong link).
+                sessionIds.add(event.getSessionId());
                 continue;
             }
             if (StringUtils.isNotBlank(event.getDomain())) {
@@ -136,7 +138,7 @@ public class ShadowAiDetectEventServiceImpl implements ShadowAiDetectEventServic
         if (!srcIps.isEmpty()) {
             try {
                 List<Object[]> rows = entityManager.createNativeQuery(
-                    "SELECT src_ip, COUNT(*), MAX(event_time) FROM shadow_ai_detect_event "
+                    "SELECT src_ip, COUNT(*), MAX(event_time) FROM ai_shadow_detect_event "
                         + "WHERE src_ip IN (:ips) GROUP BY src_ip")
                     .setParameter("ips", srcIps).getResultList();
                 for (Object[] row : rows) {
@@ -146,11 +148,44 @@ public class ShadowAiDetectEventServiceImpl implements ShadowAiDetectEventServic
                 log.warn("Failed to aggregate same-source events for ips {}, degrade to no link", srcIps, e);
             }
         }
-        for (ShadowAiDetectEvent event : events) {
+        Map<String, Object[]> auditBySession = new HashMap<>();
+        if (!sessionIds.isEmpty()) {
+            try {
+                List<Object[]> rows = entityManager.createNativeQuery(
+                    "SELECT session_id, event_id, timestamp_ms FROM agent_audit_log "
+                        + "WHERE session_id IN (:sids) ORDER BY timestamp_ms DESC LIMIT 1000")
+                    .setParameter("sids", sessionIds).getResultList();
+                for (Object[] row : rows) {
+                    auditBySession.putIfAbsent(String.valueOf(row[0]),
+                        new Object[]{row[0], row[1], ((Number) row[2]).longValue()});
+                }
+            } catch (Exception e) {
+                log.warn("Failed to query audit logs for sessions {}, degrade to no link",
+                    sessionIds, e);
+            }
+        }
+
+        for (AiShadowDetectEvent event : events) {
             if (StringUtils.isNotBlank(event.getSessionId())) {
+                // IR-027: strong Session-level link to the full-path audit log.
+                Map<String, Object> sessionLink = new HashMap<>();
+                sessionLink.put("linkType", "session");
+                Object[] aud = auditBySession.get(event.getSessionId());
+                if (aud != null) {
+                    sessionLink.put("auditSessionId", String.valueOf(aud[0]));
+                    sessionLink.put("auditEventId", String.valueOf(aud[1]));
+                    sessionLink.put("auditTimeMs", ((Number) aud[2]).longValue());
+                    sessionLink.put("handlingAudited", true);
+                } else {
+                    sessionLink.put("handlingAudited", false);
+                }
+                event.setAuditLink(sessionLink);
                 continue;
             }
+            // bypass/dns events carry no session (different traffic path):
+            // fall back to host-level aggregation and mark the link as weak.
             Map<String, Object> link = new HashMap<>();
+            link.put("linkType", "host-aggregate");
             Object[] aud = auditByDomain.get(event.getDomain());
             if (aud != null) {
                 link.put("handlingAudited", true);
@@ -197,7 +232,7 @@ public class ShadowAiDetectEventServiceImpl implements ShadowAiDetectEventServic
         return eventRepository.findByEventTimeBetween(start, end).size();
     }
 
-    private Specification<ShadowAiDetectEvent> buildSpec(String domain, String status, String category,
+    private Specification<AiShadowDetectEvent> buildSpec(String domain, String status, String category,
         String riskLevel, String source) {
         return (root, query, cb) -> {
             List<javax.persistence.criteria.Predicate> predicates = new ArrayList<>();

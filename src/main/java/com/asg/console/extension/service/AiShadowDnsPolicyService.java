@@ -10,15 +10,15 @@ package com.asg.console.extension.service;
 
 import java.util.List;
 
-import com.asg.console.extension.model.ShadowAiDnsPolicy;
+import com.asg.console.extension.model.AiShadowDnsPolicy;
 
 /**
  * Service for shadow AI DNS detection policy (monitoring / enforcement mode
  * and authorized domains).
  */
-public interface ShadowAiDnsPolicyService {
+public interface AiShadowDnsPolicyService {
 
-    ShadowAiDnsPolicy getPolicy();
+    AiShadowDnsPolicy getPolicy();
 
-    ShadowAiDnsPolicy updatePolicy(String mode, List<String> authorizedDomains);
+    AiShadowDnsPolicy updatePolicy(String mode, List<String> authorizedDomains);
 }

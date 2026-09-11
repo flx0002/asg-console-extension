@@ -39,12 +39,12 @@ import com.alibaba.higress.sdk.constant.plugin.BuiltInPluginName;
 import com.alibaba.higress.sdk.exception.BusinessException;
 import com.alibaba.higress.sdk.model.CommonPageQuery;
 import com.alibaba.higress.sdk.model.PaginatedResult;
-import com.asg.console.extension.model.ShadowAiActionRequest;
-import com.asg.console.extension.model.ShadowAiDetectedAccess;
-import com.asg.console.extension.model.ShadowAiDnsPolicy;
-import com.asg.console.extension.model.ShadowAiEntry;
-import com.asg.console.extension.model.ShadowAiModeRequest;
-import com.asg.console.extension.model.ShadowAiStatus;
+import com.asg.console.extension.model.AiShadowActionRequest;
+import com.asg.console.extension.model.AiShadowDetectedAccess;
+import com.asg.console.extension.model.AiShadowDnsPolicy;
+import com.asg.console.extension.model.AiShadowEntry;
+import com.asg.console.extension.model.AiShadowModeRequest;
+import com.asg.console.extension.model.AiShadowStatus;
 import com.alibaba.higress.sdk.model.WasmPluginInstance;
 import com.alibaba.higress.sdk.model.WasmPluginInstanceScope;
 import com.alibaba.higress.sdk.model.ai.AiRoute;
@@ -64,7 +64,7 @@ import com.asg.console.extension.context.HttpContext;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
-public class ShadowAiServiceImpl implements ShadowAiService {
+public class AiShadowServiceImpl implements AiShadowService {
 
     private static final String MODE_MONITORING = "monitoring";
     private static final String MODE_ENFORCEMENT = "enforcement";
@@ -76,14 +76,14 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     private static final String PROMETHEUS_RANGE_PATH = "/api/v1/query_range";
     private static final String INPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_input_token";
     private static final String OUTPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_output_token";
-    private static final String SHADOW_AI_DETECT_METRIC_PREFIX = "shadow_ai_detect_category_";
+    private static final String AI_SHADOW_DETECT_METRIC_PREFIX = "ai_shadow_detect_category_";
 
     /** PromQL for the hourly detection trend: per-status increase of the detect counter over each 1h bucket. */
-    private static final String SHADOW_AI_TREND_QUERY =
-        "sum by (status) (increase(shadow_ai_detect_category_domain_risk_status_requests[1h]))";
+    private static final String AI_SHADOW_TREND_QUERY =
+        "sum by (status) (increase(ai_shadow_detect_category_domain_risk_status_requests[1h]))";
     /** Bypass collector exposes its own counter with a different name and labels. */
-    private static final String SHADOW_AI_BYPASS_TREND_QUERY =
-        "sum by (status) (increase(shadow_ai_detect_bypass_requests_total[1h]))";
+    private static final String AI_SHADOW_BYPASS_TREND_QUERY =
+        "sum by (status) (increase(ai_shadow_detect_bypass_requests_total[1h]))";
     /** Stable legend ordering for trend series. */
     private static final List<String> TREND_STATUS_ORDER = Arrays.asList("blocked", "allowed", "monitored");
 
@@ -99,11 +99,11 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     private final AiRouteService aiRouteService;
     private final String prometheusBaseUrl;
     private final AuditChainService auditChainService;
-    private final ShadowAiDnsPolicyService dnsPolicyService;
+    private final AiShadowDnsPolicyService dnsPolicyService;
 
-    public ShadowAiServiceImpl(WasmPluginInstanceService wasmPluginInstanceService,
+    public AiShadowServiceImpl(WasmPluginInstanceService wasmPluginInstanceService,
         ConsumerService consumerService, AiRouteService aiRouteService, String prometheusBaseUrl,
-        AuditChainService auditChainService, ShadowAiDnsPolicyService dnsPolicyService) {
+        AuditChainService auditChainService, AiShadowDnsPolicyService dnsPolicyService) {
         this.wasmPluginInstanceService = wasmPluginInstanceService;
         this.consumerService = consumerService;
         this.aiRouteService = aiRouteService;
@@ -114,7 +114,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     }
 
     @Override
-    public final List<ShadowAiStatus> getStatus() {
+    public final List<AiShadowStatus> getStatus() {
         PaginatedResult<AiRoute> aiRoutes = aiRouteService.list(null);
         if (aiRoutes == null || CollectionUtils.isEmpty(aiRoutes.getData())) {
             return Collections.emptyList();
@@ -122,20 +122,20 @@ public class ShadowAiServiceImpl implements ShadowAiService {
 
         Map<String, Map<String, PrometheusMetricData>> prometheusData = queryPrometheusMetrics();
 
-        List<ShadowAiStatus> result = new ArrayList<>();
+        List<AiShadowStatus> result = new ArrayList<>();
         for (AiRoute aiRoute : aiRoutes.getData()) {
             String routeResourceName = buildRouteResourceName(aiRoute.getName());
             try {
-                ShadowAiStatus status = buildShadowAiStatus(aiRoute.getName(), routeResourceName, prometheusData);
+                AiShadowStatus status = buildAiShadowStatus(aiRoute.getName(), routeResourceName, prometheusData);
                 result.add(status);
             } catch (Exception e) {
                 log.error("Error building shadow AI status for route: {}", aiRoute.getName(), e);
-                result.add(ShadowAiStatus.builder()
+                result.add(AiShadowStatus.builder()
                     .routeName(aiRoute.getName())
                     .mode(MODE_MONITORING)
                     .authEnabled(false)
                     .authorizedConsumers(Collections.emptyList())
-                    .shadowAiList(Collections.emptyList())
+                    .aiShadowList(Collections.emptyList())
                     .build());
             }
         }
@@ -143,7 +143,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     }
 
     @Override
-    public final ShadowAiStatus getStatus(String routeName) {
+    public final AiShadowStatus getStatus(String routeName) {
         AiRoute aiRoute = aiRouteService.query(routeName);
         if (aiRoute == null) {
             return null;
@@ -152,11 +152,11 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         String routeResourceName = buildRouteResourceName(routeName);
         Map<String, Map<String, PrometheusMetricData>> prometheusData = queryPrometheusMetrics();
 
-        return buildShadowAiStatus(routeName, routeResourceName, prometheusData);
+        return buildAiShadowStatus(routeName, routeResourceName, prometheusData);
     }
 
     @Override
-    public final ShadowAiStatus setMode(ShadowAiModeRequest request) {
+    public final AiShadowStatus setMode(AiShadowModeRequest request) {
         String routeName = request.getRouteName();
         String mode = request.getMode();
 
@@ -219,7 +219,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     }
 
     @Override
-    public final ShadowAiStatus performAction(ShadowAiActionRequest request) {
+    public final AiShadowStatus performAction(AiShadowActionRequest request) {
         String routeName = request.getRouteName();
         String consumerName = request.getConsumerName();
         String action = request.getAction();
@@ -275,7 +275,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         return getStatus(routeName);
     }
 
-    private ShadowAiStatus buildShadowAiStatus(String routeName, String routeResourceName,
+    private AiShadowStatus buildAiShadowStatus(String routeName, String routeResourceName,
         Map<String, Map<String, PrometheusMetricData>> prometheusData) {
 
         WasmPluginInstance keyAuthInstance = wasmPluginInstanceService.query(
@@ -298,14 +298,14 @@ public class ShadowAiServiceImpl implements ShadowAiService {
 
         List<String> authorizedConsumers = getAuthorizedConsumers(routeResourceName);
 
-        List<ShadowAiEntry> shadowAiList = buildShadowAiEntries(routeResourceName, authorizedConsumers, authEnabled, prometheusData);
+        List<AiShadowEntry> aiShadowList = buildAiShadowEntries(routeResourceName, authorizedConsumers, authEnabled, prometheusData);
 
-        return ShadowAiStatus.builder()
+        return AiShadowStatus.builder()
             .routeName(routeName)
             .mode(mode)
             .authEnabled(authEnabled)
             .authorizedConsumers(authorizedConsumers)
-            .shadowAiList(shadowAiList)
+            .aiShadowList(aiShadowList)
             .build();
     }
 
@@ -321,7 +321,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             .collect(Collectors.toList());
     }
 
-    private List<ShadowAiEntry> buildShadowAiEntries(String routeResourceName, List<String> authorizedConsumers,
+    private List<AiShadowEntry> buildAiShadowEntries(String routeResourceName, List<String> authorizedConsumers,
         boolean authEnabled, Map<String, Map<String, PrometheusMetricData>> prometheusData) {
 
         // Collect all metric data matching this route (prefix match, because the Prometheus
@@ -336,7 +336,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             }
         }
 
-        List<ShadowAiEntry> entries = new ArrayList<>();
+        List<AiShadowEntry> entries = new ArrayList<>();
         for (Map.Entry<String, PrometheusMetricData> entry : routeMetricData.entrySet()) {
             PrometheusMetricData data = entry.getValue();
 
@@ -351,7 +351,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
                 continue;
             }
 
-            entries.add(ShadowAiEntry.builder()
+            entries.add(AiShadowEntry.builder()
                 .consumer(data.consumer)
                 .model(data.model)
                 .inputTokens(data.inputTokens)
@@ -506,15 +506,15 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     }
 
     @Override
-    public List<ShadowAiDetectedAccess> getDetectedAccesses() {
-        List<ShadowAiDetectedAccess> result = new ArrayList<>();
+    public List<AiShadowDetectedAccess> getDetectedAccesses() {
+        List<AiShadowDetectedAccess> result = new ArrayList<>();
         // IR-003: accesses to authorized domains are removed from the shadow AI list.
         List<String> authorizedDomains = loadAuthorizedDomains();
         try {
             // After adding stats_tags, Prometheus exports the metric as:
-            // shadow_ai_detect_category_domain_risk_status_requests{category="...", domain="...", risk="...", status="..."}
+            // ai_shadow_detect_category_domain_risk_status_requests{category="...", domain="...", risk="...", status="..."}
             String queryUrl = prometheusBaseUrl + PROMETHEUS_QUERY_PATH
-                + "?query=" + java.net.URLEncoder.encode("shadow_ai_detect_category_domain_risk_status_requests", "UTF-8");
+                + "?query=" + java.net.URLEncoder.encode("ai_shadow_detect_category_domain_risk_status_requests", "UTF-8");
             HttpURLConnection connection = (HttpURLConnection)new URL(queryUrl).openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(5000);
@@ -565,7 +565,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
                 }
 
                 // Parse metric using Prometheus labels (new format with "." separator)
-                // Format: shadow_ai_detect_requests{category="saas_ai", domain="www_deepseek_com", risk="high", status="allowed"}
+                // Format: ai_shadow_detect_requests{category="saas_ai", domain="www_deepseek_com", risk="high", status="allowed"}
                 String category = metric.getString("category");
                 String domain = metric.getString("domain");
                 String riskLevel = metric.getString("risk");
@@ -581,7 +581,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
                     continue;
                 }
 
-                result.add(ShadowAiDetectedAccess.builder()
+                result.add(AiShadowDetectedAccess.builder()
                     .sni(domain)
                     .category(category)
                     .categoryLabel(getCategoryLabel(category))
@@ -638,8 +638,8 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             // They are separate Prometheus metrics, so aggregate by (status, timestamp).
             Map<String, Long> counts = new HashMap<>();
             Map<String, Long> timestamps = new HashMap<>();
-            mergeTrendSeries(counts, timestamps, queryRange(SHADOW_AI_TREND_QUERY, start, end, 3600));
-            mergeTrendSeries(counts, timestamps, queryRange(SHADOW_AI_BYPASS_TREND_QUERY, start, end, 3600));
+            mergeTrendSeries(counts, timestamps, queryRange(AI_SHADOW_TREND_QUERY, start, end, 3600));
+            mergeTrendSeries(counts, timestamps, queryRange(AI_SHADOW_BYPASS_TREND_QUERY, start, end, 3600));
             if (counts.isEmpty()) {
                 return result;
             }
@@ -747,7 +747,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
 
     /**
      * Load the authorized domain list from the DNS detection policy
-     * (shadow_ai_dns_policy). Failures degrade to an empty list so the
+     * (ai_shadow_dns_policy). Failures degrade to an empty list so the
      * detected list stays complete when the policy cannot be read.
      */
     private List<String> loadAuthorizedDomains() {
@@ -755,7 +755,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             if (dnsPolicyService == null) {
                 return Collections.emptyList();
             }
-            ShadowAiDnsPolicy policy = dnsPolicyService.getPolicy();
+            AiShadowDnsPolicy policy = dnsPolicyService.getPolicy();
             if (policy == null || StringUtils.isBlank(policy.getAuthorizedDomains())) {
                 return Collections.emptyList();
             }
@@ -817,10 +817,10 @@ public class ShadowAiServiceImpl implements ShadowAiService {
         }
 
         WasmPluginInstance instance = wasmPluginInstanceService.query(
-            WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.SHADOW_AI_DETECT, false);
+            WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.AI_SHADOW_DETECT, false);
 
         if (instance == null) {
-            instance = wasmPluginInstanceService.createEmptyInstance(AsgPluginConstants.SHADOW_AI_DETECT);
+            instance = wasmPluginInstanceService.createEmptyInstance(AsgPluginConstants.AI_SHADOW_DETECT);
             instance.setGlobalTarget();
             instance.setEnabled(true);
         }
@@ -841,13 +841,12 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     public Map<String, Object> getAuthorizedDomains() {
         Map<String, Object> result = new HashMap<>();
         List<String> domains = new ArrayList<>();
-        String mode = MODE_MONITORING;
+        // R9: unify mode source with GET /detect-mode (WasmPlugin config is authoritative)
+        String mode = getDetectMode();
         try {
-            ShadowAiDnsPolicy policy = dnsPolicyService.getPolicy();
+            AiShadowDnsPolicy policy = dnsPolicyService.getPolicy();
             if (policy != null) {
-                if (StringUtils.isNotEmpty(policy.getMode())) {
-                    mode = policy.getMode();
-                }
+                // domain list still comes from the DNS policy table
                 if (StringUtils.isNotBlank(policy.getAuthorizedDomains())) {
                     domains = Arrays.stream(policy.getAuthorizedDomains().split(",")).map(String::trim)
                         .filter(StringUtils::isNotBlank).collect(Collectors.toList());
@@ -865,10 +864,9 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     @Override
     public Map<String, Object> updateAuthorizedDomains(String mode, List<String> addDomains,
         List<String> removeDomains) {
-        ShadowAiDnsPolicy policy = dnsPolicyService.getPolicy();
-        String currentMode = policy != null && StringUtils.isNotEmpty(policy.getMode())
-            ? policy.getMode()
-            : MODE_MONITORING;
+        AiShadowDnsPolicy policy = dnsPolicyService.getPolicy();
+        // R9: unify mode source with GET /detect-mode (WasmPlugin config is authoritative)
+        String currentMode = getDetectMode();
 
         // Merge: keep existing order, normalize new entries, skip duplicates.
         List<String> merged = new ArrayList<>();
@@ -922,7 +920,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
     @Override
     public String getDetectMode() {
         WasmPluginInstance instance = wasmPluginInstanceService.query(
-            WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.SHADOW_AI_DETECT, false);
+            WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.AI_SHADOW_DETECT, false);
 
         if (instance != null && instance.getConfigurations() != null) {
             Object mode = instance.getConfigurations().get("mode");
@@ -964,7 +962,7 @@ public class ShadowAiServiceImpl implements ShadowAiService {
             entry.put("user_id", operator);
             entry.put("user_name", operator);
             entry.put("action", action);
-            entry.put("source", "shadow_ai_console");
+            entry.put("source", "ai_shadow_console");
             if (StringUtils.isNotEmpty(routeName)) {
                 entry.put("route_name", routeName);
             }

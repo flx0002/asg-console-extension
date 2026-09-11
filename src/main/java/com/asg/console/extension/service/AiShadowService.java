@@ -15,22 +15,22 @@ package com.asg.console.extension.service;
 import java.util.List;
 import java.util.Map;
 
-import com.asg.console.extension.model.ShadowAiActionRequest;
-import com.asg.console.extension.model.ShadowAiDetectedAccess;
-import com.asg.console.extension.model.ShadowAiModeRequest;
-import com.asg.console.extension.model.ShadowAiStatus;
+import com.asg.console.extension.model.AiShadowActionRequest;
+import com.asg.console.extension.model.AiShadowDetectedAccess;
+import com.asg.console.extension.model.AiShadowModeRequest;
+import com.asg.console.extension.model.AiShadowStatus;
 
-public interface ShadowAiService {
+public interface AiShadowService {
 
-    List<ShadowAiStatus> getStatus();
+    List<AiShadowStatus> getStatus();
 
-    ShadowAiStatus getStatus(String routeName);
+    AiShadowStatus getStatus(String routeName);
 
-    ShadowAiStatus setMode(ShadowAiModeRequest request);
+    AiShadowStatus setMode(AiShadowModeRequest request);
 
-    ShadowAiStatus performAction(ShadowAiActionRequest request);
+    AiShadowStatus performAction(AiShadowActionRequest request);
 
-    List<ShadowAiDetectedAccess> getDetectedAccesses();
+    List<AiShadowDetectedAccess> getDetectedAccesses();
 
     /**
      * Hourly detection trend over the requested lookback window (IR-004).

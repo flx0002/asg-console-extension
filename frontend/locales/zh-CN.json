@@ -1,8 +1,8 @@
 {
   "menu": {
-    "shadowAiManagement": "影子AI管理",
-    "shadowAiDetected": "AI服务流量检测",
-    "shadowAiRoute": "路由授权管理",
+    "aiShadowManagement": "影子AI管理",
+    "aiShadowDetected": "AI服务流量检测",
+    "aiShadowRoute": "路由授权管理",
     "aiContentSecurity": "AI内容安全",
     "aiAgentGuard": "AI智能体安全",
     "aiAgentGuardConfig": "防护配置",
@@ -22,7 +22,7 @@
     "aiKeywordFilter": "AI关键词过滤",
     "aiWafProtection": "AI WAF防护"
   },
-  "shadowAi": {
+  "aiShadow": {
     "title": "影子AI管理",
     "description": "发现和管理未经授权的AI应用使用",
     "monitoringMode": "监控模式",
@@ -36,7 +36,7 @@
     "status": "状态",
     "action": "操作",
     "authorized": "已授权",
-    "shadowAi": "影子AI",
+    "aiShadow": "影子AI",
     "unknownSource": "未知来源",
     "authorize": "授权",
     "block": "阻断",
@@ -48,7 +48,7 @@
     "actionSuccess": "操作成功",
     "actionFailed": "操作失败",
     "totalAiCalls": "AI调用总量",
-    "shadowAiCount": "影子AI数量",
+    "aiShadowCount": "影子AI数量",
     "authorizedCount": "已授权数量",
     "blockedCount": "已阻断数量",
     "trendCardTitle": "检测趋势（近24小时）",

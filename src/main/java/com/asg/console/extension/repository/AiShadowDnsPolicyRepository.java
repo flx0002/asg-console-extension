@@ -11,8 +11,8 @@ package com.asg.console.extension.repository;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
-import com.asg.console.extension.model.ShadowAiDnsPolicy;
+import com.asg.console.extension.model.AiShadowDnsPolicy;
 
 @Repository
-public interface ShadowAiDnsPolicyRepository extends JpaRepository<ShadowAiDnsPolicy, Long> {
+public interface AiShadowDnsPolicyRepository extends JpaRepository<AiShadowDnsPolicy, Long> {
 }

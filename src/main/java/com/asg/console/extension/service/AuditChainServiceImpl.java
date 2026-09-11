@@ -236,7 +236,9 @@ public class AuditChainServiceImpl implements AuditChainService {
             } while (!ScanParams.SCAN_POINTER_START.equals(cursor));
 
             // 2. Degraded virtual sessions: SCAN agent_audit:degraded_* (hourly aggregated degraded requests)
-            ScanParams degradedScan = new ScanParams().match(AUDIT_ZSET_PREFIX + "degraded_*").count(100);
+            // R1: 原仅扫描 agent_audit:degraded_*，而实际会话键为 agent_audit:auto-agent_* 等，
+            // 导致会话列表恒为空；改为扫描全部 agent_audit:* 并在循环内排除索引键。
+            ScanParams degradedScan = new ScanParams().match(AUDIT_ZSET_PREFIX + "*").count(100);
             cursor = ScanParams.SCAN_POINTER_START;
             do {
                 ScanResult<String> scanResult = jedis.scan(cursor, degradedScan);
@@ -246,12 +248,18 @@ public class AuditChainServiceImpl implements AuditChainService {
                             MAX_SESSIONS_LIMIT);
                         break;
                     }
+                    // 排除身份/智能体维度索引键（非会话维度）
+                    String suffix = zsetKey.substring(AUDIT_ZSET_PREFIX.length());
+                    if (zsetKey.startsWith(AUDIT_USER_INDEX_PREFIX)
+                        || zsetKey.startsWith(AUDIT_AGENT_INDEX_PREFIX)) {
+                        continue;
+                    }
                     try {
-                        String sessionId = zsetKey.substring(AUDIT_ZSET_PREFIX.length());
+                        String sessionId = suffix;
                         long count = jedis.zcard(zsetKey);
                         Map<String, Object> meta = new LinkedHashMap<>();
                         meta.put("sessionId", sessionId);
-                        meta.put("mode", "degraded");
+                        meta.put("mode", sessionId.startsWith("degraded_") ? "degraded" : "normal");
                         meta.put("stepCount", count);
                         meta.put("lastActiveTime", formatTimestamp(String.valueOf(System.currentTimeMillis())));
                         meta.put("createdAt", formatTimestamp(String.valueOf(System.currentTimeMillis())));

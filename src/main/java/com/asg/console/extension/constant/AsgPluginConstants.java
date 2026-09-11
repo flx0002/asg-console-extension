@@ -18,7 +18,7 @@ public final class AsgPluginConstants {
 
     public static final String AI_PROMPT_GUARD = "ai-prompt-guard";
 
-    public static final String SHADOW_AI_DETECT = "shadow-ai-detect";
+    public static final String AI_SHADOW_DETECT = "ai-shadow-detect";
 
     // ---- ASG key-auth configuration keys (additions over upstream KeyAuthConfig) ----
 

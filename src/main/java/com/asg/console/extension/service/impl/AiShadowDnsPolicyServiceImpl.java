@@ -21,25 +21,25 @@ import javax.annotation.Resource;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 
-import com.asg.console.extension.model.ShadowAiDnsPolicy;
-import com.asg.console.extension.repository.ShadowAiDnsPolicyRepository;
+import com.asg.console.extension.model.AiShadowDnsPolicy;
+import com.asg.console.extension.repository.AiShadowDnsPolicyRepository;
 import com.alibaba.higress.sdk.exception.ValidationException;
 
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Default implementation of {@link ShadowAiDnsPolicyService}. The policy is a
+ * Default implementation of {@link AiShadowDnsPolicyService}. The policy is a
  * single-row table: the first access lazily creates the default monitoring
  * policy so that the system degrades gracefully when MySQL is unavailable.
  */
 @Slf4j
 @Service
-public class ShadowAiDnsPolicyServiceImpl implements ShadowAiDnsPolicyService {
+public class AiShadowDnsPolicyServiceImpl implements AiShadowDnsPolicyService {
 
-    private ShadowAiDnsPolicyRepository policyRepository;
+    private AiShadowDnsPolicyRepository policyRepository;
 
     @Resource
-    public void setPolicyRepository(ShadowAiDnsPolicyRepository policyRepository) {
+    public void setPolicyRepository(AiShadowDnsPolicyRepository policyRepository) {
         this.policyRepository = policyRepository;
     }
 
@@ -53,11 +53,11 @@ public class ShadowAiDnsPolicyServiceImpl implements ShadowAiDnsPolicyService {
     }
 
     @Override
-    public ShadowAiDnsPolicy getPolicy() {
-        ShadowAiDnsPolicy policy = policyRepository.findById(1L).orElse(null);
+    public AiShadowDnsPolicy getPolicy() {
+        AiShadowDnsPolicy policy = policyRepository.findById(1L).orElse(null);
         if (policy == null) {
-            policy = new ShadowAiDnsPolicy();
-            policy.setMode(ShadowAiDnsPolicy.MODE_MONITORING);
+            policy = new AiShadowDnsPolicy();
+            policy.setMode(AiShadowDnsPolicy.MODE_MONITORING);
             policy.setAuthorizedDomains("");
             policy.setUpdatedAt(LocalDateTime.now());
             policy = policyRepository.save(policy);
@@ -67,16 +67,16 @@ public class ShadowAiDnsPolicyServiceImpl implements ShadowAiDnsPolicyService {
     }
 
     @Override
-    public ShadowAiDnsPolicy updatePolicy(String mode, List<String> authorizedDomains) {
+    public AiShadowDnsPolicy updatePolicy(String mode, List<String> authorizedDomains) {
         if (StringUtils.isBlank(mode)) {
             throw new ValidationException("mode must not be blank");
         }
         String normalizedMode = mode.trim().toLowerCase(Locale.ROOT);
-        if (!ShadowAiDnsPolicy.MODE_MONITORING.equals(normalizedMode)
-            && !ShadowAiDnsPolicy.MODE_ENFORCEMENT.equals(normalizedMode)) {
+        if (!AiShadowDnsPolicy.MODE_MONITORING.equals(normalizedMode)
+            && !AiShadowDnsPolicy.MODE_ENFORCEMENT.equals(normalizedMode)) {
             throw new ValidationException("mode must be one of: monitoring, enforcement");
         }
-        ShadowAiDnsPolicy policy = getPolicy();
+        AiShadowDnsPolicy policy = getPolicy();
         policy.setMode(normalizedMode);
         policy.setAuthorizedDomains(normalizeDomains(authorizedDomains));
         policy.setUpdatedAt(LocalDateTime.now());
