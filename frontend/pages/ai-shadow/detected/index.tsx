@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary, @typescript-eslint/indent, react/jsx-indent */
 import React, { useState, useEffect, useCallback } from 'react';
 import { Card, Table, Switch, Tag, Button, message, Statistic, Row, Col, Space, Spin, Empty, Tooltip, Descriptions, Input } from 'antd';
 import { EyeOutlined, WarningOutlined, ReloadOutlined, LineChartOutlined, CheckOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
@@ -265,8 +266,13 @@ const AiShadowDetectedPage: React.FC = () => {
       return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
     };
     return (
-      <Descriptions size="small" column={1} bordered style={{ maxWidth: 640, marginTop: record.detail ? 8 : 0 }}
-        title={undefined}>
+      <Descriptions
+        size="small"
+        column={1}
+        bordered
+        style={{ maxWidth: 640, marginTop: record.detail ? 8 : 0 }}
+        title={undefined}
+      >
         {hasSession && (
           <Descriptions.Item label={t('aiShadow.auditSessionLabel')}>
             <span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{record.sessionId}</span>

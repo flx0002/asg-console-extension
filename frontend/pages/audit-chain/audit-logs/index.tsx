@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Card, Table, Tag, Space, Button, Tooltip, Badge, Empty, Progress, Statistic, Row, Col,
@@ -306,7 +307,7 @@ const AuditLogsPage: React.FC = () => {
       dataIndex: 'violationCount',
       key: 'violationCount',
       width: 90,
-      render: (v: number) => v > 0 ? <Badge count={v} style={{ backgroundColor: '#ff4d4f' }} /> : <Tag color="green">0</Tag>,
+      render: (v: number) => (v > 0 ? <Badge count={v} style={{ backgroundColor: '#ff4d4f' }} /> : <Tag color="green">0</Tag>),
     },
     {
       title: t('auditChain.lastActiveTime'),
@@ -396,7 +397,7 @@ const AuditLogsPage: React.FC = () => {
       key: 'eventCount',
       width: 90,
       render: (_: any, r: AuditLogEntry) => {
-        const events = r.events;
+        const { events } = r;
         if (Array.isArray(events)) return events.length;
         if (events && typeof events === 'object') return 1;
         if (typeof events === 'number') return events;
@@ -432,7 +433,7 @@ const AuditLogsPage: React.FC = () => {
   const handleDeleteSession = (sid: string) => {
     Modal.confirm({
       title: t('auditChain.confirmDelete'),
-      content: t('auditChain.deleteSession') + ': ' + sid,
+      content: `${t('auditChain.deleteSession')}: ${sid}`,
       okType: 'danger',
       onOk: () => deleteLogs(sid),
     });
@@ -610,7 +611,7 @@ const AuditLogsPage: React.FC = () => {
           }}
           pagination={{
             current: page,
-            pageSize: pageSize,
+            pageSize,
             total: filterType ? undefined : logsTotal,
             showSizeChanger: true,
             showTotal: (total) => `${t('auditChain.total')}: ${total}`,

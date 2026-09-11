@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
 import {
   Card, Switch, Select, Input, InputNumber, Button, Space, Divider,
@@ -235,7 +236,10 @@ const ConfigPage: React.FC = () => {
             <Col span={12}>
               <div style={{ marginBottom: 16 }}>
                 <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('agentGuard.onValidationFailure')}</div>
-                <Select value={form.onValidationFailure} onChange={v => updateField('onValidationFailure', v)} style={{ width: '100%' }}
+                <Select
+                  value={form.onValidationFailure}
+                  onChange={v => updateField('onValidationFailure', v)}
+                  style={{ width: '100%' }}
                   options={[
                     { value: 'degrade', label: t('agentGuard.degradeAction') },
                     { value: 'reject', label: t('agentGuard.rejectAction') },
@@ -257,7 +261,10 @@ const ConfigPage: React.FC = () => {
             <Col span={12}>
               <div style={{ marginBottom: 16 }}>
                 <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('agentGuard.redisFailAction')}</div>
-                <Select value={form.redisFailAction} onChange={v => updateField('redisFailAction', v)} style={{ width: '100%' }}
+                <Select
+                  value={form.redisFailAction}
+                  onChange={v => updateField('redisFailAction', v)}
+                  style={{ width: '100%' }}
                   options={[
                     { value: 'degrade', label: t('agentGuard.degradeAction') },
                     { value: 'block', label: t('agentGuard.blockAction') },
@@ -268,7 +275,10 @@ const ConfigPage: React.FC = () => {
             <Col span={12}>
               <div style={{ marginBottom: 16 }}>
                 <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('agentGuard.logLevel')}</div>
-                <Select value={form.logLevel} onChange={v => updateField('logLevel', v)} style={{ width: '100%' }}
+                <Select
+                  value={form.logLevel}
+                  onChange={v => updateField('logLevel', v)}
+                  style={{ width: '100%' }}
                   options={[
                     { value: 'verbose', label: t('agentGuard.logVerbose') },
                     { value: 'standard', label: t('agentGuard.logStandard') },

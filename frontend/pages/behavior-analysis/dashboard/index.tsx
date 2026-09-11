@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useEffect, useState } from 'react';
 import {
   Card, Row, Col, Statistic, Table, Tag, Button, Empty, Spin, Progress, Tooltip,

@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Tag, Space, Button, Empty, Drawer, Tabs, Descriptions, Progress, Tooltip,
@@ -301,7 +302,7 @@ const BehaviorProfilesPage: React.FC = () => {
       },
     },
     {
-      title: t('behaviorAnalysis.profile.userDept') + '/' + t('behaviorAnalysis.profile.userRole'),
+      title: `${t('behaviorAnalysis.profile.userDept')}/${t('behaviorAnalysis.profile.userRole')}`,
       key: 'dept',
       width: 160,
       render: (_: any, r: UserProfile) => {
@@ -524,7 +525,7 @@ const BehaviorProfilesPage: React.FC = () => {
         <span style={{ fontWeight: 500, fontSize: 15 }}>{t('behaviorAnalysis.profile.title')}</span>
         <Button
           icon={<ReloadOutlined />}
-          onClick={() => activeTab === 'user' ? loadUsers() : loadAgents()}
+          onClick={() => (activeTab === 'user' ? loadUsers() : loadAgents())}
           loading={usersLoading || agentsLoading}
         >
           {t('behaviorAnalysis.refresh')}
@@ -549,7 +550,7 @@ const BehaviorProfilesPage: React.FC = () => {
                   scroll={{ x: 1200 }}
                   pagination={{
                     current: userPage,
-                    pageSize: pageSize,
+                    pageSize,
                     onChange: (p) => setUserPage(p),
                     showTotal: (tot) => `${t('behaviorAnalysis.total')}: ${tot}`,
                   }}
@@ -570,7 +571,7 @@ const BehaviorProfilesPage: React.FC = () => {
                   scroll={{ x: 1200 }}
                   pagination={{
                     current: agentPage,
-                    pageSize: pageSize,
+                    pageSize,
                     onChange: (p) => setAgentPage(p),
                     showTotal: (tot) => `${t('behaviorAnalysis.total')}: ${tot}`,
                   }}
@@ -662,7 +663,7 @@ const BehaviorProfilesPage: React.FC = () => {
               <div style={{ marginTop: 16 }}>
                 <div style={{ fontWeight: 500, marginBottom: 8 }}>{t('behaviorAnalysis.profile.baselineCompare')}</div>
                 <Descriptions column={3} bordered size="small">
-                  <Descriptions.Item label={t('behaviorAnalysis.profile.currentValue') + ' / ' + t('behaviorAnalysis.profile.baselineValue')}>
+                  <Descriptions.Item label={`${t('behaviorAnalysis.profile.currentValue')} / ${t('behaviorAnalysis.profile.baselineValue')}`}>
                     {t('behaviorAnalysis.profile.avgRiskScore')}
                   </Descriptions.Item>
                   <Descriptions.Item label={t('behaviorAnalysis.baseline.sampleCount')}>

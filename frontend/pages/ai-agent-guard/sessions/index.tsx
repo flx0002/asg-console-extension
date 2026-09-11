@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Card, Table, Tag, Space, Button, Progress, Statistic, Row, Col, Tooltip, Badge, Empty,
@@ -101,7 +102,7 @@ const SessionsPage: React.FC = () => {
       dataIndex: 'violationCount',
       key: 'violationCount',
       width: 80,
-      render: (v: number) => v > 0 ? <Tag color="red">{v}</Tag> : <Tag color="green">0</Tag>,
+      render: (v: number) => (v > 0 ? <Tag color="red">{v}</Tag> : <Tag color="green">0</Tag>),
     },
     {
       title: t('agentGuard.ttl'),

@@ -89,7 +89,7 @@ const AiShadowRoutePage: React.FC = () => {
       title: t('aiShadow.consumer'),
       dataIndex: 'consumer',
       key: 'consumer',
-      render: (text: string) => (!text || text === 'none') ? t('aiShadow.unknownSource') : text,
+      render: (text: string) => ((!text || text === 'none') ? t('aiShadow.unknownSource') : text),
     },
     {
       title: t('aiShadow.model'),

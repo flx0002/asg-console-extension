@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Card, Input, Button, Empty, Spin, Alert, Row, Col, Statistic, Descriptions, Tag, Space, Tooltip,

@@ -55,7 +55,7 @@ export const cleanupExpiredLogs = (): Promise<any> => {
 };
 
 // 导出审计日志
-export const exportAuditLogs = (sessionId: string, format: string = 'json'): Promise<any> => {
+export const exportAuditLogs = (sessionId: string, format = 'json'): Promise<any> => {
   return request.get(`/v1/audit-chain/export/${encodeURIComponent(sessionId)}`, {
     params: { format },
     responseType: 'blob',

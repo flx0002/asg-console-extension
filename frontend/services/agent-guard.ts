@@ -14,6 +14,6 @@ export const deleteAgentGuardSession = (sessionId: string): Promise<any> => {
 };
 
 // Agent Guard - 审计日志
-export const getAgentGuardAuditLogs = (limit: number = 100): Promise<any> => {
+export const getAgentGuardAuditLogs = (limit = 100): Promise<any> => {
   return request.get('/v1/agent-guard/audit-logs', { params: { limit } });
 };

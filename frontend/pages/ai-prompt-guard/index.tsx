@@ -58,8 +58,7 @@ const AiPromptGuardPage: React.FC = () => {
       );
       const results = await Promise.all(
         validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null),
-        ),
+          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null)),
       );
       const allLogs: any[] = [];
       results.forEach((res: any) => {
@@ -93,7 +92,7 @@ const AiPromptGuardPage: React.FC = () => {
         });
         setDetectionLogs(mapped);
       },
-    }
+    },
   );
 
   useEffect(() => { loadDetectionLogs(); }, []);
@@ -208,7 +207,7 @@ const AiPromptGuardPage: React.FC = () => {
 
   const handleModalOk = () => {
     if (!ruleName || !ruleRegex) {
-      message.warning(t('aiContentSec.promptGuard.ruleName') + ' / ' + t('aiContentSec.promptGuard.regex'));
+      message.warning(`${t('aiContentSec.promptGuard.ruleName')} / ${t('aiContentSec.promptGuard.regex')}`);
       return;
     }
     const newRule: RuleItem = { key: Date.now().toString(), name: ruleName, regex: ruleRegex, matchType: 'regex' };

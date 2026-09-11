@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
 import {
   Card, Tag, Space, Button, Input, Statistic, Row, Col, Empty, Timeline, Pagination, Spin, message,
@@ -127,7 +128,9 @@ const AuditChainPage: React.FC = () => {
     const dot = (
       <div
         style={{
-          width: 12, height: 12, borderRadius: '50%',
+          width: 12,
+          height: 12,
+          borderRadius: '50%',
           background: isHighRisk ? '#ff4d4f' : isBlocked ? '#ff4d4f' : '#1677ff',
           boxShadow: isHighRisk ? '0 0 0 4px rgba(255,77,79,0.2)' : undefined,
           animation: isHighRisk ? 'audit-chain-pulse 1.5s infinite' : undefined,
@@ -189,7 +192,8 @@ const AuditChainPage: React.FC = () => {
           70% { box-shadow: 0 0 0 8px rgba(255,77,79,0); }
           100% { box-shadow: 0 0 0 0 rgba(255,77,79,0); }
         }
-      `}</style>
+      `}
+      </style>
 
       {/* 搜索栏 */}
       <Card style={{ marginBottom: 16 }}>

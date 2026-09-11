@@ -87,7 +87,9 @@ const ConfigSnapshots: React.FC = () => {
 
   const snapshotColumns = [
     { title: t('configVersion.snapshotNo'), dataIndex: 'versionId', key: 'versionId', width: 90 },
-    { title: t('configVersion.source'), dataIndex: 'source', key: 'source',
+    { title: t('configVersion.source'),
+      dataIndex: 'source',
+      key: 'source',
       render: (v: string) => <Tag color={SOURCE_COLORS[v] || 'default'}>{v}</Tag> },
     { title: t('configVersion.operator'), dataIndex: 'operator', key: 'operator' },
     { title: t('configVersion.time'), dataIndex: 'createdAt', key: 'createdAt' },
@@ -172,7 +174,9 @@ const BackupLogs: React.FC = () => {
         { title: t('configVersion.action'), dataIndex: 'action', key: 'action' },
         { title: t('configVersion.fileName'), dataIndex: 'fileName', key: 'fileName' },
         { title: t('configVersion.count'), dataIndex: 'domainCount', key: 'domainCount' },
-        { title: t('configVersion.result'), dataIndex: 'result', key: 'result',
+        { title: t('configVersion.result'),
+          dataIndex: 'result',
+          key: 'result',
           render: (v: string) => <Tag color={v === 'success' ? 'green' : 'red'}>{v}</Tag> },
         { title: t('configVersion.time'), dataIndex: 'createdAt', key: 'createdAt' },
       ]}

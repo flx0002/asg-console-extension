@@ -60,8 +60,7 @@ const AiPiiGuardPage: React.FC = () => {
       );
       const results = await Promise.all(
         validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null),
-        ),
+          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null)),
       );
       const allLogs: any[] = [];
       results.forEach((res: any) => {
@@ -94,7 +93,7 @@ const AiPiiGuardPage: React.FC = () => {
         });
         setDetectionLogs(mapped);
       },
-    }
+    },
   );
 
   useEffect(() => { loadDetectionLogs(); }, []);

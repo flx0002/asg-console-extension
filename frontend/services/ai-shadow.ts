@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary, @typescript-eslint/no-invalid-void-type */
 import request from './request';
 import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendPoint, AiShadowDnsPolicyView, AiShadowAuthzUpdate } from '@/interfaces/ai-shadow';
 

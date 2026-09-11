@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
 import { Card, Switch, Select, Input, InputNumber, Radio, Table, Tag, Button, message, Space, Divider } from 'antd';
 import { useRequest } from 'ahooks';
@@ -46,8 +47,7 @@ const AiSecurityGuardPage: React.FC = () => {
       );
       const results = await Promise.all(
         validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 20 }).catch(() => null),
-        ),
+          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 20 }).catch(() => null)),
       );
       const allLogs: any[] = [];
       results.forEach((res: any) => {
@@ -80,7 +80,7 @@ const AiSecurityGuardPage: React.FC = () => {
         });
         setDetectionLogs(mapped);
       },
-    }
+    },
   );
 
   useEffect(() => {

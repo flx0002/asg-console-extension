@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
 import { Card, Switch, Input, InputNumber, Table, Tag, Button, message, Space, Modal, Select, Popconfirm } from 'antd';
 import { useRequest } from 'ahooks';
@@ -86,8 +87,7 @@ const AiKeywordFilterPage: React.FC = () => {
       );
       const results = await Promise.all(
         validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null),
-        ),
+          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null)),
       );
       const allLogs: any[] = [];
       results.forEach((res: any) => {
@@ -121,7 +121,7 @@ const AiKeywordFilterPage: React.FC = () => {
         });
         setDetectionLogs(mapped);
       },
-    }
+    },
   );
 
   useEffect(() => { loadDetectionLogs(); }, []);
@@ -254,9 +254,7 @@ const AiKeywordFilterPage: React.FC = () => {
       // Edit
       setCustomRules(prev =>
         prev.map((r, i) =>
-          i === editingIndex ? { ...r, keyword: editKeyword.trim(), matchMode: editMatchMode } : r,
-        ),
-      );
+          (i === editingIndex ? { ...r, keyword: editKeyword.trim(), matchMode: editMatchMode } : r)));
     }
     setModalVisible(false);
   };
@@ -309,11 +307,9 @@ const AiKeywordFilterPage: React.FC = () => {
       // Edit
       setPresetRules(prev =>
         prev.map((r, i) =>
-          i === editingIndex
+          (i === editingIndex
             ? { ...r, name: editRuleName.trim(), keywords, scenario: editScenario.trim() }
-            : r,
-        ),
-      );
+            : r)));
     }
     setModalVisible(false);
   };
@@ -367,7 +363,7 @@ const AiKeywordFilterPage: React.FC = () => {
           checked={val}
           size="small"
           onChange={checked => {
-            setPresetRules(prev => prev.map((r, i) => i === index ? { ...r, enabled: checked } : r));
+            setPresetRules(prev => prev.map((r, i) => (i === index ? { ...r, enabled: checked } : r)));
           }}
         />
       ),
@@ -412,7 +408,7 @@ const AiKeywordFilterPage: React.FC = () => {
           checked={val}
           size="small"
           onChange={checked => {
-            setCustomRules(prev => prev.map((r, i) => i === index ? { ...r, enabled: checked } : r));
+            setCustomRules(prev => prev.map((r, i) => (i === index ? { ...r, enabled: checked } : r)));
           }}
         />
       ),

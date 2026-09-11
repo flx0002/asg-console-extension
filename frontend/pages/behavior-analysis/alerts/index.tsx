@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary, @typescript-eslint/consistent-type-assertions */
 import React, { useEffect, useState } from 'react';
 import {
   Card, Table, Tag, Space, Button, Empty, Drawer, Descriptions, Input, Select, DatePicker,
@@ -119,7 +120,7 @@ const BehaviorAlertsPage: React.FC = () => {
   const [disposingAlert, setDisposingAlert] = useState<AlertItem | null>(null);
 
   // 加载告警列表
-  const { run: loadAlerts, loading: loading } = useRequest(
+  const { run: loadAlerts, loading } = useRequest(
     () => {
       const params: any = { page, pageSize };
       if (filterStatus) params.status = filterStatus;
@@ -239,14 +240,14 @@ const BehaviorAlertsPage: React.FC = () => {
       dataIndex: 'riskType',
       key: 'riskType',
       width: 110,
-      render: (v: string) => v ? <Tag>{t(RISK_TYPE_KEYS[v] || 'behaviorAnalysis.alert.riskType')}</Tag> : '-',
+      render: (v: string) => (v ? <Tag>{t(RISK_TYPE_KEYS[v] || 'behaviorAnalysis.alert.riskType')}</Tag> : '-'),
     },
     {
       title: t('behaviorAnalysis.alert.riskLevel'),
       dataIndex: 'riskLevel',
       key: 'riskLevel',
       width: 80,
-      render: (v: string) => v ? <Tag color={RISK_LEVEL_COLORS[v] || 'default'}>{t(`behaviorAnalysis.alert.level${v.charAt(0).toUpperCase() + v.slice(1)}`)}</Tag> : '-',
+      render: (v: string) => (v ? <Tag color={RISK_LEVEL_COLORS[v] || 'default'}>{t(`behaviorAnalysis.alert.level${v.charAt(0).toUpperCase() + v.slice(1)}`)}</Tag> : '-'),
     },
     {
       title: t('behaviorAnalysis.alert.riskScore'),
@@ -276,13 +277,13 @@ const BehaviorAlertsPage: React.FC = () => {
       key: 'sessionId',
       width: 140,
       ellipsis: true,
-      render: (v: string) => v ? (
+      render: (v: string) => (v ? (
         <Tooltip title={v}>
           <Button type="link" size="small" style={{ padding: 0 }} onClick={() => navigate(`/behavior-analysis/session-graph?sessionId=${encodeURIComponent(v)}`)}>
-            {v.length > 16 ? v.slice(0, 8) + '...' + v.slice(-4) : v}
+            {v.length > 16 ? `${v.slice(0, 8)}...${v.slice(-4)}` : v}
           </Button>
         </Tooltip>
-      ) : '-',
+      ) : '-'),
     },
     {
       title: t('behaviorAnalysis.alert.description'),
@@ -296,7 +297,7 @@ const BehaviorAlertsPage: React.FC = () => {
       dataIndex: 'status',
       key: 'status',
       width: 100,
-      render: (v: string) => v ? <Tag>{t(STATUS_KEYS[v] || 'behaviorAnalysis.alert.status')}</Tag> : '-',
+      render: (v: string) => (v ? <Tag>{t(STATUS_KEYS[v] || 'behaviorAnalysis.alert.status')}</Tag> : '-'),
     },
     {
       title: t('behaviorAnalysis.alert.action'),
@@ -409,8 +410,8 @@ const BehaviorAlertsPage: React.FC = () => {
           scroll={{ x: 1200 }}
           pagination={{
             current: page,
-            pageSize: pageSize,
-            total: total,
+            pageSize,
+            total,
             showSizeChanger: true,
             showTotal: (tot) => `${t('behaviorAnalysis.total')}: ${tot}`,
             onChange: (p, ps) => { setPage(p); setPageSize(ps); },
@@ -457,10 +458,15 @@ const BehaviorAlertsPage: React.FC = () => {
               </Descriptions.Item>
               <Descriptions.Item label={t('behaviorAnalysis.alert.session')} span={2}>
                 {currentAlert.sessionId ? (
-                  <Button type="link" size="small" style={{ padding: 0 }} onClick={() => {
-                    setDrawerVisible(false);
-                    navigate(`/behavior-analysis/session-graph?sessionId=${encodeURIComponent(currentAlert.sessionId!)}`);
-                  }}>
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0 }}
+                    onClick={() => {
+                      setDrawerVisible(false);
+                      navigate(`/behavior-analysis/session-graph?sessionId=${encodeURIComponent(currentAlert.sessionId!)}`);
+                    }}
+                  >
                     {currentAlert.sessionId}
                   </Button>
                 ) : '-'}
@@ -535,7 +541,7 @@ const BehaviorAlertsPage: React.FC = () => {
             noStyle
             shouldUpdate={(prev, curr) => prev.disposition !== curr.disposition}
           >
-            {({ getFieldValue }) => getFieldValue('disposition') === 'blacklist' ? (
+            {({ getFieldValue }) => (getFieldValue('disposition') === 'blacklist' ? (
               <Form.Item
                 name="ttl"
                 label={t('behaviorAnalysis.alert.dispositionTtl')}
@@ -543,7 +549,7 @@ const BehaviorAlertsPage: React.FC = () => {
               >
                 <InputNumber min={60} max={365 * 86400} style={{ width: '100%' }} />
               </Form.Item>
-            ) : null}
+            ) : null)}
           </Form.Item>
           <Form.Item name="note" label={t('behaviorAnalysis.alert.dispositionNote')}>
             <Input.TextArea rows={3} maxLength={500} showCount />

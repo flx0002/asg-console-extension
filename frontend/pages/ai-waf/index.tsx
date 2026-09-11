@@ -1,3 +1,4 @@
+/* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
 import { Card, Switch, Radio, Table, Tag, Button, Input, message, Space, Modal } from 'antd';
 import { useTranslation } from 'react-i18next';
@@ -54,8 +55,7 @@ const AiWafPage: React.FC = () => {
       );
       const results = await Promise.all(
         validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null),
-        ),
+          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null)),
       );
       const allLogs: any[] = [];
       results.forEach((res: any) => {
@@ -92,7 +92,7 @@ const AiWafPage: React.FC = () => {
         });
         setDetectionLogs(mapped);
       },
-    }
+    },
   );
 
   useEffect(() => { loadDetectionLogs(); }, []);

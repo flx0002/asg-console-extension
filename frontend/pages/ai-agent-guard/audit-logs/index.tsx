@@ -64,7 +64,7 @@ const AuditLogsPage: React.FC = () => {
       width: 100,
       sorter: (a: AuditLogEntry, b: AuditLogEntry) => (a.riskScore || 0) - (b.riskScore || 0),
       render: (v: number) => {
-        let color: string = 'green';
+        let color = 'green';
         if (v >= 80) {
           color = 'red';
         } else if (v >= 50) {
