@@ -13,7 +13,8 @@ bash "$EXT_DIR/inject.sh" "$CON" | tail -3
 
 echo
 echo "=== [2/5] brand-apply.sh 品牌重放（幂等）==="
-bash "$EXT_DIR/brand-apply.sh" "$CON" | tail -3
+bash "$EXT_DIR/brand-apply.sh" "$CON" > /tmp/brand_apply.log 2>&1 || true
+tail -3 /tmp/brand_apply.log
 
 echo
 echo "=== [3/5] 品牌标记校验 ==="

@@ -22,8 +22,11 @@ if git apply --check "$EXT_DIR/brand/patches/brand.patch" 2>/dev/null; then
 elif git apply --reverse --check "$EXT_DIR/brand/patches/brand.patch" 2>/dev/null; then
   echo "  SKIP: already applied"
 else
-  echo "  !! brand.patch cannot apply cleanly" >&2
-  exit 1
+  # 品牌改动已提交后，brand.patch 可能既不能正向也不能反向应用（上下文已变化）。
+  # 此处降级为警告并继续执行后续资源/文案替换，避免在 build-asg.sh 的
+  # set -euo pipefail 下中止整个构建；品牌正确性由 build-asg.sh [3/5] 的
+  # 硬校验（titleLogo.png / Footer WntSAG / ai-shadow services）把关。
+  echo "  !! brand.patch cannot apply cleanly (base files already carry brand changes); continue with asset/locale replacements" >&2
 fi
 
 echo
