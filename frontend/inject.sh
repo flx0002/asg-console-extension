@@ -61,7 +61,19 @@ else:
     print("  SKIP: no legacy './shadow-ai' export")
 PYEOF
 
-echo "=== 2. 菜单注入（_defaultProps.tsx：5 个 ASG 菜单 + 服务/插件菜单重排）==="
+echo "=== 2. 菜单注入（_defaultProps.tsx：git checkout HEAD 复位后重新注入，杜绝重复块）==="
+# 根因：_defaultProps.tsx 是 git 跟踪文件，因历史 commit 导致 HEAD 本身已污染重复 ASG 块；
+# 就地追加式注入一旦工作树漂移就会累积重复且无法自愈。
+# 修复：改用 EXT 仓库自有的纯净基线（_defaultProps.baseline.tsx，来自 fork 历史 f6e2e59 “restore to upstream”，
+# 0 个 ASG 块，包含所有 native 锚点），每次注入前 cp 覆盖源文件，完全不依赖 console git 状态。
+# ⚠ 该基线是菜单注入的唯一真相源：若上游 console 合并新增/调整了原生路由项（新页面入口、hideFromMenu、
+#   visiblePredicate 等），必须同步刷新 _defaultProps.baseline.tsx，否则这些原生项会在构建时被静默回滚。
+if [ ! -f "$EXT_DIR/_defaultProps.baseline.tsx" ]; then
+  echo "  FATAL: 缺少纯净基线 $EXT_DIR/_defaultProps.baseline.tsx（应随 EXT 仓库一起提交），无法安全注入" >&2
+  exit 1
+fi
+git -C "$CON" checkout HEAD -- frontend/src/pages/_defaultProps.tsx 2>/dev/null || true
+cp "$EXT_DIR/_defaultProps.baseline.tsx" "$SRC/pages/_defaultProps.tsx"
 python3 - "$SRC/pages/_defaultProps.tsx" "$EXT_DIR/menu.config.ts" <<'PYEOF'
 import sys, re
 
@@ -69,10 +81,8 @@ props_path, menu_path = sys.argv[1], sys.argv[2]
 s = open(props_path, encoding='utf-8').read()
 orig = s
 
-# ---- 幂等检查：已注入则跳过 ----
-if "name: 'menu.aiShadowManagement'" in s:
-    print("  SKIP: menu already injected")
-else:
+# 复位后为纯净 HEAD，无条件注入（复位本身即幂等保证）。
+if True:
     # A. icon import 重组（字母序，追加缺失的 4 个）
     m = re.search(r"import \{\n(.*?)\} from '@ant-design/icons';", s, re.S)
     assert m, 'icons import block not found'
@@ -170,6 +180,10 @@ NEW_CHILDREN = """        children: [
             path: '/system',
           },
           {
+            name: 'menu.licenseManagement',
+            path: '/license',
+          },
+          {
             name: 'menu.configVersionCenter',
             path: '/config-versions',
           },
@@ -215,6 +229,10 @@ PARENT = """      {
           {
             name: 'menu.systemSettings',
             path: '/system',
+          },
+          {
+            name: 'menu.licenseManagement',
+            path: '/license',
           },
           {
             name: 'menu.configVersionCenter',
@@ -291,6 +309,13 @@ merge(cur, ext);
 fs.writeFileSync(target, JSON.stringify(cur, null, 2) + '\n');
 console.log('  ✓ en-US merged');
 PYEOF
+
+echo
+echo "=== 4b. 授权管理拆页 i18n 补丁（menu.licenseManagement + license.* + 去 pageHint/激活措辞，幂等）==="
+# ai-kb / license 页直接位于 console fork src，其 i18n 键也直接写入 fork translation.json，
+# 故用独立幂等补丁脚本处理（EXT locales 采用扁平点号键，与此处的嵌套结构约定不同）。
+node "$EXT_DIR/patch-i18n-license.js" "$SRC/locales/zh-CN/translation.json" zh-CN
+node "$EXT_DIR/patch-i18n-license.js" "$SRC/locales/en-US/translation.json" en-US
 
 echo
 echo "=== 5. package.json 依赖合并（@antv/g6 4.8.7，幂等）==="

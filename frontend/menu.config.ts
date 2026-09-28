@@ -25,6 +25,10 @@ export const asgMenuRoutes: any[] = [
         name: 'menu.aiShadowRoute',
         path: '/ai-shadow/route',
       },
+      {
+        name: 'menu.aiKb',
+        path: '/ai-kb',
+      },
     ],
   },
   {
