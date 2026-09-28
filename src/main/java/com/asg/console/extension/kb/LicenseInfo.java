@@ -39,7 +39,7 @@ public class LicenseInfo {
     private boolean checkSn = true;
     /** 兼容旧字段：设备绑定标识，取值同 {@link #esn}。 */
     private String deviceFingerprint;
-    /** 功能位名称列表（由 {@link #functionItems} 派生，兼容落库/展示/门控）。 */
+    /** 功能位名称列表（由 {@link #functionItems} 派生的功能位 ID，兼容落库/展示/门控）。 */
     private List<String> features = new ArrayList<>();
     /** 功能位（含各自签发/过期时间），对齐平台「授权功能项」逐位有效期。 */
     private List<FunctionItem> functionItems = new ArrayList<>();
@@ -70,10 +70,11 @@ public class LicenseInfo {
     /** 无效原因（valid=false 时展示）。 */
     private String reason;
 
-    /** 单个授权功能位：名称 + 各自的签发/过期时间（原始字符串，缺失为空）。 */
+    /** 单个授权功能位：稳定的功能位 ID + 各自的签发/过期时间（显示名称不入库，由后端目录按 ID 解析）。 */
     @Data
     public static class FunctionItem {
-        private String name;
+        /** 功能位唯一 ID（如 {@code ai_kb_update}），与厂商授权目录一一对应，作为身份/门控/签名依据。 */
+        private String id;
         /** 签发时间（载荷内原始字符串，可空）。 */
         private String createTime;
         /** 过期时间（载荷内原始字符串，空/缺省=永久）。 */
@@ -82,8 +83,8 @@ public class LicenseInfo {
         public FunctionItem() {
         }
 
-        public FunctionItem(String name, String createTime, String endTime) {
-            this.name = name;
+        public FunctionItem(String id, String createTime, String endTime) {
+            this.id = id;
             this.createTime = createTime;
             this.endTime = endTime;
         }
@@ -101,13 +102,13 @@ public class LicenseInfo {
         return findFunction(feature) != null;
     }
 
-    /** 按名称查找功能位（trim 后精确匹配）。 */
+    /** 按功能位 ID 查找（trim 后精确匹配）。 */
     public FunctionItem findFunction(String feature) {
         if (feature == null || functionItems == null) {
             return null;
         }
         for (FunctionItem fi : functionItems) {
-            if (fi != null && fi.getName() != null && fi.getName().trim().equals(feature)) {
+            if (fi != null && fi.getId() != null && fi.getId().trim().equals(feature)) {
                 return fi;
             }
         }

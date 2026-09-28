@@ -26,9 +26,10 @@ import lombok.extern.slf4j.Slf4j;
  * {@code .dat} 授权文件校验实现（对齐工业防火墙 TEG 授权格式）。
  *
  * <p>校验顺序：拆信封（console 私钥 OAEP 拆 AES + AES-GCM 解密）→ 解析载荷 → 验签
- * （厂商公钥 RSA-SHA256 over {@link DatLicenseCodec#canonicalString}）→ 授权类型/到期
- * （临时校验 endTime，正式永久跳过）→ ESN 绑定（载荷 esn == {@link EsnProvider#current()}）
- * → 功能位（含 {@code ai_kb_update}）。任一不过即 valid=false。
+ * （厂商公钥 RSA-SHA256 over {@link DatLicenseCodec#canonicalString}）→ ESN 绑定（载荷 esn ==
+ * {@link EsnProvider#current()}）→ 功能位（含 {@code ai_kb_update}，且该功能位自身未过期）。
+ * 到期唯一以功能位自身 endTime 为准（授权不再携带顶层到期时间）；licenseType（formal/temporary）
+ * 仅作展示/审计标签，不参与到期判定。任一不过即 valid=false。
  *
  * <p>安全默认：未配置 console 私钥或厂商验签公钥时，任何授权都判为无效。
  */
@@ -95,12 +96,8 @@ public class DatLicenseVerifier implements LicenseVerifier {
 
         LicenseInfo info = mapFields(obj);
 
-        // 到期：临时授权校验 endTime；正式（永久）跳过
-        if (!info.isFormal() && info.getExpiresAt() != null && info.getExpiresAt().isBefore(LocalDateTime.now())) {
-            info.setValid(false);
-            info.setReason("授权已过期");
-            return info;
-        }
+        // 到期唯一以功能位自身 endTime 为准（见下方功能位校验）；不再对顶层授权时间做独立到期门。
+        // licenseType（formal/temporary）仅作展示/审计标签，不参与到期判定。
         // ESN 绑定（checkSn=false 则完全跳过设备绑定；checkSn=true 时 esn 非空且须等于本机标识）
         if (info.isCheckSn()) {
             String esn = info.getEsn();
@@ -188,15 +185,18 @@ public class DatLicenseVerifier implements LicenseVerifier {
                 LicenseInfo.FunctionItem fi;
                 if (el instanceof JSONObject) {
                     JSONObject o = (JSONObject) el;
-                    fi = new LicenseInfo.FunctionItem(o.getString("name"),
+                    // 功能位以稳定 id 为身份；兼容旧载荷以 name 承载标识（缺 id 时回退 name）
+                    String oid = o.getString("id");
+                    String idv = (oid != null && !oid.trim().isEmpty()) ? oid : o.getString("name");
+                    fi = new LicenseInfo.FunctionItem(idv,
                         o.getString("createTime"), o.getString("endTime"));
                 } else {
-                    // 兼容旧写法：纯功能名字符串，无独立时间
+                    // 兼容旧写法：纯功能名字符串，视作 id，无独立时间
                     fi = new LicenseInfo.FunctionItem(arr.getString(i), null, null);
                 }
-                if (fi.getName() != null && !fi.getName().trim().isEmpty()) {
-                    fi.setName(fi.getName().trim());
-                    names.add(fi.getName());
+                if (fi.getId() != null && !fi.getId().trim().isEmpty()) {
+                    fi.setId(fi.getId().trim());
+                    names.add(fi.getId());
                     items.add(fi);
                 }
             }

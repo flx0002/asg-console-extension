@@ -94,7 +94,7 @@ const LicensePage: React.FC = () => {
   const fnColumns = [
     {
       title: t('license.featureName'), dataIndex: 'name', key: 'name',
-      render: (v: string) => t(`license.feature.${v}`, { defaultValue: v || '-' }),
+      render: (v: string) => v || '-',
     },
     {
       title: t('license.featureIssuedAt'), dataIndex: 'issuedAt', key: 'issuedAt', width: 200,
@@ -168,7 +168,7 @@ const LicensePage: React.FC = () => {
 
       <Card title={t('license.sectionFeatures')}>
         <Table
-          rowKey={(r: KbLicenseFunction) => String(r.name)}
+          rowKey={(r: KbLicenseFunction) => String(r.id ?? r.name)}
           size="small"
           loading={loading}
           columns={fnColumns}

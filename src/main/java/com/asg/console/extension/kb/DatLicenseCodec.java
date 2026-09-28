@@ -63,11 +63,14 @@ public final class DatLicenseCodec {
     private static final String RSA_TRANSFORM = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
     private static final String SIG_ALG = "SHA256withRSA";
 
-    /** canonicalString 参与签名的字段顺序（Python 参考工具须完全一致）。 */
+    /**
+     * canonicalString 参与签名的字段顺序（Python 参考工具须完全一致）。
+     * 15 字段固定序，不再含顶层 createTime/endTime——到期唯一以功能位自身时间为准。
+     */
     static final String[] CANONICAL_FIELDS = {
         "version", "licenseId", "productName", "productVersion", "companyName", "contractNo",
         "esn", "checkSn", "licenseType", "licenseModel", "licenseName", "licenseValue",
-        "iegCustomerId", "iegAuthorizedCount", "functions", "createTime", "endTime",
+        "iegCustomerId", "iegAuthorizedCount", "functions",
     };
 
     private DatLicenseCodec() {
@@ -177,8 +180,8 @@ public final class DatLicenseCodec {
 
     /**
      * 规范串：固定字段顺序 {@code key=value} 以 {@code \n} 拼接（无尾换行，不含签名）。
-     * 签名与验签共用，保证确定性；{@code functions} 每项渲染为 {@code name|createTime|endTime}
-     * （时间取载荷内原始字符串，缺省渲染空串），按整条记录升序后以逗号连接。
+     * 签名与验签共用，保证确定性；{@code functions} 每项渲染为 {@code id|createTime|endTime}
+     * （id 为功能位稳定标识，时间取载荷内原始字符串，缺省渲染空串），按整条记录升序后以逗号连接。
      */
     public static String canonicalString(JSONObject payload) {
         StringBuilder sb = new StringBuilder();
@@ -197,21 +200,23 @@ public final class DatLicenseCodec {
                 if (arr != null) {
                     for (int j = 0; j < arr.size(); j++) {
                         Object el = arr.get(j);
-                        String name;
+                        String id;
                         String ct;
                         String et;
                         if (el instanceof JSONObject) {
                             JSONObject o = (JSONObject) el;
-                            name = nz(o.getString("name"));
+                            // 优先取 id；兼容旧载荷以 name 承载标识（缺 id 时回退 name）
+                            String oid = o.getString("id");
+                            id = nz(oid != null && !oid.trim().isEmpty() ? oid : o.getString("name"));
                             ct = nz(o.getString("createTime"));
                             et = nz(o.getString("endTime"));
                         } else {
-                            // 兼容旧写法：元素为纯功能名字符串，时间留空
-                            name = el == null ? "" : String.valueOf(el);
+                            // 兼容旧写法：元素为纯功能名字符串，视作 id，时间留空
+                            id = el == null ? "" : String.valueOf(el);
                             ct = "";
                             et = "";
                         }
-                        recs.add(name + "|" + ct + "|" + et);
+                        recs.add(id + "|" + ct + "|" + et);
                     }
                 }
                 java.util.Collections.sort(recs);

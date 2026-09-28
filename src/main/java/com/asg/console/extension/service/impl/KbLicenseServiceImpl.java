@@ -24,6 +24,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.asg.console.extension.controller.dto.KbLicenseStatus;
 import com.asg.console.extension.kb.DatLicenseVerifier;
 import com.asg.console.extension.kb.EsnProvider;
+import com.asg.console.extension.kb.KbFeatureCatalog;
 import com.asg.console.extension.kb.LicenseInfo;
 import com.asg.console.extension.kb.LicenseVerifier;
 import com.asg.console.extension.model.AiKbLicense;
@@ -88,15 +89,8 @@ public class KbLicenseServiceImpl implements KbLicenseService {
 
         String status = row.getStatus();
         String reason = row.getReason();
-        // 实时复核过期：落库时为 valid 但现已过期 → 视为 expired（正式/永久授权不受此限）
-        boolean formal = AiKbLicense.TYPE_FORMAL.equalsIgnoreCase(row.getLicenseType());
-        if (!formal && AiKbLicense.STATUS_VALID.equals(status) && row.getExpiresAt() != null
-            && row.getExpiresAt().isBefore(LocalDateTime.now())) {
-            status = AiKbLicense.STATUS_EXPIRED;
-            reason = "授权已过期";
-        }
-        // 功能位级实时复核：valid 但 ai_kb_update 自身 endTime 现已到期/非法 → 降级。
-        // 补 getStatus 仅复核授权级 expiresAt、对「formal 永久授权 + 限时功能位」到期不生效的缺口。
+        // 功能位级实时复核（唯一到期门）：valid 但 ai_kb_update 自身 endTime 现已到期/非法 → 降级。
+        // （顶层授权时间已移除，不再做授权级到期复核；licenseType 仅展示不参与判定。）
         if (AiKbLicense.STATUS_VALID.equals(status)) {
             String fnReason = evaluateKbFunctionWindow(row.getFunctionItems());
             if (fnReason != null) {
@@ -190,7 +184,8 @@ public class KbLicenseServiceImpl implements KbLicenseService {
             JSONObject kb = null;
             for (int i = 0; i < a.size(); i++) {
                 JSONObject o = a.getJSONObject(i);
-                if (o != null && LicenseInfo.FEATURE_KB_UPDATE.equals(StringUtils.trim(o.getString("name")))) {
+                String fid = functionIdentity(o);
+                if (o != null && LicenseInfo.FEATURE_KB_UPDATE.equals(fid)) {
                     kb = o;
                     break;
                 }
@@ -205,16 +200,16 @@ public class KbLicenseServiceImpl implements KbLicenseService {
         }
     }
 
-    /** 功能位序列化为 JSON（name + 原始 createTime/endTime 字符串），供落库。 */
+    /** 功能位序列化为 JSON（稳定 id + 原始 createTime/endTime 字符串），供落库。 */
     private String serializeFunctionItems(List<LicenseInfo.FunctionItem> items) {
         JSONArray a = new JSONArray();
         if (items != null) {
             for (LicenseInfo.FunctionItem fi : items) {
-                if (fi == null || StringUtils.isBlank(fi.getName())) {
+                if (fi == null || StringUtils.isBlank(fi.getId())) {
                     continue;
                 }
                 JSONObject o = new JSONObject(true);
-                o.put("name", fi.getName().trim());
+                o.put("id", fi.getId().trim());
                 o.put("createTime", fi.getCreateTime() == null ? "" : fi.getCreateTime());
                 o.put("endTime", fi.getEndTime() == null ? "" : fi.getEndTime());
                 a.add(o);
@@ -223,7 +218,7 @@ public class KbLicenseServiceImpl implements KbLicenseService {
         return a.toJSONString();
     }
 
-    /** 解析落库的 function_items JSON → 展示视图（时间转 LocalDateTime）。 */
+    /** 解析落库的 function_items JSON → 展示视图：以 id 为身份，显示名称由后端目录按 id 解析。 */
     private List<KbLicenseStatus.FunctionView> parseFunctionViews(String json) {
         List<KbLicenseStatus.FunctionView> list = new ArrayList<>();
         if (StringUtils.isBlank(json)) {
@@ -233,13 +228,14 @@ public class KbLicenseServiceImpl implements KbLicenseService {
             JSONArray a = JSON.parseArray(json);
             for (int i = 0; i < a.size(); i++) {
                 JSONObject o = a.getJSONObject(i);
-                String name = o.getString("name");
-                if (StringUtils.isBlank(name)) {
+                String id = functionIdentity(o);
+                if (StringUtils.isBlank(id)) {
                     continue;
                 }
                 String endRaw = o.getString("endTime");
                 boolean active = DatLicenseVerifier.evaluateEnd(endRaw) == null;
-                list.add(new KbLicenseStatus.FunctionView(name.trim(),
+                list.add(new KbLicenseStatus.FunctionView(id,
+                    KbFeatureCatalog.displayName(id),
                     DatLicenseVerifier.parseTime(o.getString("createTime")),
                     DatLicenseVerifier.parseTime(endRaw), active));
             }
@@ -247,5 +243,18 @@ public class KbLicenseServiceImpl implements KbLicenseService {
             log.warn("parse function_items failed: {}", e.getMessage());
         }
         return list;
+    }
+
+    /** 取功能位身份：优先 id，兼容旧落库以 name 承载标识（缺 id 时回退 name，trim）。 */
+    private static String functionIdentity(JSONObject o) {
+        if (o == null) {
+            return null;
+        }
+        String id = o.getString("id");
+        if (StringUtils.isNotBlank(id)) {
+            return id.trim();
+        }
+        String name = o.getString("name");
+        return name == null ? null : name.trim();
     }
 }

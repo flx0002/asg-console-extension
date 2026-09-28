@@ -56,12 +56,16 @@ public class KbLicenseStatus {
     private Integer iegAuthorizedCount;
 
     /**
-     * 单个授权功能位视图：名称 + 各自签发/过期时间 + 后端计算的有效期标志。
-     * {@code active} 由后端按当前时间与 endTime 判定（空 endTime=永久→true），
-     * 前端直接展示，避免时区/序列化格式导致的误判。
+     * 单个授权功能位视图：稳定 ID + 权威显示名称 + 各自签发/过期时间 + 后端计算的有效期标志。
+     * {@code id} 为功能位唯一标识（授权/门控/签名依据）；{@code name} 为后端目录按 id 解析的
+     * 权威显示名称（不取自载荷）。{@code active} 由后端按当前时间与 endTime 判定
+     * （空 endTime=永久→true），前端直接展示，避免时区/序列化格式导致的误判。
      */
     @Data
     public static class FunctionView {
+        /** 功能位唯一 ID（如 ai_kb_update）。 */
+        private String id;
+        /** 显示名称（后端目录按 id 解析，一一对应，不可被载荷伪造）。 */
         private String name;
         /** 签发时间（功能位自身）。 */
         private LocalDateTime issuedAt;
@@ -73,13 +77,8 @@ public class KbLicenseStatus {
         public FunctionView() {
         }
 
-        public FunctionView(String name, LocalDateTime issuedAt, LocalDateTime expiresAt) {
-            this.name = name;
-            this.issuedAt = issuedAt;
-            this.expiresAt = expiresAt;
-        }
-
-        public FunctionView(String name, LocalDateTime issuedAt, LocalDateTime expiresAt, boolean active) {
+        public FunctionView(String id, String name, LocalDateTime issuedAt, LocalDateTime expiresAt, boolean active) {
+            this.id = id;
             this.name = name;
             this.issuedAt = issuedAt;
             this.expiresAt = expiresAt;

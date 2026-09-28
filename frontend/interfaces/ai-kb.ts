@@ -21,8 +21,9 @@ export interface KbMeta {
   createdAt?: KbDateTime;
 }
 
-/** 单个授权功能位（含各自签发/过期时间）。active 由后端按当前时间计算。 */
+/** 单个授权功能位：以稳定 id 为身份，name 为后端目录按 id 解析的权威显示名称。active 由后端按当前时间计算。 */
 export interface KbLicenseFunction {
+  id?: string;
   name?: string;
   issuedAt?: KbDateTime;
   expiresAt?: KbDateTime;

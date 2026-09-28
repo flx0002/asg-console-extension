@@ -167,10 +167,15 @@ class KbP0Test {
     }
 
     @Test
-    void licenseExpired() throws Exception {
-        LicenseInfo exp = verifier().verify(dat(payload("", "temporary", past(), LicenseInfo.FEATURE_KB_UPDATE), ""));
+    void licenseExpiredNowGovernedByFunctionWindow() throws Exception {
+        // 顶层到期时间已移除：临时型授权是否过期唯一看功能位 endTime（此处 ai_kb_update 已过期）。
+        // licenseType 仅展示标签，不影响到期判定。
+        JSONObject p = payload("", "temporary", "", LicenseInfo.FEATURE_KB_UPDATE);
+        p.put("checkSn", false);
+        p.put("functions", Arrays.asList(fnObj(LicenseInfo.FEATURE_KB_UPDATE, "2026-09-22 00:00:00", past())));
+        LicenseInfo exp = verifier().verify(dat(p, ""));
         assertFalse(exp.isValid());
-        assertEquals("授权已过期", exp.getReason());
+        assertEquals("知识库更新授权已过期", exp.getReason());
     }
 
     @Test
@@ -199,9 +204,9 @@ class KbP0Test {
         assertTrue(noFn.getReason().contains(LicenseInfo.FEATURE_KB_UPDATE));
     }
 
-    private JSONObject fnObj(String name, String createTime, String endTime) {
+    private JSONObject fnObj(String id, String createTime, String endTime) {
         JSONObject f = new JSONObject();
-        f.put("name", name);
+        f.put("id", id);
         f.put("createTime", createTime);
         f.put("endTime", endTime);
         return f;

@@ -101,17 +101,19 @@ public class AiKbLicense {
     @Column(name = "ieg_authorized_count")
     private Integer iegAuthorizedCount;
 
-    /** 授权功能位（逗号分隔名称），KB 更新需含 ai_kb_update。 */
+    /** 授权功能位 ID（逗号分隔，由 function_items 派生），KB 更新需含 ai_kb_update。 */
     @Column(name = "features", length = 512)
     private String features;
 
-    /** 授权功能位（含各自签发/过期时间）JSON，形如 [{"name","createTime","endTime"}]。 */
+    /** 授权功能位（含各自签发/过期时间）JSON，形如 [{"id","createTime","endTime"}]；到期唯一以此为准。 */
     @Column(name = "function_items", columnDefinition = "TEXT")
     private String functionItems;
 
+    /** 遗留列：顶层授权签发时间已随签名移除（不再写入，恒 null）；不参与任何到期判定。 */
     @Column(name = "issued_at")
     private LocalDateTime issuedAt;
 
+    /** 遗留列：顶层授权到期时间已随签名移除（不再写入，恒 null）；到期只看功能位 endTime。 */
     @Column(name = "expires_at")
     private LocalDateTime expiresAt;
 

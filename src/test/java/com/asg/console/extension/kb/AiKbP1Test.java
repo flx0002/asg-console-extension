@@ -217,28 +217,6 @@ class AiKbP1Test {
             "l", "c", AiKbVersion.SRC_OFFLINE, "op"));
     }
 
-    @Test
-    void licenseExpiryReflectedInStatus() {
-        // 直接测 KbLicenseServiceImpl 的过期复核
-        com.asg.console.extension.repository.AiKbLicenseRepository licRepo =
-            mock(com.asg.console.extension.repository.AiKbLicenseRepository.class);
-        com.asg.console.extension.model.AiKbLicense row = new com.asg.console.extension.model.AiKbLicense();
-        row.setId(1L);
-        row.setStatus(com.asg.console.extension.model.AiKbLicense.STATUS_VALID);
-        row.setExpiresAt(LocalDateTime.now().minusDays(1)); // 已过期
-        row.setFeatures("ai_kb_update");
-        when(licRepo.findById(1L)).thenReturn(Optional.of(row));
-
-        com.asg.console.extension.service.KbLicenseServiceImpl svc =
-            new com.asg.console.extension.service.KbLicenseServiceImpl();
-        svc.setLicenseRepository(licRepo);
-        svc.setLicenseVerifier(new DatLicenseVerifier(null, new RsaKbSignatureVerifier(keyPair.getPublic())));
-
-        com.asg.console.extension.controller.dto.KbLicenseStatus st = svc.getStatus();
-        assertEquals(com.asg.console.extension.model.AiKbLicense.STATUS_EXPIRED, st.getStatus());
-        assertFalse(st.isCanUpdate());
-    }
-
     // ===== EsnProvider + checkSn 门控 =====
 
     /** 构造一个厂商签名 + console 加密的 .dat（正式/含 ai_kb_update），可控 esn / checkSn。 */
@@ -344,7 +322,7 @@ class AiKbP1Test {
             .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         JSONArray fi = new JSONArray();
         JSONObject o = new JSONObject();
-        o.put("name", "ai_kb_update");
+        o.put("id", "ai_kb_update");
         o.put("createTime", "2026-01-01 00:00:00");
         o.put("endTime", past);
         fi.add(o);
