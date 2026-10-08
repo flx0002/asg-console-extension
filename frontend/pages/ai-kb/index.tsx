@@ -6,7 +6,7 @@ import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
 import {
   listKbVersions, getActiveKb, importKbOffline, updateKbOnline, rollbackKb,
-  syncKbToGateway, getKbLicense,
+  syncKbToGateway, getKbLicense, getKbOnlineSetting,
 } from '@/services/ai-kb';
 import { KbMeta, KbDateTime } from '@/interfaces/ai-kb';
 
@@ -33,28 +33,38 @@ const AiKbPage: React.FC = () => {
     useRequest(() => getActiveKb(), { onError: () => {} });
   const { data: license, refresh: refreshLicense } =
     useRequest(() => getKbLicense(), { onError: () => {} });
+  const { data: onlineSetting } =
+    useRequest(() => getKbOnlineSetting(), { onError: () => {} });
   const { data: versions, loading: versionsLoading, refresh: refreshVersions } =
     useRequest(() => listKbVersions(), { onError: () => {} });
 
   const reloadAll = () => { refreshActive(); refreshLicense(); refreshVersions(); };
   // 需求门控：仅「有效授权」时允许更新；无授权只能用最后一次有效库或回滚历史版本
   const canUpdate = !!license?.canUpdate;
+  // 在线更新额外需已配置服务器地址（页面持久化值或 env 默认）；未配置时按钮禁用并提示
+  const onlineConfigured = !!onlineSetting?.configured;
 
   const handleOnlineUpdate = async () => {
     try {
-      await updateKbOnline();
-      message.success(t('aiKb.updateSuccess'));
+      const meta = await updateKbOnline();
+      if (meta?.unchanged) message.info(t('aiKb.alreadyLatest'));
+      else message.success(t('aiKb.updateSuccess'));
       reloadAll();
     } catch (e: any) {
       message.error(`${t('aiKb.updateFailed')}: ${e?.message || e}`);
     }
   };
 
+  // 仅在自动同步失败/未同步时供手动重试；成功后刷新以更新状态徽标。
   const handleSyncGateway = async () => {
     try {
       const ok = await syncKbToGateway();
-      if (ok) message.success(t('aiKb.syncSuccess'));
-      else message.warning(t('aiKb.syncSkipped'));
+      if (ok) {
+        message.success(t('aiKb.syncSuccess'));
+        reloadAll();
+      } else {
+        message.warning(t('aiKb.syncSkipped'));
+      }
     } catch (e: any) {
       message.error(`${t('aiKb.actionFailed')}: ${e?.message || e}`);
     }
@@ -70,20 +80,24 @@ const AiKbPage: React.FC = () => {
     }
   };
 
-  // 离线导入更新包：文件为 JSON {bundle,signature,sigAlgorithm,label,changelog}
+  // 离线导入更新包：文件为厂商 signtool 产出的二进制 .wnt（外层签名头 + 内层我方 AES-GCM），
+  // 直读字节转 Base64 上送（链路只传密文，不含 label/changelog）。
   const handleImportBundle = async (file: File) => {
     try {
-      const pkg = JSON.parse(await file.text());
-      const bundle = typeof pkg.bundle === 'string' ? pkg.bundle : JSON.stringify(pkg.bundle);
-      if (!bundle || !pkg.signature) {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (!bytes.length) {
         message.error(t('aiKb.invalidPackage'));
         return;
       }
-      await importKbOffline({
-        bundle, signature: pkg.signature, sigAlgorithm: pkg.sigAlgorithm,
-        label: pkg.label, changelog: pkg.changelog,
-      });
-      message.success(t('aiKb.updateSuccess'));
+      let binary = '';
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+      }
+      const b64 = btoa(binary);
+      const meta = await importKbOffline({ bundle: b64 });
+      if (meta?.unchanged) message.info(t('aiKb.alreadyLatest'));
+      else message.success(t('aiKb.updateSuccess'));
       reloadAll();
     } catch (e: any) {
       message.error(`${t('aiKb.updateFailed')}: ${e?.message || e}`);
@@ -133,6 +147,9 @@ const AiKbPage: React.FC = () => {
       {!canUpdate && (
         <Alert type="warning" showIcon message={t('aiKb.unauthorizedHint')} />
       )}
+      {canUpdate && !onlineConfigured && (
+        <Alert type="info" showIcon message={t('aiKb.onlineNotConfigured')} />
+      )}
 
       <Card
         title={t('aiKb.sectionActive')}
@@ -140,15 +157,13 @@ const AiKbPage: React.FC = () => {
         extra={
           <Space>
             <Button onClick={reloadAll}>{t('aiKb.refresh')}</Button>
-            <Button onClick={handleSyncGateway}>{t('aiKb.syncGateway')}</Button>
             <Upload
-              accept=".json"
+              accept=".wnt"
               showUploadList={false}
               disabled={!canUpdate}
               beforeUpload={(file: any) => {
                 Modal.confirm({
                   title: t('aiKb.importBundleConfirmTitle'),
-                  content: t('aiKb.importBundleConfirmContent'),
                   onOk: () => handleImportBundle(file),
                 });
                 return false;
@@ -156,7 +171,7 @@ const AiKbPage: React.FC = () => {
             >
               <Button disabled={!canUpdate}>{t('aiKb.offlineImport')}</Button>
             </Upload>
-            <Button type="primary" disabled={!canUpdate} onClick={handleOnlineUpdate}>
+            <Button type="primary" disabled={!canUpdate || !onlineConfigured} onClick={handleOnlineUpdate}>
               {t('aiKb.onlineUpdate')}
             </Button>
           </Space>
@@ -174,6 +189,16 @@ const AiKbPage: React.FC = () => {
             <Descriptions.Item label={t('aiKb.colSigAlg')}>{active.sigAlgorithm || '-'}</Descriptions.Item>
             <Descriptions.Item label={t('aiKb.colOperator')}>{active.operator || '-'}</Descriptions.Item>
             <Descriptions.Item label={t('aiKb.colCreatedAt')}>{formatDateTime(active.createdAt)}</Descriptions.Item>
+            <Descriptions.Item label={t('aiKb.gatewaySyncLabel')} span={2}>
+              {active.gatewaySynced ? (
+                <Tag color="green">{t('aiKb.gatewaySynced')}</Tag>
+              ) : (
+                <Space>
+                  <Tag color="orange">{t('aiKb.gatewaySyncPending')}</Tag>
+                  <Button type="link" size="small" onClick={handleSyncGateway}>{t('aiKb.gatewayRetry')}</Button>
+                </Space>
+              )}
+            </Descriptions.Item>
             <Descriptions.Item label={t('aiKb.colHash')} span={2}>
               <Typography.Text code copyable={{ text: active.kbHash }}>{active.kbHash || '-'}</Typography.Text>
             </Descriptions.Item>

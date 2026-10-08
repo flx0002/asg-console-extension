@@ -5,7 +5,7 @@ import {
 import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
 import {
-  getKbLicense, importKbLicense, activateKbLicenseOnline,
+  getKbLicense, importKbLicense,
 } from '@/services/ai-kb';
 import { KbLicenseStatus, KbLicenseFunction, KbDateTime } from '@/interfaces/ai-kb';
 
@@ -47,20 +47,20 @@ const LicensePage: React.FC = () => {
     return btoa(bin);
   };
 
+  // 导入授权文件：后端始终返回校验后的授权状态，必须按 status 反馈——
+  // 仅 valid 才算成功；expired/invalid 明确提示原因，避免“无效文件也提示成功”。
   const handleImportLicense = async (file: File) => {
     try {
-      await importKbLicense(await fileToBase64(file));
-      message.success(t('license.importSuccess'));
-      refreshLicense();
-    } catch (e: any) {
-      message.error(`${t('license.actionFailed')}: ${e?.message || e}`);
-    }
-  };
-
-  const handleUpdateLicense = async () => {
-    try {
-      await activateKbLicenseOnline();
-      message.success(t('license.updateSuccess'));
+      const res = await importKbLicense(await fileToBase64(file));
+      const st = res?.status;
+      const reason = res?.reason ? `: ${res.reason}` : '';
+      if (st === 'valid') {
+        message.success(t('license.importSuccess'));
+      } else if (st === 'expired') {
+        message.warning(`${t('license.statusExpired')}${reason}`);
+      } else {
+        message.error(`${t('license.statusInvalid')}${reason}`);
+      }
       refreshLicense();
     } catch (e: any) {
       message.error(`${t('license.actionFailed')}: ${e?.message || e}`);
@@ -139,7 +139,6 @@ const LicensePage: React.FC = () => {
             >
               <Button>{t('license.import')}</Button>
             </Upload>
-            <Button type="primary" onClick={handleUpdateLicense}>{t('license.update')}</Button>
           </Space>
         }
       >

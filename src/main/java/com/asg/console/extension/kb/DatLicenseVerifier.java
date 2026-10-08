@@ -95,6 +95,8 @@ public class DatLicenseVerifier implements LicenseVerifier {
         }
 
         LicenseInfo info = mapFields(obj);
+        // 验签已过：确认为厂商真实 .dat（后续过期/ESN/功能位不过仍属"真实凭证"，允许落库覆盖）
+        info.setAuthenticated(true);
 
         // 到期唯一以功能位自身 endTime 为准（见下方功能位校验）；不再对顶层授权时间做独立到期门。
         // licenseType（formal/temporary）仅作展示/审计标签，不参与到期判定。

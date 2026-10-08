@@ -20,10 +20,10 @@ import lombok.Data;
 /**
  * AI 分类知识库授权（license）状态（单行表，id=1）。
  *
- * <p>记录最后一次成功导入/激活的授权凭证与其校验结果。授权门控更新：
+ * <p>记录当前授权凭证与其校验结果（唯一来源：离线导入 {@code .dat}）。授权门控更新：
  * {@code status=valid} 且未过期时允许应用 KB 更新；否则更新入口禁用，
  * 检测仍使用最后一次有效库。原始凭证 {@code rawLicense} 仅存 Base64 密文/签名体，
- * 不含私钥。支持离线文件与在线激活两种来源。
+ * 不含私钥。
  */
 @Data
 @Entity
@@ -36,7 +36,6 @@ public class AiKbLicense {
     public static final String STATUS_ABSENT = "absent";
 
     public static final String SRC_OFFLINE = "offline";
-    public static final String SRC_ONLINE = "online";
 
     /** 授权类型：正式（永久有效）。 */
     public static final String TYPE_FORMAL = "formal";
@@ -129,7 +128,7 @@ public class AiKbLicense {
     @Column(name = "reason", length = 512)
     private String reason;
 
-    /** offline / online。 */
+    /** 授权来源（当前仅 offline）。 */
     @Column(name = "source", length = 16)
     private String source;
 

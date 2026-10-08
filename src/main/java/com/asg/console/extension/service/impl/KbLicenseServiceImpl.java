@@ -33,8 +33,8 @@ import com.asg.console.extension.repository.AiKbLicenseRepository;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * {@link KbLicenseService} 默认实现。授权状态是单行表（id=1），记录最后一次成功导入/
- * 激活的凭证与校验结果。校验委托给可插拔的 {@link LicenseVerifier}（{@code .dat} RSA/AES 信封，对齐 TEG）。
+ * {@link KbLicenseService} 默认实现。授权状态是单行表（id=1），记录最后一次导入的凭证与校验结果
+ * （在线激活端点已移除，来源仅为离线导入）。校验委托给可插拔的 {@link LicenseVerifier}（{@code .dat} RSA/AES 信封，对齐 TEG）。
  *
  * <p>安全默认：无有效授权时 {@link #canUpdate()} 返回 false，KB 更新入口全部拒绝，
  * 检测继续使用最后一次有效库。
@@ -104,18 +104,49 @@ public class KbLicenseServiceImpl implements KbLicenseService {
         return s;
     }
 
+    /** 单条授权原始内容上限：真实 .dat 很小；超限直接判非法且不落库，防超大文件撑爆 TEXT 列致 500。 */
+    private static final int MAX_RAW_LICENSE = 256 * 1024;
+
     @Override
-    public LicenseInfo importLicense(String rawLicense, String source) {
+    public KbLicenseStatus importLicense(String rawLicense, String source) {
         if (StringUtils.isBlank(rawLicense)) {
-            LicenseInfo invalid = LicenseInfo.invalid("授权内容为空");
-            persist(invalid, rawLicense, source);
-            return invalid;
+            return attemptStatus(LicenseInfo.invalid("授权内容为空"), source);
+        }
+        if (rawLicense.length() > MAX_RAW_LICENSE) {
+            log.warn("KB license import rejected: oversized rawLicense length={} (limit={})",
+                rawLicense.length(), MAX_RAW_LICENSE);
+            return attemptStatus(LicenseInfo.invalid("授权文件过大或非授权文件"), source);
         }
         LicenseInfo info = licenseVerifier.verify(rawLicense);
-        persist(info, rawLicense, source);
-        log.info("KB license import result: valid={}, status={}, source={}", info.isValid(),
-            info.isValid() ? AiKbLicense.STATUS_VALID : AiKbLicense.STATUS_INVALID, source);
-        return info;
+        if (info.isAuthenticated()) {
+            // 验签通过的真实 .dat（含过期/ESN 不符/缺功能位）→ 覆盖落库
+            persist(info, rawLicense, source);
+        } else {
+            // 非授权/篡改/错签名 → 拒绝且不改动既有授权（防止坏文件摧毁有效授权、不把超大垃圾写库）
+            log.warn("KB license import rejected as non-license; existing license preserved. reason={}",
+                info.getReason());
+        }
+        log.info("KB license import result: valid={}, authenticated={}, source={}",
+            info.isValid(), info.isAuthenticated(), source);
+        return attemptStatus(info, source);
+    }
+
+    /**
+     * 把「本次导入尝试」映射为前端可读状态。有效或已验签（真实但不授权）均已落库 → 回读权威状态；
+     * 非授权/未验签未落库 → 直接返回失败原因（不回读旧库，避免"坏文件被拒却显示旧有效授权=成功"的误导）。
+     */
+    private KbLicenseStatus attemptStatus(LicenseInfo info, String source) {
+        if (info.isValid() || info.isAuthenticated()) {
+            return getStatus();
+        }
+        KbLicenseStatus s = new KbLicenseStatus();
+        s.setDeviceFingerprint(EsnProvider.current());
+        s.setSource(source);
+        s.setCanUpdate(false);
+        boolean expired = info.getReason() != null && info.getReason().contains("过期");
+        s.setStatus(expired ? AiKbLicense.STATUS_EXPIRED : AiKbLicense.STATUS_INVALID);
+        s.setReason(info.getReason());
+        return s;
     }
 
     @Override
@@ -123,7 +154,7 @@ public class KbLicenseServiceImpl implements KbLicenseService {
         return getStatus().isCanUpdate();
     }
 
-    /** 落库最后一次授权尝试（含失败），单行覆盖 id=1。 */
+    /** 落库一次验签通过的真实授权（单行覆盖 id=1）；仅在 importLicense 判定 authenticated 时调用。 */
     private void persist(LicenseInfo info, String rawLicense, String source) {
         AiKbLicense row = licenseRepository.findById(1L).orElseGet(AiKbLicense::new);
         row.setId(1L);
@@ -155,6 +186,7 @@ public class KbLicenseServiceImpl implements KbLicenseService {
             boolean expired = info.getReason() != null && info.getReason().contains("过期");
             row.setStatus(expired ? AiKbLicense.STATUS_EXPIRED : AiKbLicense.STATUS_INVALID);
             row.setReason(info.getReason());
+            row.setActivatedAt(null); // 非有效授权不应残留旧激活时间，保证 status 与 activatedAt 一致
         }
         licenseRepository.save(row);
     }

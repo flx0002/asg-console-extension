@@ -18,10 +18,6 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.nio.charset.StandardCharsets;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.Signature;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -46,13 +42,28 @@ import com.asg.console.extension.service.KbLicenseService;
  */
 class AiKbP2Test {
 
-    private static KeyPair keyPair;
+    /** 内层 AES-256-GCM 测试密钥（仅测试用，非生产 ASG_KB_BUNDLE_KEY）。 */
+    private static final byte[] TEST_BUNDLE_KEY = filled((byte) 0x11, 32);
+    /** WNT 校签用临时 ECC 密钥（每次进程生成）。 */
+    private static byte[] eccPriv;
+    private static byte[] eccPub33;
+
+    private static byte[] filled(byte b, int n) {
+        byte[] a = new byte[n];
+        Arrays.fill(a, b);
+        return a;
+    }
 
     @BeforeAll
-    static void genKeys() throws Exception {
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
-        kpg.initialize(2048);
-        keyPair = kpg.generateKeyPair();
+    static void genKeys() {
+        eccPriv = WntVerifier.generateEccPriv();
+        eccPub33 = WntVerifier.eccPublicCompressed(eccPriv);
+    }
+
+    /** 把明文 bundle 打包成 Base64 .wnt（等价于本机 wnt_pack.ps1）。 */
+    private static String wntFor(String bundleJson) throws Exception {
+        byte[] inner = WntBundleCipher.seal(bundleJson, TEST_BUNDLE_KEY);
+        return Base64.getEncoder().encodeToString(WntBundleCodec.encode(inner, eccPriv, 3, 1));
     }
 
     private static KbBundle.Category fullCategory() {
@@ -73,13 +84,6 @@ class AiKbP2Test {
         b.setGeneratedAt("2026-09-22T00:00:00");
         b.setCategories(new ArrayList<>(Arrays.asList(cats)));
         return b;
-    }
-
-    private static String sign(String data) throws Exception {
-        Signature s = Signature.getInstance("SHA256withRSA");
-        s.initSign(keyPair.getPrivate());
-        s.update(data.getBytes(StandardCharsets.UTF_8));
-        return Base64.getEncoder().encodeToString(s.sign());
     }
 
     @Test
@@ -127,14 +131,13 @@ class AiKbP2Test {
         service.setVersionRepository(versionRepository);
         service.setLicenseService(licenseService);
         service.setKbCrypto(new KbCrypto("unit-test-key"));
-        service.setSignatureVerifier(new RsaKbSignatureVerifier(keyPair.getPublic()));
-        service.setOnlineClient(new KbOnlineClient(""));
+        service.setWntBundleCipher(new WntBundleCipher(eccPub33, null, TEST_BUNDLE_KEY));
+        service.setOnlineClient(new KbOnlineClient());
         service.setGatewaySync(gatewaySync);
 
         KbBundle bundle = bundleWith(fullCategory());
         String bundleJson = JSON.toJSONString(bundle);
-        service.importBundle(bundleJson, sign(bundleJson), "rsa-sha256", "l", "c",
-            AiKbVersion.SRC_OFFLINE, "admin");
+        service.importWntBundle(wntFor(bundleJson), AiKbVersion.SRC_OFFLINE, "admin");
 
         verify(gatewaySync, times(1)).syncCategories(any(KbBundle.class));
     }
@@ -163,8 +166,7 @@ class AiKbP2Test {
         service.setVersionRepository(versionRepository);
         service.setLicenseService(licenseService);
         service.setKbCrypto(crypto);
-        service.setSignatureVerifier(new RsaKbSignatureVerifier(keyPair.getPublic()));
-        service.setOnlineClient(new KbOnlineClient(""));
+        service.setOnlineClient(new KbOnlineClient());
         service.setGatewaySync(gatewaySync);
 
         assertTrue(service.syncActiveToGateway());

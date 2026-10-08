@@ -34,6 +34,12 @@ public class KbMeta {
     private String source;
     private String operator;
     private LocalDateTime createdAt;
+    /** 当前 active 是否已成功下发到网关（{@code kbHash == gatewaySyncedHash}）。 */
+    private boolean gatewaySynced;
+    /** 最近一次成功同步到网关的时间；null=尚未同步。 */
+    private LocalDateTime gatewaySyncedAt;
+    /** 仅导入响应使用：本次导入与当前 active 内容相同而未产生新版本时为 true。 */
+    private boolean unchanged;
 
     public static KbMeta from(AiKbVersion v) {
         KbMeta m = new KbMeta();
@@ -49,6 +55,8 @@ public class KbMeta {
         m.setSource(v.getSource());
         m.setOperator(v.getOperator());
         m.setCreatedAt(v.getCreatedAt());
+        m.setGatewaySynced(v.getKbHash() != null && v.getKbHash().equals(v.getGatewaySyncedHash()));
+        m.setGatewaySyncedAt(v.getGatewaySyncedAt());
         return m;
     }
 }

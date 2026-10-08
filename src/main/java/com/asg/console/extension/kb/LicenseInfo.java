@@ -69,6 +69,12 @@ public class LicenseInfo {
     private boolean valid;
     /** 无效原因（valid=false 时展示）。 */
     private String reason;
+    /**
+     * 厂商验签是否通过（true=确为厂商签名的真实 {@code .dat}，涵盖「真实但不授权」的过期/ESN 不符/缺功能位；
+     * false=非授权文件、魔数不符、解密或验签失败）。仅 authenticated 的凭证才允许覆盖落库，
+     * 非授权垃圾绝不改动既有授权，也不写入超大原始内容。
+     */
+    private boolean authenticated;
 
     /** 单个授权功能位：稳定的功能位 ID + 各自的签发/过期时间（显示名称不入库，由后端目录按 ID 解析）。 */
     @Data

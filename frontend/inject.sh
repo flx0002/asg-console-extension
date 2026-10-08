@@ -184,6 +184,10 @@ NEW_CHILDREN = """        children: [
             path: '/license',
           },
           {
+            name: 'menu.kbOnlineSetting',
+            path: '/kb-online-setting',
+          },
+          {
             name: 'menu.configVersionCenter',
             path: '/config-versions',
           },
@@ -235,6 +239,10 @@ PARENT = """      {
             path: '/license',
           },
           {
+            name: 'menu.kbOnlineSetting',
+            path: '/kb-online-setting',
+          },
+          {
             name: 'menu.configVersionCenter',
             path: '/config-versions',
           },
@@ -261,6 +269,7 @@ p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 exports = [
     "export * from './ai-shadow';",
+      "export * from './ai-kb';",
     "export * from './agent-guard';",
     "export * from './audit-chain-service';",
     "export * from './behavior-analysis';",

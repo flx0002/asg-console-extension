@@ -28,16 +28,17 @@ import com.asg.console.extension.kb.KbBundle;
 public interface AiKbService {
 
     /**
-     * 导入并应用一个 KB 更新包（离线上传或在线拉取共用）。
+     * 导入并应用一个 {@code .wnt} 加密签名的 KB 更新包（离线上传与在线拉取共用的唯一入口）。
      *
-     * @param bundleJson  明文 bundle JSON（验签与加密的原文）
-     * @param signature   厂商签名（Base64）
-     * @param sigAlgorithm 签名算法标识；为空则用验签器默认
-     * @param source      offline / online
-     * @return 新生效版本的脱敏视图
+     * <p>流水线：授权门控 → 外层 signtool 头校签（厂商公钥）+ 内层 AES-256-GCM 解密（对称密钥）
+     * → 解析校验 → 加密落库 → 版本切换 → 网关同步。真实性由校签层完成，任一前置不过即整体
+     * 拒绝，保持最后一次有效库不变。
+     *
+     * @param base64Wnt Base64 的 {@code .wnt} 容器字节（链路只传输密文，不含域名明文）
+     * @param source    offline / online
+     * @return 生效（或去重命中的当前 active）版本的脱敏视图
      */
-    KbMeta importBundle(String bundleJson, String signature, String sigAlgorithm, String label, String changelog,
-        String source, String operator);
+    KbMeta importWntBundle(String base64Wnt, String source, String operator);
 
     /** 在线拉取最新 KB 并导入（受授权门控 + 验签）。 */
     KbMeta onlineUpdate(String operator);

@@ -19,6 +19,12 @@ export interface KbMeta {
   source?: string; // online / offline / rollback / builtin
   operator?: string;
   createdAt?: KbDateTime;
+  /** 当前 active 是否已成功下发到网关（kbHash == gatewaySyncedHash）。 */
+  gatewaySynced?: boolean;
+  /** 最近一次成功同步到网关的时间；null=尚未同步。 */
+  gatewaySyncedAt?: KbDateTime;
+  /** 仅导入响应使用：本次导入与当前 active 内容相同而未产生新版本时为 true。 */
+  unchanged?: boolean;
 }
 
 /** 单个授权功能位：以稳定 id 为身份，name 为后端目录按 id 解析的权威显示名称。active 由后端按当前时间计算。 */
@@ -62,9 +68,13 @@ export interface KbLicenseStatus {
 
 /** 离线更新包：与后端 POST /v1/ai-kb/import 请求体、mock 在线服务器 OnlineKbPackage 同构。 */
 export interface KbImportPayload {
-  bundle: string; // KbBundle 明文 JSON 字符串（被签名/加密的原文）
-  signature: string; // 厂商签名（Base64）
-  sigAlgorithm?: string; // 签名算法；缺省用后端默认
-  label?: string;
-  changelog?: string;
+  bundle: string; // .wnt 容器（外层 signtool 签名头 + 内层我方 AES-256-GCM）的 Base64；链路不传明文 bundle
+}
+
+/** KB 在线更新设置视图：与后端 controller.dto.KbOnlineSetting 字段对齐。 */
+export interface KbOnlineSetting {
+  url?: string; // 页面持久化的服务器基址（可编辑；空=未设置）
+  envUrl?: string; // 部署 env 默认值（ASG_KB_ONLINE_URL，只读）
+  effectiveUrl?: string; // 生效地址 = url 优先，回退 env
+  configured?: boolean; // 生效地址是否非空（决定在线更新可用）
 }
