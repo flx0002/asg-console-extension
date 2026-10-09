@@ -18,6 +18,18 @@ const SOURCE_COLORS: Record<string, string> = {
   'pre-import': 'geekblue',
 };
 
+// 后端 createdAt 为 Java LocalDateTime 数组序列化 [年,月(1-12),日,时,分,秒,纳秒]，按浏览器本地时间格式化（DEF-001）
+const formatTime = (v: any): string => {
+  if (v == null || v === '') return '-';
+  if (Array.isArray(v) && v.length >= 3) {
+    const [y, mo, d, h = 0, mi = 0, s = 0, ns = 0] = v;
+    return new Date(y, mo - 1, d, h, mi, s, Math.floor(Number(ns) / 1e6)).toLocaleString('zh-CN');
+  }
+  const n = Number(v);
+  const dt = Number.isFinite(n) ? new Date(n) : new Date(v);
+  return Number.isNaN(dt.getTime()) ? String(v) : dt.toLocaleString('zh-CN');
+};
+
 const ConfigSnapshots: React.FC = () => {
   const { t } = useTranslation();
   const [backupLogVisible, setBackupLogVisible] = useState(false);
@@ -92,7 +104,7 @@ const ConfigSnapshots: React.FC = () => {
       key: 'source',
       render: (v: string) => <Tag color={SOURCE_COLORS[v] || 'default'}>{v}</Tag> },
     { title: t('configVersion.operator'), dataIndex: 'operator', key: 'operator' },
-    { title: t('configVersion.time'), dataIndex: 'createdAt', key: 'createdAt' },
+    { title: t('configVersion.time'), dataIndex: 'createdAt', key: 'createdAt', render: formatTime },
     {
       title: t('configVersion.actions'),
       key: 'actions',
@@ -178,7 +190,7 @@ const BackupLogs: React.FC = () => {
           dataIndex: 'result',
           key: 'result',
           render: (v: string) => <Tag color={v === 'success' ? 'green' : 'red'}>{v}</Tag> },
-        { title: t('configVersion.time'), dataIndex: 'createdAt', key: 'createdAt' },
+        { title: t('configVersion.time'), dataIndex: 'createdAt', key: 'createdAt', render: formatTime },
       ]}
       dataSource={logs || []}
       pagination={false}
