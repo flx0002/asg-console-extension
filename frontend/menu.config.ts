@@ -18,12 +18,8 @@ export const asgMenuRoutes: any[] = [
     icon: <EyeOutlined />,
     children: [
       {
-        name: 'menu.aiShadowDetected',
-        path: '/ai-shadow/detected',
-      },
-      {
-        name: 'menu.aiShadowRoute',
-        path: '/ai-shadow/route',
+        name: 'menu.aiShadow',
+        path: '/ai-shadow',
       },
       {
         name: 'menu.aiKb',

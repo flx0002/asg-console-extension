@@ -24,6 +24,9 @@ public class DnsPolicyResponse {
     /** monitoring (record only) or enforcement (block unauthorized). */
     private String mode;
 
+    /** Master feature switch. When false, shadow AI detection is fully disabled. */
+    private boolean enabled = true;
+
     /** Domains allowed even in enforcement mode. */
     private List<String> authorizedDomains;
 

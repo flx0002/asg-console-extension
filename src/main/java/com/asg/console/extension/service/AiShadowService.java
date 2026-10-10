@@ -53,4 +53,14 @@ public interface AiShadowService {
     void setDetectMode(String mode);
 
     String getDetectMode();
+
+    /**
+     * Master feature switch for the whole shadow AI detection capability.
+     * Defaults to enabled. Disabling stops gateway detection/recording/blocking
+     * (WasmPlugin defaultConfigDisable=true) and the DNS collector fallback.
+     */
+    void setEnabled(boolean enabled);
+
+    /** Current enable state; true when no global instance exists yet (default enabled). */
+    boolean getEnabled();
 }

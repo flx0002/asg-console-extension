@@ -156,4 +156,26 @@ public class AiShadowController {
         String mode = aiShadowService.getDetectMode();
         return ControllerUtil.buildResponseEntity(mode);
     }
+
+    @PutMapping("/enabled")
+    @Operation(summary = "Enable or disable the whole shadow AI detection feature (default enabled)")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Enable state updated successfully"),
+        @ApiResponse(responseCode = "400", description = "Invalid request parameters"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<Boolean>> setEnabled(@RequestBody Map<String, Object> body) {
+        if (body == null || body.get("enabled") == null) {
+            throw new IllegalArgumentException("enabled is required");
+        }
+        boolean enabled = Boolean.parseBoolean(String.valueOf(body.get("enabled")));
+        aiShadowService.setEnabled(enabled);
+        return ControllerUtil.buildResponseEntity(enabled);
+    }
+
+    @GetMapping("/enabled")
+    @Operation(summary = "Get whether the shadow AI detection feature is enabled")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Enable state retrieved successfully"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<Boolean>> getEnabled() {
+        return ControllerUtil.buildResponseEntity(aiShadowService.getEnabled());
+    }
 }

@@ -30,6 +30,14 @@ export const getAiShadowDetectMode = (): Promise<string> => {
   return request.get<any, string>('/v1/ai-shadow/detect-mode');
 };
 
+export const getAiShadowEnabled = (): Promise<boolean> => {
+  return request.get<any, boolean>('/v1/ai-shadow/enabled');
+};
+
+export const setAiShadowEnabled = (enabled: boolean): Promise<boolean> => {
+  return request.put<any, boolean>('/v1/ai-shadow/enabled', { enabled });
+};
+
 export const getAiShadowDetectEvents = (params: AiShadowDetectEventQuery = {}): Promise<AiShadowDetectEventPage> => {
   return request.get<any, AiShadowDetectEventPage>('/v1/ai-shadow/detect-events', { params });
 };

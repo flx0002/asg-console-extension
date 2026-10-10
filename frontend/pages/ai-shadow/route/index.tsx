@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 const REFRESH_INTERVAL = 30000;
 
-const AiShadowRoutePage: React.FC = () => {
+const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = ({ enabled = true }) => {
   const { t } = useTranslation();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -126,6 +126,7 @@ const AiShadowRoutePage: React.FC = () => {
             type="primary"
             icon={<SafetyCertificateOutlined />}
             loading={isLoading}
+            disabled={!enabled}
             onClick={() => handleAction(routeStatus.routeName, record.consumer, 'authorize')}
           >
             {t('aiShadow.authorize')}
@@ -204,6 +205,7 @@ const AiShadowRoutePage: React.FC = () => {
                   <Tooltip title={isRouteEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}>
                     <Switch
                       checked={isRouteEnforcement}
+                      disabled={!enabled}
                       checkedChildren={t('aiShadow.enforcementMode')}
                       unCheckedChildren={t('aiShadow.monitoringMode')}
                       onChange={() => handleModeSwitch(routeStatus.routeName, routeStatus.mode)}

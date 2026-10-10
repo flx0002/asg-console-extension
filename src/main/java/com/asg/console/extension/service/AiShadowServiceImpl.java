@@ -37,6 +37,7 @@ import com.alibaba.higress.sdk.constant.CommonKey;
 import com.alibaba.higress.sdk.constant.HigressConstants;
 import com.alibaba.higress.sdk.constant.plugin.BuiltInPluginName;
 import com.alibaba.higress.sdk.exception.BusinessException;
+import com.alibaba.higress.sdk.exception.ResourceConflictException;
 import com.alibaba.higress.sdk.model.CommonPageQuery;
 import com.alibaba.higress.sdk.model.PaginatedResult;
 import com.asg.console.extension.model.AiShadowActionRequest;
@@ -68,6 +69,7 @@ public class AiShadowServiceImpl implements AiShadowService {
 
     private static final String MODE_MONITORING = "monitoring";
     private static final String MODE_ENFORCEMENT = "enforcement";
+    private static final int SET_ENABLED_MAX_RETRY = 5;
     private static final String ACTION_AUTHORIZE = "authorize";
     private static final String ACTION_BLOCK = "block";
     private static final String CONSUMER_NONE = "none";
@@ -283,9 +285,9 @@ public class AiShadowServiceImpl implements AiShadowService {
 
         boolean authEnabled = keyAuthInstance != null && Boolean.TRUE.equals(keyAuthInstance.getEnabled());
         // Determine mode based on identify_only config:
-        // - enabled=true + identify_only=false → enforcement mode (reject unauthenticated)
-        // - enabled=true + identify_only=true  → monitoring mode (identify but don't reject)
-        // - enabled=false                      → monitoring mode (legacy, can't identify consumers)
+        // - enabled=true + identify_only=false 鈫?enforcement mode (reject unauthenticated)
+        // - enabled=true + identify_only=true  鈫?monitoring mode (identify but don't reject)
+        // - enabled=false                      鈫?monitoring mode (legacy, can't identify consumers)
         boolean identifyOnly = false;
         if (authEnabled && keyAuthInstance.getConfigurations() != null) {
             Object identifyOnlyObj = keyAuthInstance.getConfigurations().get(
@@ -931,6 +933,55 @@ public class AiShadowServiceImpl implements AiShadowService {
         return MODE_MONITORING;
     }
 
+    @Override
+    public void setEnabled(boolean enabled) {
+        // Rapid toggles can fire concurrent PUTs that read the same WasmPlugin CR resourceVersion;
+        // the losing update throws ResourceConflictException (surfaced as HTTP 500). The write is an
+        // idempotent boolean set (enabled = !defaultConfigDisable), so re-query the fresh version and
+        // retry instead of failing the whole request.
+        int attempts = 0;
+        while (true) {
+            WasmPluginInstance instance = wasmPluginInstanceService.query(
+                WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.AI_SHADOW_DETECT, false);
+            if (instance == null) {
+                // No global instance yet: materialize a default one so the switch persists.
+                instance = wasmPluginInstanceService.createEmptyInstance(AsgPluginConstants.AI_SHADOW_DETECT);
+                instance.setGlobalTarget();
+                Map<String, Object> configurations = new HashMap<>();
+                configurations.put("mode", MODE_MONITORING);
+                instance.setConfigurations(configurations);
+            }
+            // WasmPluginInstance.enabled maps to CR spec.defaultConfigDisable (enabled = !disable).
+            instance.setEnabled(enabled);
+            try {
+                wasmPluginInstanceService.addOrUpdate(instance);
+                break;
+            } catch (ResourceConflictException e) {
+                if (++attempts >= SET_ENABLED_MAX_RETRY) {
+                    throw e;
+                }
+                try {
+                    Thread.sleep(50L * attempts);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+            }
+        }
+        writeAdminAudit(enabled ? "enable_shadow_ai" : "disable_shadow_ai", null, null, null);
+    }
+
+    @Override
+    public boolean getEnabled() {
+        WasmPluginInstance instance = wasmPluginInstanceService.query(
+            WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.AI_SHADOW_DETECT, false);
+        if (instance == null) {
+            // Feature defaults to enabled until explicitly disabled.
+            return true;
+        }
+        return !Boolean.FALSE.equals(instance.getEnabled());
+    }
+
     /**
      * Write an admin operation entry to the audit chain (IR-003).
      *
@@ -1007,13 +1058,13 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
         switch (category) {
             case "saas_ai":
-                return "云端SaaS AI";
+                return "浜戠SaaS AI";
             case "api_integrated_ai":
-                return "API集成AI";
+                return "API闆嗘垚AI";
             case "embedded_ai":
-                return "嵌入式AI";
+                return "宓屽叆寮廇I";
             case "local_deployed_ai":
-                return "本地部署AI";
+                return "鏈湴閮ㄧ讲AI";
             case "ai_agent":
                 return "AI Agent";
             default:

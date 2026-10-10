@@ -197,11 +197,32 @@ public class AiShadowDetectController {
         }
         DnsPolicyResponse response = new DnsPolicyResponse();
         response.setMode(policy.getMode());
+        response.setEnabled(isFeatureEnabled());
         response.setAuthorizedDomains(domains);
         // IR-001 alignment: expose the gateway AI domain category library so the
         // bypass collector classifies with the same categories/risk levels.
         response.setCategories(loadGatewayCategories());
         return response;
+    }
+
+    /**
+     * Whether the shadow AI feature is currently enabled, read from the
+     * ai-shadow-detect global plugin instance (enabled = !defaultConfigDisable).
+     * Defaults to true when the instance is absent or the check fails, matching
+     * the product default (feature on until explicitly turned off).
+     */
+    private boolean isFeatureEnabled() {
+        try {
+            WasmPluginInstance instance = wasmPluginInstanceService.query(
+                WasmPluginInstanceScope.GLOBAL, null, AsgPluginConstants.AI_SHADOW_DETECT, false);
+            if (instance == null) {
+                return true;
+            }
+            return !Boolean.FALSE.equals(instance.getEnabled());
+        } catch (Exception e) {
+            log.warn("Failed to read shadow AI enable state, defaulting to enabled", e);
+            return true;
+        }
     }
 
     /**

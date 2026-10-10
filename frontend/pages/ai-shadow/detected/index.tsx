@@ -13,7 +13,7 @@ const EVENT_PAGE_SIZE = 10;
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
-// 后端 LocalDateTime 可能序列化为 [y,m,d,h,m,s,ns] 数组，统一转可读字符串
+// 鍚庣 LocalDateTime 鍙兘搴忓垪鍖栦负 [y,m,d,h,m,s,ns] 鏁扮粍锛岀粺涓€杞彲璇诲瓧绗︿覆
 const formatEventTime = (t: string | number[] | undefined): string => {
   if (!t) return '-';
   if (Array.isArray(t) && t.length >= 6) {
@@ -33,13 +33,13 @@ const parseDetail = (detail?: string): Record<string, unknown> | null => {
   }
 };
 
-const AiShadowDetectedPage: React.FC = () => {
+const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true }) => {
   const { t } = useTranslation();
   const [detectMode, setDetectModeState] = useState<string>('monitoring');
   const [eventPage, setEventPage] = useState(0);
   const [eventSize, setEventSize] = useState(EVENT_PAGE_SIZE);
 
-  // Load current detect mode on mount
+  // Load current detect mode on mount（启用状态由外层统一入口管理）
   useEffect(() => {
     getAiShadowDetectMode().then((mode) => {
       if (mode === 'monitoring' || mode === 'enforcement') {
@@ -201,6 +201,7 @@ const AiShadowDetectedPage: React.FC = () => {
           type="link"
           size="small"
           icon={<CheckOutlined />}
+          disabled={!enabled}
           onClick={() => handleAuthorizeDomain(record.sni)}
         >
           {t('aiShadow.authzBtn')}
@@ -285,7 +286,7 @@ const AiShadowDetectedPage: React.FC = () => {
                   <Tag color={link.auditAction === 'authorize_domain' ? 'green' : 'orange'}>
                     {link.auditAction === 'authorize_domain' ? t('aiShadow.auditAuthorized') : t('aiShadow.auditDeauthorized')}
                   </Tag>
-                  <span style={{ fontFamily: 'monospace' }}>{fmtMs(link.auditTimeMs)} · #{link.auditEventId}</span>
+                  <span style={{ fontFamily: 'monospace' }}>{fmtMs(link.auditTimeMs)} 路 #{link.auditEventId}</span>
                 </>
               : <span style={{ color: '#999' }}>{t('aiShadow.auditNoHandling')}</span>}
           </Descriptions.Item>
@@ -293,7 +294,7 @@ const AiShadowDetectedPage: React.FC = () => {
         {link && link.hostEventCount !== undefined && (
           <Descriptions.Item label={t('aiShadow.auditHostLabel')}>
             <span style={{ fontFamily: 'monospace' }}>
-              {record.srcIp} · {t('aiShadow.auditHostEvents')} {link.hostEventCount} · {t('aiShadow.auditHostLast')} {fmtMs(link.hostLastEventMs)}
+              {record.srcIp} 路 {t('aiShadow.auditHostEvents')} {link.hostEventCount} 路 {t('aiShadow.auditHostLast')} {fmtMs(link.hostLastEventMs)}
             </span>
           </Descriptions.Item>
         )}
@@ -433,6 +434,7 @@ const AiShadowDetectedPage: React.FC = () => {
             <Tooltip title={isEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}>
               <Switch
                 checked={isEnforcement}
+                disabled={!enabled}
                 checkedChildren={t('aiShadow.enforcementMode')}
                 unCheckedChildren={t('aiShadow.monitoringMode')}
                 onChange={() => handleDetectModeSwitch(detectMode)}
@@ -473,9 +475,10 @@ const AiShadowDetectedPage: React.FC = () => {
             value={authzInput}
             placeholder={t('aiShadow.authzAddPlaceholder')}
             onChange={(e) => setAuthzInput(e.target.value)}
+            disabled={!enabled}
             onPressEnter={handleAddDomain}
           />
-          <Button type="primary" icon={<PlusOutlined />} onClick={handleAddDomain}>
+          <Button type="primary" icon={<PlusOutlined />} disabled={!enabled} onClick={handleAddDomain}>
             {t('aiShadow.authzAddBtn')}
           </Button>
         </Space>
@@ -486,7 +489,7 @@ const AiShadowDetectedPage: React.FC = () => {
             (authzData?.domains || []).map((domain: string) => (
               <Tag
                 key={domain}
-                closable
+                closable={enabled}
                 onClose={(e) => { e.preventDefault(); handleRemoveDomain(domain); }}
                 style={{ fontFamily: 'monospace', marginBottom: 4 }}
               >
