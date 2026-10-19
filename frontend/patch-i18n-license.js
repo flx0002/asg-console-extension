@@ -76,8 +76,9 @@ const I18N = {
       gatewaySynced: '已同步',
       gatewaySyncPending: '未同步',
       gatewayRetry: '重试同步',
-      offlineImport: '离线导入更新包',
+      offlineImport: '离线导入',
       importBundleConfirmTitle: '确认导入该 KB 更新包？',
+      importBundleConfirmContent: '此操作将覆盖当前生效知识库。',
       invalidPackage: '更新包格式无效，请选择 .wnt 文件',
       onlineNotConfigured: '未配置在线更新服务器地址，请先前往「系统配置 › 在线更新」设置。',
     },
@@ -140,8 +141,9 @@ const I18N = {
       gatewaySynced: 'Synced',
       gatewaySyncPending: 'Not synced',
       gatewayRetry: 'Retry sync',
-      offlineImport: 'Import Update Package',
+      offlineImport: 'Offline Import',
       importBundleConfirmTitle: 'Import this KB update package?',
+      importBundleConfirmContent: 'This will overwrite the currently active knowledge base.',
       invalidPackage: 'Invalid package format, please choose a .wnt file',
       onlineNotConfigured: 'No online update server address is configured. Set it under "System Settings > Online Update" first.',
     },
@@ -187,11 +189,7 @@ if (json.aiKb && Object.prototype.hasOwnProperty.call(json.aiKb, 'pageHint')) {
   changed = true;
 }
 
-// 3b) 删除 aiKb.importBundleConfirmContent（离线导入确认框去内部机制措辞；页已不引用该键）
-if (json.aiKb && Object.prototype.hasOwnProperty.call(json.aiKb, 'importBundleConfirmContent')) {
-  delete json.aiKb.importBundleConfirmContent;
-  changed = true;
-}
+// 3b) aiKb.importBundleConfirmContent 现由下方 aiKbAdd 供给（离线导入确认框「标题+覆盖提示」说明式，措辞去内部机制）
 
 // 4) 改写 aiKb.unauthorizedHint（去「激活」措辞）
 if (json.aiKb && json.aiKb.unauthorizedHint !== spec.unauthorizedHint) {

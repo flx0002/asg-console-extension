@@ -1,9 +1,10 @@
 /* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
-import { Card, Switch, Select, Input, InputNumber, Radio, Table, Tag, Button, message, Space, Divider } from 'antd';
+import { Card, Switch, Select, Input, InputNumber, Radio, Tag, Button, message, Space, Divider, Typography } from 'antd';
 import { useRequest } from 'ahooks';
-import { getGlobalPluginInstance, updateGlobalPluginInstance } from '@/services';
-import { getAuditLogs, getAuditSessions } from '@/services/audit-chain-service';
+import { getGlobalPluginInstance, updateGlobalPluginInstance, updateRoutePluginInstance } from '@/services';
+import { GlobalSwitchHint, RouteScopeCard, useRouteScope } from '../_route-scope';
+// 审计事件入口已统一到「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离）
 import { useTranslation } from 'react-i18next';
 import yaml from 'js-yaml';
 
@@ -31,61 +32,13 @@ const defaultFormState: FormState = {
 
 const AiSecurityGuardPage: React.FC = () => {
   const { t } = useTranslation();
+  const scope = useRouteScope(PLUGIN_NAME);
   const [enabled, setEnabled] = useState(false);
   const [form, setForm] = useState<FormState>({ ...defaultFormState });
   const [initialForm, setInitialForm] = useState<FormState>({ ...defaultFormState });
   const [pluginData, setPluginData] = useState<any>(null);
-  const [detectionLogs, setDetectionLogs] = useState<any[]>([]);
 
-  const { run: loadDetectionLogs } = useRequest(
-    async () => {
-      const sessionsRes: any = await getAuditSessions();
-      const sessions = sessionsRes?.list || sessionsRes?.data?.list || sessionsRes || [];
-      if (!Array.isArray(sessions) || sessions.length === 0) return [];
-      const validSessions = sessions.filter(
-        (s: any) => s?.sessionId && /^[a-zA-Z0-9_-]{1,128}$/.test(s.sessionId),
-      );
-      const results = await Promise.all(
-        validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 20 }).catch(() => null)),
-      );
-      const allLogs: any[] = [];
-      results.forEach((res: any) => {
-        if (!res) return;
-        const records = res?.list || res?.data?.list || [];
-        allLogs.push(...records);
-      });
-      allLogs.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-      return allLogs.slice(0, 20);
-    },
-    {
-      manual: true,
-      onSuccess: (allLogs) => {
-        const mapped = allLogs.map((r: any) => {
-          const events = r.events || [];
-          const eventTypes = events.map((e: any) => e.type).join(', ');
-          const eventDetail = events.map((e: any) => e.detail).join('; ');
-          const risk = r.risk_score ?? 0;
-          const riskLevel = risk >= 60 ? 'high' : risk >= 30 ? 'medium' : 'low';
-          const action = r.action || 'passed';
-          const result = action === 'blocked' ? 'blocked' : action === 'masked' ? 'masked' : 'passed';
-          const ts = r.timestamp ?? 0;
-          return {
-            time: ts ? new Date(ts).toLocaleString('zh-CN') : '-',
-            dimension: eventTypes || 'security_event',
-            riskLevel,
-            result,
-            summary: eventDetail || `${r.model || ''} - ${r.tool_name || ''}`,
-          };
-        });
-        setDetectionLogs(mapped);
-      },
-    },
-  );
-
-  useEffect(() => {
-    loadDetectionLogs();
-  }, []);
+  // 检测日志已迁移至「AI 内容安全 → 内容安全事件」统一入口（三权分立：配置员与审计员权限分离）
 
   const { run: loadConfig, loading } = useRequest(
     () => getGlobalPluginInstance(PLUGIN_NAME),
@@ -137,21 +90,32 @@ const AiSecurityGuardPage: React.FC = () => {
     }
   };
 
+  const buildRawConfig = () => yaml.dump({
+    detectMode: form.detectMode,
+    checkRequest: form.requestDetect,
+    checkResponse: form.responseDetect,
+    riskThreshold: form.riskThreshold,
+    riskAction: form.riskAction,
+    rejectMessage: form.rejectMessage,
+    timeout: form.timeout,
+  });
+
   const handleSave = async () => {
     try {
-      const configObj = {
-        detectMode: form.detectMode,
-        checkRequest: form.requestDetect,
-        checkResponse: form.responseDetect,
-        riskThreshold: form.riskThreshold,
-        riskAction: form.riskAction,
-        rejectMessage: form.rejectMessage,
-        timeout: form.timeout,
-      };
-      const rawConfig = yaml.dump(configObj);
+      const rawConfig = buildRawConfig();
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      if (scope.selected.length) {
+        const failed: string[] = [];
+        await Promise.all(scope.selected.map(async (n) => {
+          try {
+            await updateRoutePluginInstance({ name: n, pluginName: PLUGIN_NAME }, { enabled: true, rawConfigurations: rawConfig });
+          } catch { failed.push(n); }
+        }));
+        if (failed.length) message.warning(t('aiContentSec.routeScope.syncFail', { names: failed.join(', ') }));
+        await scope.reload();
+      }
       setInitialForm({ ...form });
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
@@ -167,65 +131,14 @@ const AiSecurityGuardPage: React.FC = () => {
     setForm(prev => ({ ...prev, [key]: value }));
   };
 
-  const logColumns = [
-    {
-      title: t('aiContentSec.time'),
-      dataIndex: 'time',
-      key: 'time',
-    },
-    {
-      title: t('aiContentSec.securityGuard.logDimension'),
-      dataIndex: 'dimension',
-      key: 'dimension',
-    },
-    {
-      title: t('aiContentSec.securityGuard.logRiskLevel'),
-      dataIndex: 'riskLevel',
-      key: 'riskLevel',
-      render: (level: string) => {
-        const colorMap: Record<string, string> = { high: 'red', medium: 'orange', low: 'green' };
-        const labelMap: Record<string, string> = {
-          high: t('aiContentSec.securityGuard.highRisk'),
-          medium: t('aiContentSec.securityGuard.mediumRisk'),
-          low: t('aiContentSec.securityGuard.lowRisk'),
-        };
-        return <Tag color={colorMap[level] || 'default'}>{labelMap[level] || level}</Tag>;
-      },
-    },
-    {
-      title: t('aiContentSec.securityGuard.logResult'),
-      dataIndex: 'result',
-      key: 'result',
-      render: (result: string) => {
-        const colorMap: Record<string, string> = { blocked: 'red', masked: 'orange', passed: 'green' };
-        const labelMap: Record<string, string> = {
-          blocked: t('aiContentSec.securityGuard.blocked'),
-          masked: t('aiContentSec.securityGuard.masked'),
-          passed: t('aiContentSec.securityGuard.passed'),
-        };
-        return <Tag color={colorMap[result] || 'default'}>{labelMap[result] || result}</Tag>;
-      },
-    },
-    {
-      title: t('aiContentSec.securityGuard.logSummary'),
-      dataIndex: 'summary',
-      key: 'summary',
-      ellipsis: true,
-    },
-  ];
-
   return (
     <div style={{ padding: '0 0 24px' }}>
-      {/* Section 1: Plugin Status */}
-      <Card style={{ marginBottom: 16 }}>
-        <Button
-          type="link"
-          onClick={() => window.location.assign('/config-versions')}
-        >
-          {t('configVersion.entry')}
-        </Button>
-      </Card>
-      <Card title={t('aiContentSec.pluginStatus')} style={{ marginBottom: 16 }} loading={loading}>
+      {/* Zone 1: Plugin Status */}
+      <Card
+        title={t('aiContentSec.pluginStatus')}
+        style={{ marginBottom: 16 }}
+        loading={loading}
+      >
         <Space size="large" align="center">
           <Switch
             checked={enabled}
@@ -236,10 +149,17 @@ const AiSecurityGuardPage: React.FC = () => {
           <Tag color={enabled ? 'green' : 'default'}>
             {enabled ? t('aiContentSec.enabled') : t('aiContentSec.disabled')}
           </Tag>
+          <Typography.Text type="secondary">
+            {t('aiContentSec.routeScope.summary', { count: scope.bound.length })}
+          </Typography.Text>
         </Space>
+        <GlobalSwitchHint />
       </Card>
 
-      {/* Section 2: Configuration */}
+      {/* Zone 2: Route Scope */}
+      <RouteScopeCard scope={scope} getRawConfig={buildRawConfig} />
+
+      {/* Zone 3: Configuration */}
       <Card title={t('aiContentSec.config')} style={{ marginBottom: 16 }}>
         <div style={{ maxWidth: 600 }}>
           <div style={{ marginBottom: 16 }}>
@@ -322,24 +242,16 @@ const AiSecurityGuardPage: React.FC = () => {
           </div>
 
           <Divider />
-          <Space>
-            <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
-            <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
-          </Space>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Space>
+              <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
+              <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
+            </Space>
+          </div>
         </div>
       </Card>
 
-      {/* Section 3: Recent Detection Logs */}
-      <Card title={t('aiContentSec.recentLogs')}>
-        <Table
-          dataSource={detectionLogs}
-          columns={logColumns}
-          rowKey="time"
-          pagination={false}
-          size="small"
-          locale={{ emptyText: t('aiContentSec.noLogData') }}
-        />
-      </Card>
+      {/* Zone 4: 检测日志已迁移至「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离） */}
     </div>
   );
 };

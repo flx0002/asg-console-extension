@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Switch, Checkbox, Input, Table, Tag, Button, message, Space, Divider, Modal } from 'antd';
+import { Card, Switch, Checkbox, Input, Table, Tag, Button, message, Space, Divider, Modal, Popconfirm, Typography } from 'antd';
 import { useRequest } from 'ahooks';
-import { getGlobalPluginInstance, updateGlobalPluginInstance } from '@/services';
-import { getAuditLogs, getAuditSessions } from '@/services/audit-chain-service';
+import { getGlobalPluginInstance, updateGlobalPluginInstance, updateRoutePluginInstance } from '@/services';
+import { GlobalSwitchHint, RouteScopeCard, useRouteScope } from '../_route-scope';
+// 审计事件入口已统一到「AI 内容安全 → 内容安全事件」（三权分立），本页不再内嵌日志表
 import { useTranslation } from 'react-i18next';
 import yaml from 'js-yaml';
 
@@ -44,59 +45,13 @@ const defaultFormState: FormState = {
 
 const AiPiiGuardPage: React.FC = () => {
   const { t } = useTranslation();
+  const scope = useRouteScope(PLUGIN_NAME);
   const [enabled, setEnabled] = useState(false);
   const [form, setForm] = useState<FormState>({ ...defaultFormState });
   const [initialForm, setInitialForm] = useState<FormState>({ ...defaultFormState });
   const [pluginData, setPluginData] = useState<any>(null);
-  const [detectionLogs, setDetectionLogs] = useState<any[]>([]);
 
-  const { run: loadDetectionLogs } = useRequest(
-    async () => {
-      const sessionsRes: any = await getAuditSessions();
-      const sessions = sessionsRes?.list || sessionsRes?.data?.list || sessionsRes || [];
-      if (!Array.isArray(sessions) || sessions.length === 0) return [];
-      const validSessions = sessions.filter(
-        (s: any) => s?.sessionId && /^[a-zA-Z0-9_-]{1,128}$/.test(s.sessionId),
-      );
-      const results = await Promise.all(
-        validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null)),
-      );
-      const allLogs: any[] = [];
-      results.forEach((res: any) => {
-        if (!res) return;
-        const records = res?.list || res?.data?.list || [];
-        records.forEach((r: any) => {
-          const events = r.events || [];
-          if (events.some((e: any) => e.type === EVENT_TYPE_FILTER)) {
-            allLogs.push(r);
-          }
-        });
-      });
-      allLogs.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-      return allLogs.slice(0, 20);
-    },
-    {
-      manual: true,
-      onSuccess: (allLogs) => {
-        const mapped = allLogs.map((r: any) => {
-          const events = r.events || [];
-          const piiEvent = events.find((e: any) => e.type === EVENT_TYPE_FILTER) || {};
-          const ts = r.timestamp ?? 0;
-          return {
-            time: ts ? new Date(ts).toLocaleString('zh-CN') : '-',
-            type: piiEvent.type || EVENT_TYPE_FILTER,
-            original: piiEvent.detail || '-',
-            masked: r.action === 'masked' ? t('aiContentSec.securityGuard.masked') : '-',
-            source: r.step_type === 'user_input' ? 'request' : 'response',
-          };
-        });
-        setDetectionLogs(mapped);
-      },
-    },
-  );
-
-  useEffect(() => { loadDetectionLogs(); }, []);
+  // 检测日志已迁移至「AI 内容安全 → 内容安全事件」统一入口（三权分立：配置员与审计员权限分离）
 
   // Modal state for custom rule CRUD
   const [modalVisible, setModalVisible] = useState(false);
@@ -152,18 +107,29 @@ const AiPiiGuardPage: React.FC = () => {
     }
   };
 
+  const buildRawConfig = () => yaml.dump({
+    checkRequest: form.requestProtect,
+    checkResponse: form.responseProtect,
+    rules: form.builtInRules,
+    customRules: form.customRules,
+  });
+
   const handleSave = async () => {
     try {
-      const configObj = {
-        checkRequest: form.requestProtect,
-        checkResponse: form.responseProtect,
-        rules: form.builtInRules,
-        customRules: form.customRules,
-      };
-      const rawConfig = yaml.dump(configObj);
+      const rawConfig = buildRawConfig();
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      if (scope.selected.length) {
+        const failed: string[] = [];
+        await Promise.all(scope.selected.map(async (n) => {
+          try {
+            await updateRoutePluginInstance({ name: n, pluginName: PLUGIN_NAME }, { enabled: true, rawConfigurations: rawConfig });
+          } catch { failed.push(n); }
+        }));
+        if (failed.length) message.warning(t('aiContentSec.routeScope.syncFail', { names: failed.join(', ') }));
+        await scope.reload();
+      }
       setInitialForm({ ...form });
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
@@ -196,14 +162,9 @@ const AiPiiGuardPage: React.FC = () => {
   };
 
   const handleDeleteRule = (index: number) => {
-    Modal.confirm({
-      title: t('aiContentSec.piiGuard.deleteConfirm'),
-      onOk: () => {
-        const newRules = [...form.customRules];
-        newRules.splice(index, 1);
-        updateField('customRules', newRules);
-      },
-    });
+    const newRules = [...form.customRules];
+    newRules.splice(index, 1);
+    updateField('customRules', newRules);
   };
 
   const handleModalOk = () => {
@@ -245,60 +206,27 @@ const AiPiiGuardPage: React.FC = () => {
       render: (_: any, record: CustomRule, index: number) => (
         <Space size="small">
           <a onClick={() => handleEditRule(record, index)}>{t('aiContentSec.piiGuard.edit')}</a>
-          <a onClick={() => handleDeleteRule(index)} style={{ color: 'red' }}>{t('aiContentSec.piiGuard.delete')}</a>
+          <Popconfirm
+            title={t('aiContentSec.piiGuard.deleteConfirm')}
+            onConfirm={() => handleDeleteRule(index)}
+            okText={t('aiContentSec.piiGuard.delete')}
+            cancelText={t('aiContentSec.piiGuard.edit')}
+          >
+            <a style={{ color: '#ff4d4f' }}>{t('aiContentSec.piiGuard.delete')}</a>
+          </Popconfirm>
         </Space>
       ),
     },
   ];
 
-  const logColumns = [
-    {
-      title: t('aiContentSec.time'),
-      dataIndex: 'time',
-      key: 'time',
-    },
-    {
-      title: t('aiContentSec.piiGuard.logType'),
-      dataIndex: 'type',
-      key: 'type',
-    },
-    {
-      title: t('aiContentSec.piiGuard.logOriginal'),
-      dataIndex: 'original',
-      key: 'original',
-    },
-    {
-      title: t('aiContentSec.piiGuard.logMasked'),
-      dataIndex: 'masked',
-      key: 'masked',
-    },
-    {
-      title: t('aiContentSec.piiGuard.logSource'),
-      dataIndex: 'source',
-      key: 'source',
-      render: (source: string) => {
-        const isRequest = source === 'request';
-        return (
-          <Tag color={isRequest ? 'blue' : 'green'}>
-            {isRequest ? t('aiContentSec.piiGuard.request') : t('aiContentSec.piiGuard.response')}
-          </Tag>
-        );
-      },
-    },
-  ];
-
   return (
     <div style={{ padding: '0 0 24px' }}>
-      {/* Section 1: Plugin Status */}
-      <Card style={{ marginBottom: 16 }}>
-        <Button
-          type="link"
-          onClick={() => window.location.assign('/config-versions')}
-        >
-          {t('configVersion.entry')}
-        </Button>
-      </Card>
-      <Card title={t('aiContentSec.pluginStatus')} style={{ marginBottom: 16 }} loading={loading}>
+      {/* Zone 1: Plugin Status */}
+      <Card
+        title={t('aiContentSec.pluginStatus')}
+        style={{ marginBottom: 16 }}
+        loading={loading}
+      >
         <Space size="large" align="center">
           <Switch
             checked={enabled}
@@ -309,10 +237,17 @@ const AiPiiGuardPage: React.FC = () => {
           <Tag color={enabled ? 'green' : 'default'}>
             {enabled ? t('aiContentSec.enabled') : t('aiContentSec.disabled')}
           </Tag>
+          <Typography.Text type="secondary">
+            {t('aiContentSec.routeScope.summary', { count: scope.bound.length })}
+          </Typography.Text>
         </Space>
+        <GlobalSwitchHint />
       </Card>
 
-      {/* Section 2: Configuration */}
+      {/* Zone 2: Route Scope */}
+      <RouteScopeCard scope={scope} getRawConfig={buildRawConfig} />
+
+      {/* Zone 3: Configuration */}
       <Card title={t('aiContentSec.config')} style={{ marginBottom: 16 }}>
         <div style={{ maxWidth: 700 }}>
           <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -350,41 +285,35 @@ const AiPiiGuardPage: React.FC = () => {
           </div>
 
           <Divider />
-
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 8, fontWeight: 500 }}>{t('aiContentSec.piiGuard.customRules')}</div>
-            <Table
-              dataSource={form.customRules}
-              columns={customRuleColumns}
-              rowKey="name"
-              pagination={false}
-              size="small"
-              style={{ marginBottom: 12 }}
-            />
-            <Button type="dashed" onClick={handleAddRule}>
-              {t('aiContentSec.piiGuard.addRule')}
-            </Button>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Space>
+              <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
+              <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
+            </Space>
           </div>
-
-          <Divider />
-          <Space>
-            <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
-            <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
-          </Space>
         </div>
       </Card>
 
-      {/* Section 3: Recent PII Detection Logs */}
-      <Card title={t('aiContentSec.recentLogs')}>
+      {/* Zone 3.5: 自定义 PII 规则 · Card 分区块，extra Button primary small */}
+      <Card
+        title={t('aiContentSec.piiGuard.customRules')}
+        style={{ marginBottom: 16 }}
+        extra={(
+          <Button type="primary" size="small" onClick={handleAddRule}>
+            {t('aiContentSec.piiGuard.addRule')}
+          </Button>
+        )}
+      >
         <Table
-          dataSource={detectionLogs}
-          columns={logColumns}
-          rowKey="time"
+          dataSource={form.customRules}
+          columns={customRuleColumns}
+          rowKey="name"
           pagination={false}
           size="small"
-          locale={{ emptyText: t('aiContentSec.noLogData') }}
         />
       </Card>
+
+      {/* Zone 4: 检测日志已迁移至「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离） */}
 
       {/* Modal for adding/editing custom rules */}
       <Modal

@@ -1,14 +1,14 @@
 /* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
-import { Card, Switch, Input, InputNumber, Table, Tag, Button, message, Space, Modal, Select, Popconfirm } from 'antd';
+import { Card, Switch, Input, InputNumber, Table, Tag, Button, message, Space, Modal, Select, Popconfirm, Typography } from 'antd';
 import { useRequest } from 'ahooks';
-import { getGlobalPluginInstance, updateGlobalPluginInstance } from '@/services';
-import { getAuditLogs, getAuditSessions } from '@/services/audit-chain-service';
+import { getGlobalPluginInstance, updateGlobalPluginInstance, updateRoutePluginInstance } from '@/services';
+import { GlobalSwitchHint, RouteScopeCard, useRouteScope } from '../_route-scope';
+// 审计事件入口已统一到「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离）
 import { useTranslation } from 'react-i18next';
 import yaml from 'js-yaml';
 
 const PLUGIN_NAME = 'request-block';
-const EVENT_TYPE_FILTERS = ['keyword_filter', 'keyword_block'];
 
 interface FormState {
   requestBodyFilter: boolean;
@@ -71,60 +71,13 @@ const initialCustomRules: CustomRule[] = [
 
 const AiKeywordFilterPage: React.FC = () => {
   const { t } = useTranslation();
+  const scope = useRouteScope(PLUGIN_NAME);
   const [enabled, setEnabled] = useState(false);
   const [form, setForm] = useState<FormState>({ ...defaultFormState });
   const [initialForm, setInitialForm] = useState<FormState>({ ...defaultFormState });
   const [pluginData, setPluginData] = useState<any>(null);
-  const [detectionLogs, setDetectionLogs] = useState<any[]>([]);
 
-  const { run: loadDetectionLogs } = useRequest(
-    async () => {
-      const sessionsRes: any = await getAuditSessions();
-      const sessions = sessionsRes?.list || sessionsRes?.data?.list || sessionsRes || [];
-      if (!Array.isArray(sessions) || sessions.length === 0) return [];
-      const validSessions = sessions.filter(
-        (s: any) => s?.sessionId && /^[a-zA-Z0-9_-]{1,128}$/.test(s.sessionId),
-      );
-      const results = await Promise.all(
-        validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null)),
-      );
-      const allLogs: any[] = [];
-      results.forEach((res: any) => {
-        if (!res) return;
-        const records = res?.list || res?.data?.list || [];
-        records.forEach((r: any) => {
-          const events = r.events || [];
-          if (events.some((e: any) => EVENT_TYPE_FILTERS.includes(e.type))) {
-            allLogs.push(r);
-          }
-        });
-      });
-      allLogs.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-      return allLogs.slice(0, 20);
-    },
-    {
-      manual: true,
-      onSuccess: (allLogs) => {
-        const mapped = allLogs.map((r: any) => {
-          const events = r.events || [];
-          const kwEvent = events.find((e: any) => EVENT_TYPE_FILTERS.includes(e.type)) || {};
-          const ts = r.timestamp ?? 0;
-          const action = r.action || 'passed';
-          return {
-            time: ts ? new Date(ts).toLocaleString('zh-CN') : '-',
-            keyword: kwEvent.detail || '-',
-            position: r.step_type === 'user_input' ? 'request' : 'response',
-            sourceIp: r.source_ip || '-',
-            result: action === 'blocked' ? 'blocked' : 'passed',
-          };
-        });
-        setDetectionLogs(mapped);
-      },
-    },
-  );
-
-  useEffect(() => { loadDetectionLogs(); }, []);
+  // 检测日志已迁移至「AI 内容安全 → 内容安全事件」统一入口（三权分立：配置员与审计员权限分离）
 
   // Rule state
   const [presetRules, setPresetRules] = useState<PresetRule[]>(initialPresetRules);
@@ -155,14 +108,22 @@ const AiKeywordFilterPage: React.FC = () => {
           try {
             const cfg = yaml.load(res.rawConfigurations) as any;
             if (cfg) {
+              // 对齐官方 request-block schema：block_bodies / blocked_code / blocked_message / case_sensitive
+              const bodies: string[] = Array.isArray(cfg.block_bodies) ? cfg.block_bodies : [];
+              const hasBodies = bodies.length > 0;
               const parsed: FormState = {
-                requestBodyFilter: cfg.blockRequest ?? defaultFormState.requestBodyFilter,
-                caseSensitive: cfg.caseSensitive ?? defaultFormState.caseSensitive,
-                blockStatusCode: cfg.statusCode ?? defaultFormState.blockStatusCode,
-                blockMessage: cfg.message ?? defaultFormState.blockMessage,
+                requestBodyFilter: cfg.block_bodies !== undefined ? hasBodies : defaultFormState.requestBodyFilter,
+                caseSensitive: cfg.case_sensitive ?? defaultFormState.caseSensitive,
+                blockStatusCode: cfg.blocked_code ?? defaultFormState.blockStatusCode,
+                blockMessage: cfg.blocked_message ?? defaultFormState.blockMessage,
               };
               setForm(parsed);
               setInitialForm(parsed);
+              if (hasBodies) {
+                const set = new Set(bodies);
+                setPresetRules(prev => prev.map(r => ({ ...r, enabled: r.keywords.some(k => set.has(k)) })));
+                setCustomRules(prev => prev.map(r => ({ ...r, enabled: set.has(r.keyword) })));
+              }
             }
           } catch {
             // ignore parse error, use defaults
@@ -191,18 +152,38 @@ const AiKeywordFilterPage: React.FC = () => {
     }
   };
 
+  const buildRawConfig = () => {
+    // request-block 为输入侧、URL/头/正文“包含匹配”：将所有启用的预置/自定义关键词序列化进 block_bodies
+    const bodies: string[] = [];
+    if (form.requestBodyFilter) {
+      presetRules.forEach(r => { if (r.enabled) r.keywords.forEach(k => bodies.push(k)); });
+      customRules.forEach(r => { if (r.enabled && r.keyword) bodies.push(r.keyword); });
+    }
+    const uniq = Array.from(new Set(bodies.filter(Boolean)));
+    return yaml.dump({
+      block_bodies: uniq,
+      blocked_code: form.blockStatusCode,
+      blocked_message: form.blockMessage,
+      case_sensitive: form.caseSensitive,
+    });
+  };
+
   const handleSave = async () => {
     try {
-      const configObj = {
-        blockRequest: form.requestBodyFilter,
-        caseSensitive: form.caseSensitive,
-        statusCode: form.blockStatusCode,
-        message: form.blockMessage,
-      };
-      const rawConfig = yaml.dump(configObj);
+      const rawConfig = buildRawConfig();
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      if (scope.selected.length) {
+        const failed: string[] = [];
+        await Promise.all(scope.selected.map(async (n) => {
+          try {
+            await updateRoutePluginInstance({ name: n, pluginName: PLUGIN_NAME }, { enabled: true, rawConfigurations: rawConfig });
+          } catch { failed.push(n); }
+        }));
+        if (failed.length) message.warning(t('aiContentSec.routeScope.syncFail', { names: failed.join(', ') }));
+        await scope.reload();
+      }
       setInitialForm({ ...form });
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
@@ -432,46 +413,14 @@ const AiKeywordFilterPage: React.FC = () => {
     },
   ];
 
-  const logColumns = [
-    {
-      title: t('aiContentSec.keywordFilter.logTime'),
-      dataIndex: 'time',
-      key: 'time',
-    },
-    {
-      title: t('aiContentSec.keywordFilter.logKeyword'),
-      dataIndex: 'keyword',
-      key: 'keyword',
-    },
-    {
-      title: t('aiContentSec.keywordFilter.logPosition'),
-      dataIndex: 'position',
-      key: 'position',
-    },
-    {
-      title: t('aiContentSec.keywordFilter.logSourceIp'),
-      dataIndex: 'sourceIp',
-      key: 'sourceIp',
-    },
-    {
-      title: t('aiContentSec.keywordFilter.logResult'),
-      dataIndex: 'result',
-      key: 'result',
-    },
-  ];
-
   return (
     <div style={{ padding: '0 0 24px' }}>
-      {/* Section 1: Plugin Status */}
-      <Card style={{ marginBottom: 16 }}>
-        <Button
-          type="link"
-          onClick={() => window.location.assign('/config-versions')}
-        >
-          {t('configVersion.entry')}
-        </Button>
-      </Card>
-      <Card title={t('aiContentSec.pluginStatus')} style={{ marginBottom: 16 }} loading={loading}>
+      {/* Zone 1: Plugin Status */}
+      <Card
+        title={t('aiContentSec.pluginStatus')}
+        style={{ marginBottom: 16 }}
+        loading={loading}
+      >
         <Space size="large" align="center">
           <Switch
             checked={enabled}
@@ -482,10 +431,17 @@ const AiKeywordFilterPage: React.FC = () => {
           <Tag color={enabled ? 'green' : 'default'}>
             {enabled ? t('aiContentSec.enabled') : t('aiContentSec.disabled')}
           </Tag>
+          <Typography.Text type="secondary">
+            {t('aiContentSec.routeScope.summary', { count: scope.bound.length })}
+          </Typography.Text>
         </Space>
+        <GlobalSwitchHint />
       </Card>
 
-      {/* Section 2: Configuration */}
+      {/* Zone 2: Route Scope */}
+      <RouteScopeCard scope={scope} getRawConfig={buildRawConfig} />
+
+      {/* Zone 3: Configuration */}
       <Card title={t('aiContentSec.config')} style={{ marginBottom: 16 }}>
         <div style={{ maxWidth: 600 }}>
           <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -528,14 +484,20 @@ const AiKeywordFilterPage: React.FC = () => {
             />
           </div>
 
-          <Space>
-            <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
-            <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
-          </Space>
+          <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>
+            {t('aiContentSec.keywordFilter.scopeHint')}
+          </Typography.Text>
+
+          <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end' }}>
+            <Space>
+              <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
+              <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
+            </Space>
+          </div>
         </div>
       </Card>
 
-      {/* Section 3: AI Preset Rules */}
+      {/* Zone 3.1: AI Preset Rules */}
       <Card
         title={t('aiContentSec.keywordFilter.presetRules')}
         style={{ marginBottom: 16 }}
@@ -550,7 +512,7 @@ const AiKeywordFilterPage: React.FC = () => {
         />
       </Card>
 
-      {/* Section 4: Custom Keyword Rules */}
+      {/* Zone 3.2: Custom Keyword Rules */}
       <Card
         title={t('aiContentSec.keywordFilter.customRules')}
         style={{ marginBottom: 16 }}
@@ -565,17 +527,7 @@ const AiKeywordFilterPage: React.FC = () => {
         />
       </Card>
 
-      {/* Section 5: Block Logs */}
-      <Card title={t('aiContentSec.keywordFilter.blockLogs')}>
-        <Table
-          dataSource={detectionLogs}
-          columns={logColumns}
-          rowKey="time"
-          pagination={false}
-          size="small"
-          locale={{ emptyText: t('aiContentSec.noLogData') }}
-        />
-      </Card>
+      {/* Zone 4: 拦截日志已迁移至「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离） */}
 
       {/* Modal for Add/Edit */}
       <Modal

@@ -2,11 +2,16 @@
  * ASG 前端扩展菜单配置（asg-console-extension/frontend/menu.config.ts）
  * 由 inject.sh 在构建时注入 console 前端 _defaultProps.tsx，console 源码保持零侵入。
  * icon 引用说明：SafetyCertificateOutlined 上游 _defaultProps.tsx 已导入；
- * 其余 4 个（AuditOutlined/EyeOutlined/RadarChartOutlined/SecurityScanOutlined）由 inject.sh 追加导入。
+ * 其余 6 个（AlertOutlined/AuditOutlined/BookOutlined/EyeOutlined/FileSearchOutlined/
+ * RadarChartOutlined/SecurityScanOutlined）由 inject.sh 通过 needed 集合追加进 import 块，
+ * menu.config.ts 的 import 语句本身不参与构建产物。
  */
 import {
+  AlertOutlined,
   AuditOutlined,
+  BookOutlined,
   EyeOutlined,
+  FileSearchOutlined,
   RadarChartOutlined,
   SafetyCertificateOutlined,
   SecurityScanOutlined,
@@ -32,24 +37,29 @@ export const asgMenuRoutes: any[] = [
     icon: <SecurityScanOutlined />,
     children: [
       {
-        name: 'menu.aiSecurityGuard',
-        path: '/ai-security-guard',
+        name: 'menu.aiPromptGuard',
+        path: '/ai-prompt-guard',
       },
       {
         name: 'menu.aiPiiGuard',
         path: '/ai-pii-guard',
       },
       {
-        name: 'menu.aiPromptGuard',
-        path: '/ai-prompt-guard',
+        name: 'menu.aiWafProtection',
+        path: '/ai-waf',
+      },
+      {
+        name: 'menu.aiSecurityGuard',
+        path: '/ai-security-guard',
       },
       {
         name: 'menu.aiKeywordFilter',
         path: '/ai-keyword-filter',
       },
       {
-        name: 'menu.aiWafProtection',
-        path: '/ai-waf',
+        name: 'menu.aiComplianceKb',
+        path: '/ai-content-compliance-kb',
+        icon: <BookOutlined />,
       },
     ],
   },
@@ -64,16 +74,21 @@ export const asgMenuRoutes: any[] = [
     ],
   },
   {
-    name: 'menu.auditChain',
-    icon: <AuditOutlined />,
+    name: 'menu.logsAudit',
+    icon: <FileSearchOutlined />,
     children: [
       {
-        name: 'menu.auditChainLogs',
+        name: 'menu.logsAuditChainLogs',
         path: '/audit-chain/audit-logs',
       },
       {
-        name: 'menu.auditChainTracking',
+        name: 'menu.logsAuditChainTracking',
         path: '/audit-chain/audit-chain',
+      },
+      {
+        name: 'menu.logsSecurityEvents',
+        path: '/security-events',
+        icon: <AlertOutlined />,
       },
     ],
   },

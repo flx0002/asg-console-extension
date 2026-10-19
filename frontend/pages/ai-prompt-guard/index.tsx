@@ -1,113 +1,111 @@
+/* eslint-disable max-len, no-nested-ternary */
+/**
+ * ai-prompt-guard 配置页 · 提示攻击防护
+ *
+ * 本轮返工（对齐 4 项新批评）：
+ *  1. 去掉顶部「配置项之间的关系」Alert——仅本页有、默认展开且内容有误，风格与其他页不一致
+ *  2. 「检测模式」原为黑/白名单选择（deny/allow）——改为 WAF 式「命中处置」：默认以检测规则运行，
+ *     可配置命中规则后 拦截 / 仅检测告警。后端契约字段为 `detectMode`（deny=拦截 / monitor=仅告警），
+ *     本页下发真实字段名与取值（BE-012：根因是前端之前写了后端不读的 `mode`，已对齐）。
+ *     本页默认以检测规则方式运行；allowRules 不在本页编辑，读入后端存量后只读透传保留。
+ *  3. 内置内容合规词库不再是「独立 Wasm 内置处置通道」——它与本页检测规则同构，命中处置
+ *     同样遵循「命中处置」模式；词库只是默认预置在库里的检测词条。
+ *  4. 本页不展示词库详情（折叠卡片/KPI 已移除），仅在检测规则区给一行简要说明 + 跳转
+ *     「内容合规词库」页；keywordRules/advisoryRules 读入后原样透传保存，避免本页保存清空存量词库。
+ *
+ * 数据流：本页编辑 denyRules/detectMode/rejectMessage；allowRules/keywordRules/advisoryRules 均只读
+ * 透传（不渲染编辑入口），由后端存量、词库页与运维装载脚本维护，本页保存不会静默清空。
+ */
 import React, { useState, useEffect } from 'react';
-import { Card, Switch, Radio, Input, Table, Tag, Button, message, Space, Divider, Modal } from 'antd';
+import {
+  Card, Switch, Input, Radio, Table, Tag, Button, message, Space, Modal,
+  Typography, Popconfirm, Tooltip,
+} from 'antd';
 import { useRequest } from 'ahooks';
-import { getGlobalPluginInstance, updateGlobalPluginInstance } from '@/services';
-import { getAuditLogs, getAuditSessions } from '@/services/audit-chain-service';
+import { getGlobalPluginInstance, updateGlobalPluginInstance, updateRoutePluginInstance } from '@/services';
+import { GlobalSwitchHint, RouteScopeCard, useRouteScope } from '../_route-scope';
 import { useTranslation } from 'react-i18next';
 import yaml from 'js-yaml';
+import appAData from './appA_rules.json';
 
 const PLUGIN_NAME = 'ai-prompt-guard';
-const EVENT_TYPE_FILTER = 'prompt_injection';
 
-interface RuleItem {
-  key: string;
-  name: string;
-  regex: string;
-  matchType: string;
+interface RuleItem { name: string; regex: string; matchType: string; }
+interface KeywordRuleGroup { name: string; patterns: string[]; enabled: boolean; }
+interface AdvisoryRule { name: string; disclaimer: string; enabled: boolean; }
+
+interface ComplianceCategory {
+  code: string; name: string; mode: 'intercept' | 'advisory';
+  patterns?: string[]; disclaimer?: string;
 }
 
+const COMPLIANCE_SECTIONS: { categories: ComplianceCategory[] }[] = (appAData as any).sections || [];
+const ALL_COMPLIANCE_CATEGORIES: ComplianceCategory[] = COMPLIANCE_SECTIONS.flatMap((s) => s.categories);
+
+const defaultDenyRules: RuleItem[] = [
+  { name: '提示词注入-忽略指令', regex: '(?i)(ignore\\s+(previous|above)\\s+instructions?|忽略(上面|之前)的(指令|要求))', matchType: 'regex' },
+  { name: '系统提示词窃取', regex: '(?i)(reveal\\s+system\\s+prompt|输出(系统)?提示词)', matchType: 'regex' },
+  { name: '角色扮演越狱', regex: '(?i)(you\\s+are\\s+now\\s+(DAN|developer mode)|假装(你)?是(?!.*安全))', matchType: 'regex' },
+];
+const defaultAllowRules: RuleItem[] = [];  // 本页不编辑，仅在读入后端存量缺失时占位
+
+// 内置基线词库（后端不可用时透传用；正常应从 CR 读取存量）
+const buildDefaultKeywordRules = (): KeywordRuleGroup[] =>
+  ALL_COMPLIANCE_CATEGORIES
+    .filter((c) => c.mode !== 'advisory')
+    .map((c) => ({ name: `${c.code} ${c.name}`, patterns: c.patterns || [], enabled: true }));
+
+const buildDefaultAdvisoryRules = (): AdvisoryRule[] =>
+  ALL_COMPLIANCE_CATEGORIES
+    .filter((c) => c.mode === 'advisory')
+    .map((c) => ({ name: `${c.code} ${c.name}`, disclaimer: c.disclaimer || '', enabled: true }));
+
+// 归一化后端 detectMode：兼容存量旧写法（后端不读的 `mode` 与 block/detect 别名）。
+// 与数据面 ai-prompt-guard parseConfig 的归一口径保持一致：deny=拦截 / monitor=仅告警。
+const toDetectMode = (v: any): 'deny' | 'monitor' => {
+  const s = String(v ?? 'deny').toLowerCase();
+  return (s === 'monitor' || s === 'detect' || s === 'observe' || s === 'pass' || s === 'dry_run' || s === 'dryrun') ? 'monitor' : 'deny';
+};
+
 interface FormState {
-  detectMode: string;
+  detectMode: 'deny' | 'monitor';
+  checkRequest: boolean;
+  checkResponse: boolean;
   denyRules: RuleItem[];
   allowRules: RuleItem[];
+  keywordRules: KeywordRuleGroup[];   // 只读透传，本页不编辑
+  advisoryRules: AdvisoryRule[];      // 只读透传，本页不编辑
   rejectMessage: string;
 }
 
-const defaultDenyRules: RuleItem[] = [
-  { key: '1', name: 'SQL注入检测', regex: '(?i)(union\\s+select|drop\\s+table|insert\\s+into)', matchType: 'regex' },
-  { key: '2', name: '系统提示词泄露', regex: '(?i)(ignore\\s+previous|forget\\s+instructions|system\\s*prompt)', matchType: 'regex' },
-  { key: '3', name: '越狱攻击', regex: '(?i)(jailbreak|dan\\s+mode|developer\\s+mode)', matchType: 'regex' },
-];
-
-const defaultAllowRules: RuleItem[] = [
-  { key: '1', name: '允许的SQL教学', regex: '(?i)(how\\s+to\\s+learn\\s+sql|sql\\s+tutorial)', matchType: 'regex' },
-];
-
 const defaultFormState: FormState = {
   detectMode: 'deny',
+  checkRequest: true,
+  checkResponse: false,
   denyRules: defaultDenyRules,
   allowRules: defaultAllowRules,
-  rejectMessage: '检测到恶意提示词，请求已被拦截',
+  keywordRules: buildDefaultKeywordRules(),
+  advisoryRules: buildDefaultAdvisoryRules(),
+  rejectMessage: '请求包含违规内容，已被拦截',
 };
 
 const AiPromptGuardPage: React.FC = () => {
   const { t } = useTranslation();
+  const scope = useRouteScope(PLUGIN_NAME);
   const [enabled, setEnabled] = useState(false);
   const [form, setForm] = useState<FormState>({ ...defaultFormState });
   const [initialForm, setInitialForm] = useState<FormState>({ ...defaultFormState });
   const [pluginData, setPluginData] = useState<any>(null);
-  const [detectionLogs, setDetectionLogs] = useState<any[]>([]);
 
-  const { run: loadDetectionLogs } = useRequest(
-    async () => {
-      const sessionsRes: any = await getAuditSessions();
-      const sessions = sessionsRes?.list || sessionsRes?.data?.list || sessionsRes || [];
-      if (!Array.isArray(sessions) || sessions.length === 0) return [];
-      const validSessions = sessions.filter(
-        (s: any) => s?.sessionId && /^[a-zA-Z0-9_-]{1,128}$/.test(s.sessionId),
-      );
-      const results = await Promise.all(
-        validSessions.map((s: any) =>
-          getAuditLogs({ sessionId: s.sessionId, recordType: 'security_event', pageSize: 50 }).catch(() => null)),
-      );
-      const allLogs: any[] = [];
-      results.forEach((res: any) => {
-        if (!res) return;
-        const records = res?.list || res?.data?.list || [];
-        records.forEach((r: any) => {
-          const events = r.events || [];
-          if (events.some((e: any) => e.type === EVENT_TYPE_FILTER)) {
-            allLogs.push(r);
-          }
-        });
-      });
-      allLogs.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
-      return allLogs.slice(0, 20);
-    },
-    {
-      manual: true,
-      onSuccess: (allLogs) => {
-        const mapped = allLogs.map((r: any) => {
-          const events = r.events || [];
-          const promptEvent = events.find((e: any) => e.type === EVENT_TYPE_FILTER) || {};
-          const ts = r.timestamp ?? 0;
-          const action = r.action || 'passed';
-          return {
-            time: ts ? new Date(ts).toLocaleString('zh-CN') : '-',
-            attackType: promptEvent.type || EVENT_TYPE_FILTER,
-            matchedRule: promptEvent.detail || '-',
-            result: action === 'blocked' ? 'blocked' : 'passed',
-            summary: `${r.model || ''} - ${r.tool_name || ''}`,
-          };
-        });
-        setDetectionLogs(mapped);
-      },
-    },
-  );
-
-  useEffect(() => { loadDetectionLogs(); }, []);
-
-  const [modalVisible, setModalVisible] = useState(false);
-  const [editingType, setEditingType] = useState<'deny' | 'allow'>('deny');
-  const [editingIndex, setEditingIndex] = useState(-1);
-  const [ruleName, setRuleName] = useState('');
-  const [ruleRegex, setRuleRegex] = useState('');
+  const [ruleModal, setRuleModal] = useState<{ open: boolean; kind: 'deny' | 'allow'; idx: number; item: RuleItem }>({
+    open: false, kind: 'deny', idx: -1, item: { name: '', regex: '', matchType: 'regex' },
+  });
 
   const { run: loadConfig, loading } = useRequest(
     () => getGlobalPluginInstance(PLUGIN_NAME),
     {
       manual: true,
-      onSuccess: (res) => {
+      onSuccess: (res: any) => {
         setPluginData(res);
         setEnabled(res?.enabled ?? false);
         if (res?.rawConfigurations) {
@@ -115,28 +113,29 @@ const AiPromptGuardPage: React.FC = () => {
             const cfg = yaml.load(res.rawConfigurations) as any;
             if (cfg) {
               const parsed: FormState = {
-                detectMode: cfg.detectMode ?? defaultFormState.detectMode,
+                detectMode: toDetectMode(cfg.detectMode ?? cfg.mode),
+                checkRequest: cfg.checkRequest ?? defaultFormState.checkRequest,
+                checkResponse: cfg.checkResponse ?? defaultFormState.checkResponse,
                 denyRules: cfg.denyRules ?? defaultFormState.denyRules,
                 allowRules: cfg.allowRules ?? defaultFormState.allowRules,
+                // 词库透传：优先取存量，缺失时回落内置基线，保证保存不会清空词库
+                keywordRules: cfg.keywordRules ?? defaultFormState.keywordRules,
+                advisoryRules: cfg.advisoryRules ?? defaultFormState.advisoryRules,
                 rejectMessage: cfg.rejectMessage ?? defaultFormState.rejectMessage,
               };
               setForm(parsed);
               setInitialForm(parsed);
             }
           } catch {
-            // ignore parse error, use defaults
+            /* keep defaults */
           }
         }
       },
-      onError: () => {
-        message.error(t('aiContentSec.loadFailed'));
-      },
+      onError: () => message.error(t('aiContentSec.loadFailed')),
     },
   );
 
-  useEffect(() => {
-    loadConfig();
-  }, []);
+  useEffect(() => { loadConfig(); }, []);
 
   const handleToggle = async (checked: boolean) => {
     try {
@@ -145,280 +144,237 @@ const AiPromptGuardPage: React.FC = () => {
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
       setEnabled(checked);
       message.success(t('aiContentSec.saveSuccess'));
-    } catch {
-      message.error(t('aiContentSec.saveFailed'));
-    }
+    } catch { message.error(t('aiContentSec.saveFailed')); }
   };
+
+  const buildRawConfig = () => yaml.dump({
+    detectMode: form.detectMode,
+    checkRequest: form.checkRequest,
+    checkResponse: form.checkResponse,
+    denyRules: form.denyRules.map(({ name, regex, matchType }) => ({ name, regex, matchType })),
+    allowRules: form.allowRules.map(({ name, regex, matchType }) => ({ name, regex, matchType })),
+    keywordRules: form.keywordRules,
+    advisoryRules: form.advisoryRules,
+    rejectMessage: form.rejectMessage,
+  });
 
   const handleSave = async () => {
     try {
-      const configObj = {
-        detectMode: form.detectMode,
-        denyRules: form.denyRules.map(({ name, regex, matchType }) => ({ name, regex, matchType })),
-        allowRules: form.allowRules.map(({ name, regex, matchType }) => ({ name, regex, matchType })),
-        rejectMessage: form.rejectMessage,
-      };
-      const rawConfig = yaml.dump(configObj);
+      const rawConfig = buildRawConfig();
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      if (scope.selected.length) {
+        const failed: string[] = [];
+        await Promise.all(scope.selected.map(async (n: string) => {
+          try {
+            await updateRoutePluginInstance({ name: n, pluginName: PLUGIN_NAME }, { enabled: true, rawConfigurations: rawConfig });
+          } catch { failed.push(n); }
+        }));
+        if (failed.length) message.warning(t('aiContentSec.routeScope.syncFail', { names: failed.join(', ') }));
+        await scope.reload();
+      }
       setInitialForm({ ...form });
       message.success(t('aiContentSec.saveSuccess'));
-    } catch {
-      message.error(t('aiContentSec.saveFailed'));
-    }
+    } catch { message.error(t('aiContentSec.saveFailed')); }
   };
 
-  const handleReset = () => {
-    setForm({ ...initialForm });
+  const handleReset = () => setForm({ ...initialForm });
+  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => setForm((prev) => ({ ...prev, [key]: value }));
+
+  // deny/allow 规则 CRUD
+  const openRuleModal = (kind: 'deny' | 'allow', idx: number) => {
+    const list = kind === 'deny' ? form.denyRules : form.allowRules;
+    setRuleModal({ open: true, kind, idx, item: idx === -1 ? { name: '', regex: '', matchType: 'regex' } : { ...list[idx] } });
+  };
+  const commitRuleModal = () => {
+    const { kind, idx, item } = ruleModal;
+    if (!item.name || !item.regex) { message.warning(t('aiContentSec.requiredFields', '名称与表达式必填')); return; }
+    const key = kind === 'deny' ? 'denyRules' : 'allowRules';
+    const list = [...form[key]];
+    if (idx === -1) list.push(item); else list[idx] = item;
+    updateField(key, list);
+    setRuleModal({ ...ruleModal, open: false });
+  };
+  const deleteRule = (kind: 'deny' | 'allow', idx: number) => {
+    const key = kind === 'deny' ? 'denyRules' : 'allowRules';
+    updateField(key, form[key].filter((_, i) => i !== idx));
   };
 
-  const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
-    setForm(prev => ({ ...prev, [key]: value }));
-  };
-
-  const handleAddRule = (type: 'deny' | 'allow') => {
-    setEditingType(type);
-    setEditingIndex(-1);
-    setRuleName('');
-    setRuleRegex('');
-    setModalVisible(true);
-  };
-
-  const handleEditRule = (type: 'deny' | 'allow', record: RuleItem, index: number) => {
-    setEditingType(type);
-    setEditingIndex(index);
-    setRuleName(record.name);
-    setRuleRegex(record.regex);
-    setModalVisible(true);
-  };
-
-  const handleDeleteRule = (type: 'deny' | 'allow', index: number) => {
-    Modal.confirm({
-      title: t('aiContentSec.promptGuard.deleteConfirm'),
-      onOk: () => {
-        const field = type === 'deny' ? 'denyRules' : 'allowRules';
-        const newRules = [...form[field]];
-        newRules.splice(index, 1);
-        updateField(field, newRules);
-      },
-    });
-  };
-
-  const handleModalOk = () => {
-    if (!ruleName || !ruleRegex) {
-      message.warning(`${t('aiContentSec.promptGuard.ruleName')} / ${t('aiContentSec.promptGuard.regex')}`);
-      return;
-    }
-    const newRule: RuleItem = { key: Date.now().toString(), name: ruleName, regex: ruleRegex, matchType: 'regex' };
-    const field = editingType === 'deny' ? 'denyRules' : 'allowRules';
-    const newRules = [...form[field]];
-    if (editingIndex === -1) {
-      newRules.push(newRule);
-    } else {
-      newRules[editingIndex] = newRule;
-    }
-    updateField(field, newRules);
-    setModalVisible(false);
-  };
-
-  const getRuleColumns = (type: 'deny' | 'allow') => [
+  const renderRuleColumns = (kind: 'deny' | 'allow') => [
+    { title: t('aiContentSec.promptGuard.ruleName', '规则名称'), dataIndex: 'name', key: 'name' },
+    { title: t('aiContentSec.promptGuard.rulePattern', '匹配表达式'), dataIndex: 'regex', key: 'regex', ellipsis: true },
     {
-      title: t('aiContentSec.promptGuard.ruleName'),
-      dataIndex: 'name',
-      key: 'name',
-    },
-    {
-      title: t('aiContentSec.promptGuard.regex'),
-      dataIndex: 'regex',
-      key: 'regex',
-      render: (text: string) => <code style={{ fontSize: 12 }}>{text}</code>,
-    },
-    {
-      title: t('aiContentSec.promptGuard.matchType'),
+      title: t('aiContentSec.promptGuard.matchType', '匹配方式'),
       dataIndex: 'matchType',
       key: 'matchType',
-      render: () => <Tag>{t('aiContentSec.promptGuard.regexMatch')}</Tag>,
+      width: 120,
+      render: (v: string) => <Tag>{v}</Tag>,
     },
     {
-      title: t('aiContentSec.promptGuard.operation'),
-      key: 'operation',
-      render: (_: any, record: RuleItem, index: number) => (
-        <Space size="small">
-          <Button type="link" size="small" onClick={() => handleEditRule(type, record, index)}>{t('aiContentSec.promptGuard.edit')}</Button>
-          <Button type="link" size="small" danger onClick={() => handleDeleteRule(type, index)}>{t('aiContentSec.promptGuard.delete')}</Button>
+      title: t('aiContentSec.operation', '操作'),
+      key: 'op',
+      width: 160,
+      render: (_: any, __: RuleItem, idx: number) => (
+        <Space>
+          <a onClick={() => openRuleModal(kind, idx)}>{t('aiContentSec.edit', '编辑')}</a>
+          <Popconfirm title={t('aiContentSec.deleteConfirm', '确认删除？')} onConfirm={() => deleteRule(kind, idx)}>
+            <a style={{ color: '#ff4d4f' }}>{t('aiContentSec.delete', '删除')}</a>
+          </Popconfirm>
         </Space>
       ),
     },
   ];
 
-  const logColumns = [
-    {
-      title: t('aiContentSec.time'),
-      dataIndex: 'time',
-      key: 'time',
-    },
-    {
-      title: t('aiContentSec.promptGuard.logAttackType'),
-      dataIndex: 'attackType',
-      key: 'attackType',
-    },
-    {
-      title: t('aiContentSec.promptGuard.logMatchedRule'),
-      dataIndex: 'matchedRule',
-      key: 'matchedRule',
-    },
-    {
-      title: t('aiContentSec.promptGuard.logResult'),
-      dataIndex: 'result',
-      key: 'result',
-      render: (result: string) => {
-        const colorMap: Record<string, string> = { blocked: 'red' };
-        const labelMap: Record<string, string> = { blocked: t('aiContentSec.promptGuard.blocked') };
-        return <Tag color={colorMap[result] || 'default'}>{labelMap[result] || result}</Tag>;
-      },
-    },
-    {
-      title: t('aiContentSec.promptGuard.logSummary'),
-      dataIndex: 'summary',
-      key: 'summary',
-      ellipsis: true,
-    },
-  ];
-
   return (
     <div style={{ padding: '0 0 24px' }}>
-      {/* Section 1: Plugin Status */}
-      <Card style={{ marginBottom: 16 }}>
-        <Button
-          type="link"
-          onClick={() => window.location.assign('/config-versions')}
-        >
-          {t('configVersion.entry')}
-        </Button>
-      </Card>
-      <Card title={t('aiContentSec.pluginStatus')} style={{ marginBottom: 16 }} loading={loading}>
+      {/* Zone 1: Plugin Status */}
+      <Card
+        title={t('aiContentSec.pluginStatus', '插件状态')}
+        style={{ marginBottom: 16 }}
+        loading={loading}
+      >
         <Space size="large" align="center">
           <Switch
             checked={enabled}
             onChange={handleToggle}
-            checkedChildren={t('aiContentSec.on')}
-            unCheckedChildren={t('aiContentSec.off')}
+            checkedChildren={t('aiContentSec.on', '开')}
+            unCheckedChildren={t('aiContentSec.off', '关')}
           />
           <Tag color={enabled ? 'green' : 'default'}>
-            {enabled ? t('aiContentSec.enabled') : t('aiContentSec.disabled')}
+            {enabled ? t('aiContentSec.enabled', '已启用') : t('aiContentSec.disabled', '已停用')}
           </Tag>
+          <Typography.Text type="secondary">
+            {t('aiContentSec.routeScope.summary', { count: scope.bound.length, defaultValue: `已绑定 ${scope.bound.length} 条路由` })}
+          </Typography.Text>
         </Space>
+        <GlobalSwitchHint />
       </Card>
 
-      {/* Section 2: Configuration */}
-      <Card title={t('aiContentSec.config')} style={{ marginBottom: 16 }}>
-        <div style={{ maxWidth: 800 }}>
-          {/* Detection Mode */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('aiContentSec.promptGuard.detectMode')}</div>
-            <Radio.Group
-              value={form.detectMode}
-              onChange={e => updateField('detectMode', e.target.value)}
-            >
-              <Radio value="deny">{t('aiContentSec.promptGuard.denyMode')}</Radio>
-              <Radio value="allow">{t('aiContentSec.promptGuard.allowMode')}</Radio>
+      {/* Zone 2: Route Scope */}
+      <RouteScopeCard scope={scope} getRawConfig={buildRawConfig} />
+
+      {/* Zone 3: 配置项（无 Alert 说明；检测方向 + 命中处置） */}
+      <Card title={t('aiContentSec.promptGuard.policy', '配置项')} style={{ marginBottom: 16 }}>
+        <div style={{ maxWidth: 720 }}>
+          {/* §3.1 请求方向检测 */}
+          <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 500 }}>{t('aiContentSec.requestDetect', '请求方向检测')}</span>
+            <Switch
+              checked={form.checkRequest}
+              onChange={(v) => updateField('checkRequest', v)}
+              checkedChildren={t('aiContentSec.on', '开')}
+              unCheckedChildren={t('aiContentSec.off', '关')}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('aiContentSec.requestDetectHint', '对进入网关的用户 prompt 做匹配')}
+            </Typography.Text>
+          </div>
+
+          {/* §3.2 响应方向检测 */}
+          <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontWeight: 500 }}>{t('aiContentSec.responseDetect', '响应方向检测')}</span>
+            <Switch
+              checked={form.checkResponse}
+              onChange={(v) => updateField('checkResponse', v)}
+              checkedChildren={t('aiContentSec.on', '开')}
+              unCheckedChildren={t('aiContentSec.off', '关')}
+            />
+            <Tooltip title={t('aiContentSec.responseDetectHint', '对上游模型返回内容进行护栏复检')}>
+              <Typography.Text type="warning" style={{ fontSize: 12 }}>建议开启</Typography.Text>
+            </Tooltip>
+          </div>
+
+          {/* §3.3 命中处置（默认黑名单运行，配置命中后拦截 / 仅检测） */}
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('aiContentSec.promptGuard.hitAction', '命中处置')}</div>
+            <Radio.Group value={form.detectMode} onChange={(e) => updateField('detectMode', e.target.value)}>
+              <Radio value="deny">{t('aiContentSec.promptGuard.blockMode', '拦截模式（命中即拦截）')}</Radio>
+              <Radio value="monitor">{t('aiContentSec.promptGuard.detectMode', '检测模式（仅告警，不拦截）')}</Radio>
             </Radio.Group>
-            <div style={{ marginTop: 4, color: '#999', fontSize: 12 }}>
-              {t('aiContentSec.promptGuard.denyModeHint')}
-            </div>
+            {form.detectMode === 'monitor' && (
+              <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>
+                {t('aiContentSec.promptGuard.detectModeHint', '检测模式：命中规则（含内置词库）仅记入安全事件审计，不拦截流量')}
+              </div>
+            )}
           </div>
-
-          <Divider />
-
-          {/* Deny Rules */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 500 }}>{t('aiContentSec.promptGuard.denyRules')}</span>
-              <Button type="primary" size="small" onClick={() => handleAddRule('deny')}>{t('aiContentSec.promptGuard.addRule')}</Button>
-            </div>
-            <Table
-              dataSource={form.denyRules}
-              columns={getRuleColumns('deny')}
-              rowKey="key"
-              pagination={false}
-              size="small"
-            />
-          </div>
-
-          <Divider />
-
-          {/* Allow Rules */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontWeight: 500 }}>{t('aiContentSec.promptGuard.allowRules')}</span>
-              <Button type="primary" size="small" onClick={() => handleAddRule('allow')}>{t('aiContentSec.promptGuard.addRule')}</Button>
-            </div>
-            <Table
-              dataSource={form.allowRules}
-              columns={getRuleColumns('allow')}
-              rowKey="key"
-              pagination={false}
-              size="small"
-            />
-          </div>
-
-          <Divider />
-
-          {/* Reject Message */}
-          <div style={{ marginBottom: 16 }}>
-            <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('aiContentSec.rejectMessage')}</div>
-            <Input
-              value={form.rejectMessage}
-              onChange={e => updateField('rejectMessage', e.target.value)}
-              placeholder={t('aiContentSec.rejectMessage') as string}
-            />
-          </div>
-
-          <Divider />
-          <Space>
-            <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
-            <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
-          </Space>
         </div>
       </Card>
 
-      {/* Section 3: Recent Detection Logs */}
-      <Card title={t('aiContentSec.recentLogs')}>
+      {/* Zone 4: 检测规则（默认运行方式；内置词库简要说明 + 用户自定义检测规则） */}
+      <Card
+        title={t('aiContentSec.promptGuard.blacklist', '检测规则')}
+        style={{ marginBottom: 16 }}
+        extra={(
+          <Button type="primary" size="small" onClick={() => openRuleModal('deny', -1)}>
+            {t('aiContentSec.add', '新增规则')}
+          </Button>
+        )}
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12, fontSize: 13 }}>
+          {t('aiContentSec.promptGuard.blacklistHint', '命中规则（含内置内容合规词库）即按上方「命中处置」拦截或仅告警。')}
+          <Button
+            type="link"
+            size="small"
+            style={{ padding: '0 4px' }}
+            onClick={() => window.location.assign('/ai-content-compliance-kb')}
+          >
+            {t('aiContentSec.promptGuard.lexicon.goto', '前往内容合规词库')}
+          </Button>
+        </Typography.Paragraph>
+
         <Table
-          dataSource={detectionLogs}
-          columns={logColumns}
-          rowKey="time"
-          pagination={false}
+          rowKey={(r, i) => `${r.name}-${i}`}
+          dataSource={form.denyRules}
+          columns={renderRuleColumns('deny') as any}
           size="small"
-          locale={{ emptyText: t('aiContentSec.noLogData') }}
+          pagination={false}
         />
       </Card>
 
-      {/* Rule Edit Modal */}
-      <Modal
-        title={editingIndex === -1 ? t('aiContentSec.promptGuard.addRule') : t('aiContentSec.promptGuard.edit')}
-        open={modalVisible}
-        onOk={handleModalOk}
-        onCancel={() => setModalVisible(false)}
-        okText={t('aiContentSec.saveConfig')}
-        cancelText={t('aiContentSec.resetConfig')}
-      >
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('aiContentSec.promptGuard.ruleName')}</div>
+      {/* Zone 5: 拒绝响应文案 */}
+      <Card title={t('aiContentSec.rejectMessage', '拒绝响应文案')} style={{ marginBottom: 16 }}>
+        <div style={{ maxWidth: 720 }}>
           <Input
-            value={ruleName}
-            onChange={e => setRuleName(e.target.value)}
-            placeholder={t('aiContentSec.promptGuard.ruleName') as string}
+            value={form.rejectMessage}
+            onChange={(e) => updateField('rejectMessage', e.target.value)}
+            placeholder={defaultFormState.rejectMessage}
           />
         </div>
+      </Card>
+
+      {/* Zone 7: 保存动作 */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig', '保存配置')}</Button>
+        <Button onClick={handleReset}>{t('aiContentSec.resetConfig', '撤销改动')}</Button>
+      </div>
+
+      {/* Rule edit modal */}
+      <Modal
+        open={ruleModal.open}
+        title={ruleModal.kind === 'deny'
+          ? t('aiContentSec.promptGuard.blacklist', '检测规则')
+          : t('aiContentSec.promptGuard.allowRules', '白名单规则')}
+        onOk={commitRuleModal}
+        onCancel={() => setRuleModal({ ...ruleModal, open: false })}
+        okText={t('aiContentSec.saveConfig', '保存')}
+        cancelText={t('aiContentSec.cancel', '取消')}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 6 }}>{t('aiContentSec.promptGuard.ruleName', '规则名称')}</div>
+          <Input value={ruleModal.item.name} onChange={(e) => setRuleModal({ ...ruleModal, item: { ...ruleModal.item, name: e.target.value } })} />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 6 }}>{t('aiContentSec.promptGuard.rulePattern', '匹配表达式')}</div>
+          <Input.TextArea rows={3} value={ruleModal.item.regex} onChange={(e) => setRuleModal({ ...ruleModal, item: { ...ruleModal.item, regex: e.target.value } })} />
+        </div>
         <div>
-          <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('aiContentSec.promptGuard.regex')}</div>
-          <Input
-            value={ruleRegex}
-            onChange={e => setRuleRegex(e.target.value)}
-            placeholder={t('aiContentSec.promptGuard.regex') as string}
-          />
+          <div style={{ marginBottom: 6 }}>{t('aiContentSec.promptGuard.matchType', '匹配方式')}</div>
+          <Radio.Group value={ruleModal.item.matchType} onChange={(e) => setRuleModal({ ...ruleModal, item: { ...ruleModal.item, matchType: e.target.value } })}>
+            <Radio value="regex">regex</Radio>
+            <Radio value="contains">contains</Radio>
+            <Radio value="equal">equal</Radio>
+          </Radio.Group>
         </div>
       </Modal>
     </div>

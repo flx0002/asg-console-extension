@@ -87,7 +87,7 @@ if True:
     m = re.search(r"import \{\n(.*?)\} from '@ant-design/icons';", s, re.S)
     assert m, 'icons import block not found'
     existing = set(re.findall(r'\b(\w+Outlined)\b', m.group(1)))
-    needed = {'AuditOutlined', 'EyeOutlined', 'RadarChartOutlined', 'SecurityScanOutlined'}
+    needed = {'AlertOutlined', 'AuditOutlined', 'BookOutlined', 'EyeOutlined', 'FileSearchOutlined', 'RadarChartOutlined', 'SecurityScanOutlined'}
     icons = sorted(existing | needed)
     new_block = 'import {\n' + ''.join(f'  {i},\n' for i in icons) + "} from '@ant-design/icons';"
     s = s[:m.start()] + new_block + s[m.end():]

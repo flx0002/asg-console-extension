@@ -17,6 +17,10 @@ bash "$EXT_DIR/brand-apply.sh" "$CON" > /tmp/brand_apply.log 2>&1 || true
 tail -3 /tmp/brand_apply.log
 
 echo
+echo "=== [2.5/5] patch-topbar (post-brand topbar) ==="
+bash "$EXT_DIR/patch-topbar.sh" "$CON"
+
+echo
 echo "=== [3/5] 品牌标记校验 ==="
 test -f "$CON/frontend/public/titleLogo.png" || { echo "!! 缺少品牌 logo（titleLogo.png），品牌重放未生效"; exit 1; }
 grep -q "WntASG" "$CON/frontend/src/components/Footer/index.tsx" || { echo "!! Footer 无品牌名，brand.patch 未生效"; exit 1; }

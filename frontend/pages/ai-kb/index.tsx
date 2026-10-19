@@ -4,6 +4,7 @@ import {
 } from 'antd';
 import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'ice';
 import {
   listKbVersions, getActiveKb, importKbOffline, updateKbOnline, rollbackKb,
   syncKbToGateway, getKbLicense, getKbOnlineSetting,
@@ -28,6 +29,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 const AiKbPage: React.FC = () => {
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const { data: active, loading: activeLoading, refresh: refreshActive } =
     useRequest(() => getActiveKb(), { onError: () => {} });
@@ -156,7 +158,6 @@ const AiKbPage: React.FC = () => {
         loading={activeLoading}
         extra={
           <Space>
-            <Button onClick={reloadAll}>{t('aiKb.refresh')}</Button>
             <Upload
               accept=".wnt"
               showUploadList={false}
@@ -164,6 +165,7 @@ const AiKbPage: React.FC = () => {
               beforeUpload={(file: any) => {
                 Modal.confirm({
                   title: t('aiKb.importBundleConfirmTitle'),
+                  content: t('aiKb.importBundleConfirmContent'),
                   onOk: () => handleImportBundle(file),
                 });
                 return false;
@@ -173,6 +175,9 @@ const AiKbPage: React.FC = () => {
             </Upload>
             <Button type="primary" disabled={!canUpdate || !onlineConfigured} onClick={handleOnlineUpdate}>
               {t('aiKb.onlineUpdate')}
+            </Button>
+            <Button onClick={() => navigate('/kb-online-setting')}>
+              {t('aiKb.onlineSetting', '在线更新配置')}
             </Button>
           </Space>
         }
@@ -186,7 +191,6 @@ const AiKbPage: React.FC = () => {
             <Descriptions.Item label={t('aiKb.colSource')}>
               <Tag color={STATUS_COLORS[active.source || ''] || 'default'}>{active.source || '-'}</Tag>
             </Descriptions.Item>
-            <Descriptions.Item label={t('aiKb.colSigAlg')}>{active.sigAlgorithm || '-'}</Descriptions.Item>
             <Descriptions.Item label={t('aiKb.colOperator')}>{active.operator || '-'}</Descriptions.Item>
             <Descriptions.Item label={t('aiKb.colCreatedAt')}>{formatDateTime(active.createdAt)}</Descriptions.Item>
             <Descriptions.Item label={t('aiKb.gatewaySyncLabel')} span={2}>
