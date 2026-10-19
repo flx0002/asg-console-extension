@@ -154,6 +154,44 @@ public class KbLicenseServiceImpl implements KbLicenseService {
         return getStatus().isCanUpdate();
     }
 
+    @Override
+    public boolean canUpdateCompliance() {
+        AiKbLicense row = licenseRepository.findById(1L).orElse(null);
+        if (row == null || !AiKbLicense.STATUS_VALID.equals(row.getStatus())) {
+            return false;
+        }
+        // 功能位级实时复核：content_compliance_kb 自身 endTime 未过期/合法（与 ai_kb_update 独立）
+        return evaluateComplianceFunctionWindow(row.getFunctionItems()) == null;
+    }
+
+    /**
+     * 内容合规词库功能位级实时复核：从落库 function_items 取 content_compliance_kb 的 endTime 判定。
+     * 返回 null=有效；非 null=失效原因（与 {@link #evaluateKbFunctionWindow} 同源语义，仅功能位不同）。
+     */
+    private String evaluateComplianceFunctionWindow(String functionItemsJson) {
+        if (StringUtils.isBlank(functionItemsJson)) {
+            return "授权不含 " + LicenseInfo.FEATURE_COMPLIANCE_KB + " 功能";
+        }
+        try {
+            JSONArray a = JSON.parseArray(functionItemsJson);
+            JSONObject fn = null;
+            for (int i = 0; i < a.size(); i++) {
+                JSONObject o = a.getJSONObject(i);
+                if (o != null && LicenseInfo.FEATURE_COMPLIANCE_KB.equals(functionIdentity(o))) {
+                    fn = o;
+                    break;
+                }
+            }
+            if (fn == null) {
+                return "授权不含 " + LicenseInfo.FEATURE_COMPLIANCE_KB + " 功能";
+            }
+            return DatLicenseVerifier.evaluateEnd(fn.getString("endTime"));
+        } catch (Exception e) {
+            log.warn("evaluate compliance function window failed: {}", e.getMessage());
+            return "内容合规词库功能位状态复核失败";
+        }
+    }
+
     /** 落库一次验签通过的真实授权（单行覆盖 id=1）；仅在 importLicense 判定 authenticated 时调用。 */
     private void persist(LicenseInfo info, String rawLicense, String source) {
         AiKbLicense row = licenseRepository.findById(1L).orElseGet(AiKbLicense::new);

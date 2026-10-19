@@ -26,6 +26,7 @@ public final class KbFeatureCatalog {
 
     static {
         NAMES.put(LicenseInfo.FEATURE_KB_UPDATE, "AI分类知识库更新");
+        NAMES.put(LicenseInfo.FEATURE_COMPLIANCE_KB, "内容合规词库更新");
     }
 
     private KbFeatureCatalog() {

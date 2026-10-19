@@ -34,4 +34,10 @@ public interface KbLicenseService {
 
     /** 是否允许 KB 更新（授权有效 ∧ 未过期 ∧ 含 ai_kb_update）。 */
     boolean canUpdate();
+
+    /**
+     * 是否允许内容合规词库更新（BE-011）：授权有效 ∧ {@code content_compliance_kb} 功能位存在且未过期。
+     * 与 {@link #canUpdate()}（ai_kb_update）互不干扰，各自独立门控自己的更新入口。
+     */
+    boolean canUpdateCompliance();
 }

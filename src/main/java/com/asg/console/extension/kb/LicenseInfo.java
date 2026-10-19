@@ -24,6 +24,9 @@ public class LicenseInfo {
     /** KB 更新所需的功能位。 */
     public static final String FEATURE_KB_UPDATE = "ai_kb_update";
 
+    /** 内容合规词库更新所需的功能位（BE-011）。 */
+    public static final String FEATURE_COMPLIANCE_KB = "content_compliance_kb";
+
     /** 授权类型：正式（永久有效）。 */
     public static final String TYPE_FORMAL = "formal";
     /** 授权类型：临时（有到期时间）。 */

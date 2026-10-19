@@ -56,6 +56,27 @@ public class KbOnlineClient {
         return pkg;
     }
 
+    /**
+     * 在线拉取最新内容合规词库更新包（BE-011）；与 {@link #fetchLatestKb} 共用基址与
+     * {@code {bundle}} 信封，仅路径不同：{@code GET {base}/compliance-kb/latest}。基址为空
+     * 或失败抛异常（由服务层转成用户可读错误）。拉到的 .wnt 仍走本地校签+解密+门控。
+     */
+    public OnlineKbPackage fetchLatestComplianceKb(String baseUrl) {
+        String base = normalize(baseUrl);
+        if (base.isEmpty()) {
+            throw new IllegalStateException("在线更新未配置（更新服务器地址为空）");
+        }
+        String url = base + "/compliance-kb/latest";
+        String body = restTemplate.getForObject(url, String.class);
+        JSONObject obj = JSON.parseObject(body);
+        if (obj == null || obj.getString("bundle") == null) {
+            throw new IllegalStateException("在线词库更新包格式错误");
+        }
+        OnlineKbPackage pkg = new OnlineKbPackage();
+        pkg.setBundle(obj.getString("bundle"));
+        return pkg;
+    }
+
     /** trim + 去末尾斜杠；空/null → 空串。 */
     private static String normalize(String url) {
         return url == null ? "" : url.trim().replaceAll("/+$", "");
