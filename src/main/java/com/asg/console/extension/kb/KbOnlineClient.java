@@ -13,6 +13,7 @@ import org.springframework.web.client.RestTemplate;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONObject;
+import com.alibaba.higress.sdk.exception.ValidationException;
 
 import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
@@ -39,42 +40,49 @@ public class KbOnlineClient {
         return StringUtils.isNotBlank(normalize(baseUrl));
     }
 
-    /** 在线拉取最新 KB 更新包；基址为空或失败抛异常（由服务层转成用户可读错误）。 */
+    /** 在线拉取最新 KB 更新包（AI 分类知识库）。基址为空抛未配置；拉取异常按类型分层转可读文案。 */
     public OnlineKbPackage fetchLatestKb(String baseUrl) {
         String base = normalize(baseUrl);
         if (base.isEmpty()) {
-            throw new IllegalStateException("在线更新未配置（更新服务器地址为空）");
-        }
-        String url = base + "/kb/latest";
-        String body = restTemplate.getForObject(url, String.class);
-        JSONObject obj = JSON.parseObject(body);
-        if (obj == null || obj.getString("bundle") == null) {
-            throw new IllegalStateException("在线更新包格式错误");
+            throw new ValidationException("在线更新未配置：请先设置更新服务器地址");
         }
         OnlineKbPackage pkg = new OnlineKbPackage();
-        pkg.setBundle(obj.getString("bundle"));
+        pkg.setBundle(fetchBundle(base, "/kb/latest", "KB"));
         return pkg;
     }
 
     /**
      * 在线拉取最新内容合规词库更新包（BE-011）；与 {@link #fetchLatestKb} 共用基址与
-     * {@code {bundle}} 信封，仅路径不同：{@code GET {base}/compliance-kb/latest}。基址为空
-     * 或失败抛异常（由服务层转成用户可读错误）。拉到的 .wnt 仍走本地校签+解密+门控。
+     * {@code {bundle}} 信封，仅路径不同：{@code GET {base}/compliance-kb/latest}。异常分层文案同上。
      */
     public OnlineKbPackage fetchLatestComplianceKb(String baseUrl) {
         String base = normalize(baseUrl);
         if (base.isEmpty()) {
-            throw new IllegalStateException("在线更新未配置（更新服务器地址为空）");
-        }
-        String url = base + "/compliance-kb/latest";
-        String body = restTemplate.getForObject(url, String.class);
-        JSONObject obj = JSON.parseObject(body);
-        if (obj == null || obj.getString("bundle") == null) {
-            throw new IllegalStateException("在线词库更新包格式错误");
+            throw new ValidationException("在线更新未配置：请先设置更新服务器地址");
         }
         OnlineKbPackage pkg = new OnlineKbPackage();
-        pkg.setBundle(obj.getString("bundle"));
+        pkg.setBundle(fetchBundle(base, "/compliance-kb/latest", "词库"));
         return pkg;
+    }
+
+    /**
+     * 两页在线更新共用的信封拉取（DEF-011 修复点）：把连接失败 / 服务端 HTTP 错误 / 响应格式非法
+     * 三类异常分别译成分层可读文案（经 {@link OnlineUpdateErrorMapper}），不再一律「无法连接」。
+     * 原始异常摘要仅落日志，不外泄；返回 bundle 字符串（厂商 .wnt 的 Base64）。
+     */
+    private String fetchBundle(String base, String path, String label) {
+        String url = base + path;
+        JSONObject obj;
+        try {
+            obj = JSON.parseObject(restTemplate.getForObject(url, String.class));
+        } catch (Exception e) {
+            log.warn("KB online fetch failed (url={}): {}", url, e.toString());
+            throw OnlineUpdateErrorMapper.toValidation(e, label);
+        }
+        if (obj == null || obj.getString("bundle") == null) {
+            throw new ValidationException(OnlineUpdateErrorMapper.badResponseMessage(label));
+        }
+        return obj.getString("bundle");
     }
 
     /** trim + 去末尾斜杠；空/null → 空串。 */
