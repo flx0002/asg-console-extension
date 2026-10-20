@@ -50,6 +50,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private static final String PROFILE_USER_PREFIX = "agent_behavior:profile:user:";
     private static final String PROFILE_AGENT_PREFIX = "agent_behavior:profile:agent:";
     private static final String BASELINE_PREFIX = "agent_behavior:baseline:";
+    private static final String KNOWN_IPS_PREFIX = "agent_behavior:knownips:";
     private static final String AUDIT_USER_INDEX_PREFIX = "agent_audit:user:";
     private static final String AUDIT_AGENT_INDEX_PREFIX = "agent_audit:agent:";
     private static final String AUDIT_LOG_PREFIX = "agent_audit_log:";
@@ -687,7 +688,6 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             // JSON 频次字段 Java 端 EMA 合并
             mergeBaselineJsonFreq(jedis, baselineKey, "common_models", modelFreq, alpha);
             mergeBaselineJsonFreq(jedis, baselineKey, "common_tools", toolFreq, alpha);
-            mergeBaselineJsonFreq(jedis, baselineKey, "common_source_ips", ipFreq, alpha);
             mergeHourField(jedis, baselineKey, "common_hours", hourCounts);
         } else {
             // 冷启动：直接初始化
@@ -713,8 +713,15 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             // JSON 频次字段直接写入
             jedis.hset(baselineKey, "common_models", JSON.toJSONString(topFreqKeys(modelFreq, 5)));
             jedis.hset(baselineKey, "common_tools", JSON.toJSONString(topFreqKeys(toolFreq, 5)));
-            jedis.hset(baselineKey, "common_source_ips", JSON.toJSONString(topFreqKeys(ipFreq, 5)));
             jedis.hset(baselineKey, "common_hours", JSON.toJSONString(hourCounts));
+        }
+
+        // 已知来源IP集合(Redis SET): 仅 user 维度维护(agent 无来源IP语义, 不建 SET 省内存/避免误解);
+        // 首次按整个审计索引保留窗口回填历史IP(消除迁移一次性尖峰), 之后按增量窗口并入。
+        if ("user".equals(entityType)) {
+            String knownIpKey = KNOWN_IPS_PREFIX + entityType + ":" + entityId;
+            seedKnownIpsOnce(jedis, knownIpKey, indexKey);
+            mergeBaselineSourceIpSet(jedis, knownIpKey, ipFreq);
         }
 
         // 更新水位线
@@ -937,6 +944,170 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             merged[i] += newHours[i];
         }
         jedis.hset(key, field, JSON.toJSONString(merged));
+    }
+
+    /**
+     * 把本批日志出现的来源 IP 规范化后并入"已知来源 IP 集合"(Redis SET)。
+     * 用 SET 而非 Top-N：detectBehaviorRarity 以 SISMEMBER 做"是否从未出现过"的严格成员判定,
+     * 彻底避免合法 IP 超过 N 个或 EMA 衰减导致的"新 IP"误报。
+     * 集合按实体生命周期去重累积、每批含合法 IP 时滑动续期至 BASELINE_TTL(非固定窗口),
+     * 内存上界为该用户历史去重 IP 数。
+     */
+    private void mergeBaselineSourceIpSet(Jedis jedis, String knownIpKey, Map<String, Integer> ipFreq) {
+        if (ipFreq == null || ipFreq.isEmpty()) {
+            return; // 无来源IP: 不建键, 读端据"键不存在"跳过(冷启动保护)
+        }
+        int added = 0;
+        for (String ip : ipFreq.keySet()) {
+            String norm = normalizeIp(ip);
+            if (norm != null) {
+                jedis.sadd(knownIpKey, norm);
+                added++;
+            }
+        }
+        if (added > 0) {
+            jedis.expire(knownIpKey, BASELINE_TTL); // 滑动续期, 与基线同生命周期
+        }
+    }
+
+    /**
+     * 首次为某 user 建立已知IP集合时, 按整个审计索引保留窗口回填历史来源 IP。
+     * 目的: 规避"上线后第一次增量 rebuild 只播种近窗口IP"导致历史常用但近期未见的IP被一次性误报为新IP。
+     * 集合已存在则直接返回(后续走增量 SADD); 索引无历史则不建键(detect 冷启动保护保持不变)。
+     */
+    private void seedKnownIpsOnce(Jedis jedis, String knownIpKey, String indexKey) {
+        if (jedis.exists(knownIpKey)) {
+            return;
+        }
+        Set<String> historyIds = jedis.zrangeByScore(indexKey, 0, Long.MAX_VALUE);
+        if (historyIds == null || historyIds.isEmpty()) {
+            return;
+        }
+        int added = 0;
+        for (JSONObject l : batchGetLogs(jedis, historyIds)) {
+            String norm = normalizeIp(l.getString("source_ip"));
+            if (norm != null) {
+                jedis.sadd(knownIpKey, norm);
+                added++;
+            }
+        }
+        if (added > 0) {
+            jedis.expire(knownIpKey, BASELINE_TTL);
+        }
+    }
+
+    /**
+     * 规范化 IP 字面量: 同一地址任意写法(前导零/大小写/:: 压缩)归一为唯一文本; 非 IP/空/0.0.0.0 返回 null。
+     * IPv4 手动逐段校验(0-255)输出规范 a.b.c.d, 不经 getByName: 既杜绝非法八位组的 DNS 回退, 又消除前导零进位歧义;
+     * IPv6 仅在通过严格字面量校验后才交给 getByName 展开(合法字面量不触发 DNS), 含 '.' 的罕见映射形式返回 null。
+     */
+    private String normalizeIp(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String ip = raw.trim();
+        if (ip.isEmpty()) {
+            return null;
+        }
+        if (ip.indexOf(':') >= 0) {
+            if (ip.indexOf('.') >= 0) {
+                return null; // v4-mapped 等罕见形式: 纯 IPv6 源地址不含 '.', 拒绝以免歧义与 DNS
+            }
+            if (!isIpv6Literal(ip)) {
+                return null; // 非法字面量: 不交给 getByName, 杜绝按主机名解析触发 DNS
+            }
+            try {
+                return java.net.InetAddress.getByName(ip).getHostAddress();
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        String[] parts = ip.split("\\.", -1);
+        if (parts.length != 4) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < 4; i++) {
+            String s = parts[i];
+            if (s.isEmpty() || s.length() > 3) {
+                return null;
+            }
+            int v = 0;
+            for (int j = 0; j < s.length(); j++) {
+                char c = s.charAt(j);
+                if (c < '0' || c > '9') {
+                    return null;
+                }
+                v = v * 10 + (c - '0');
+            }
+            if (v > 255) {
+                return null;
+            }
+            if (i > 0) {
+                sb.append('.');
+            }
+            sb.append(v);
+        }
+        String out = sb.toString();
+        return "0.0.0.0".equals(out) ? null : out;
+    }
+
+    /** 严格校验纯 IPv6 字面量: 至多一个 '::', 无 '.', 每组 1-4 位十六进制, 组数正确; 通过者 getByName 视为字面量不触发 DNS。 */
+    private boolean isIpv6Literal(String ip) {
+        int dc = ip.indexOf("::");
+        if (dc >= 0 && ip.indexOf("::", dc + 1) >= 0) {
+            return false; // 多个 '::'
+        }
+        if (dc >= 0) {
+            String left = ip.substring(0, dc);
+            String right = ip.substring(dc + 2);
+            if (!isHexGroups(left) || !isHexGroups(right)) {
+                return false;
+            }
+            return countGroups(left) + countGroups(right) <= 7; // '::' 至少代表一组
+        }
+        String[] g = ip.split(":", -1);
+        if (g.length != 8) {
+            return false;
+        }
+        for (String s : g) {
+            if (!isHexGroup(s)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isHexGroups(String side) {
+        if (side.isEmpty()) {
+            return true;
+        }
+        for (String s : side.split(":", -1)) {
+            if (!isHexGroup(s)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private int countGroups(String side) {
+        if (side.isEmpty()) {
+            return 0;
+        }
+        return side.split(":", -1).length;
+    }
+
+    private boolean isHexGroup(String s) {
+        if (s.isEmpty() || s.length() > 4) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private List<String> topFreqKeys(Map<String, Integer> freq, int topN) {
@@ -1323,20 +1494,24 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             }
         }
 
-        // 首次从某 IP 访问
+        // 首次从某 IP 访问: 以"只增不减"的已知IP集合(Redis SET)做严格成员判定, 规避 Top-N 截断/EMA 衰减误报
         if (sourceIp != null && !sourceIp.isEmpty() && !"0.0.0.0".equals(sourceIp)) {
-            Set<String> knownIps = baselineAvailable
-                ? extractNamesFromFreqJson(baseline.get("common_source_ips"))
-                : extractNamesFromFreqJson(profile.get("common_source_ips"));
-            if (!knownIps.contains(sourceIp)) {
-                JSONObject evidence = new JSONObject();
-                evidence.put("source_ip", sourceIp);
-                evidence.put("baseline_ips", new ArrayList<>(knownIps));
-                createAlert(jedis, "behavior_rarity", "medium", 30,
-                    userId, agentId, sessionId, traceId,
-                    "新 IP 访问",
-                    "用户从新IP地址访问(" + refSource + "内未见): " + sourceIp,
-                    evidence, Collections.singletonList(log.getString("event_id")));
+            String knownIpKey = KNOWN_IPS_PREFIX + "user:" + userId;
+            // 迁移/冷启动保护: 集合尚未建立时跳过, 避免把历史IP全判新引发告警风暴
+            if (jedis.exists(knownIpKey)) {
+                String normIp = normalizeIp(sourceIp);
+                if (normIp != null && !jedis.sismember(knownIpKey, normIp)) {
+                    JSONObject evidence = new JSONObject();
+                    evidence.put("source_ip", sourceIp);
+                    List<String> knownSample = jedis.srandmember(knownIpKey, 10);
+                    evidence.put("baseline_ips", knownSample != null ? knownSample : Collections.emptyList());
+                    evidence.put("known_ip_total", jedis.scard(knownIpKey));
+                    createAlert(jedis, "behavior_rarity", "medium", 30,
+                        userId, agentId, sessionId, traceId,
+                        "新 IP 访问",
+                        "用户从新IP地址访问(历史集合内未见): " + sourceIp,
+                        evidence, Collections.singletonList(log.getString("event_id")));
+                }
             }
         }
     }
