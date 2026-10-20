@@ -632,6 +632,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         double avgLatency = 0;
         Map<String, Integer> modelFreq = new HashMap<>();
         Map<String, Integer> toolFreq = new HashMap<>();
+        Map<String, Integer> ipFreq = new HashMap<>();
         int[] hourCounts = new int[24];
         Set<String> sessionIds = new java.util.HashSet<>();
 
@@ -641,6 +642,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             sessionIds.add(log.getString("session_id"));
             incrementFreq(modelFreq, log.getString("model"));
             incrementFreq(toolFreq, log.getString("tool_name"));
+            incrementFreq(ipFreq, log.getString("source_ip"));
             avgLatency += log.getLongValue("response_latency");
             long ts = log.getLongValue("timestamp");
             if (ts > 0) {
@@ -683,6 +685,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             // JSON 频次字段 Java 端 EMA 合并
             mergeBaselineJsonFreq(jedis, baselineKey, "common_models", modelFreq, alpha);
             mergeBaselineJsonFreq(jedis, baselineKey, "common_tools", toolFreq, alpha);
+            mergeBaselineJsonFreq(jedis, baselineKey, "common_source_ips", ipFreq, alpha);
             mergeHourField(jedis, baselineKey, "common_hours", hourCounts);
         } else {
             // 冷启动：直接初始化
@@ -708,6 +711,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             // JSON 频次字段直接写入
             jedis.hset(baselineKey, "common_models", JSON.toJSONString(topFreqKeys(modelFreq, 5)));
             jedis.hset(baselineKey, "common_tools", JSON.toJSONString(topFreqKeys(toolFreq, 5)));
+            jedis.hset(baselineKey, "common_source_ips", JSON.toJSONString(topFreqKeys(ipFreq, 5)));
             jedis.hset(baselineKey, "common_hours", JSON.toJSONString(hourCounts));
         }
 
@@ -1691,10 +1695,9 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
 
             long min = startTime > 0 ? startTime : 0;
             long max = endTime > 0 ? endTime : System.currentTimeMillis() + 60000;
-            // ZREVRANGEBYSCORE 降序取分页
-            int start = (page - 1) * pageSize;
-            int end = start + pageSize - 1;
-            Set<String> alertIds = jedis.zrevrangeByScore(indexKey, max, min, start, end);
+            // ZREVRANGEBYSCORE 降序取分页：Jedis 签名为 (offset, count)，count 恒为 pageSize
+            int offset = (page - 1) * pageSize;
+            Set<String> alertIds = jedis.zrevrangeByScore(indexKey, max, min, offset, pageSize);
             long total = jedis.zcount(indexKey, min, max);
 
             // Pipeline 批量获取告警详情
