@@ -88,6 +88,8 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private static final int BASELINE_TTL = 30 * 86400;
     private static final int ALERT_TTL = 90 * 86400;
     private static final int DEFAULT_MIN_SAMPLES = 10;
+    private static final int DEFAULT_PAGE_SIZE = 20;
+    private static final int MAX_PAGE_SIZE = 200;
     private static final double DEFAULT_EMA_ALPHA = 0.1;
     private static final int SCAN_BATCH_SIZE = 200;
     private static final int MAX_SCAN_KEYS = 10000;
@@ -1695,10 +1697,23 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
 
             long min = startTime > 0 ? startTime : 0;
             long max = endTime > 0 ? endTime : System.currentTimeMillis() + 60000;
-            // ZREVRANGEBYSCORE 降序取分页：Jedis 签名为 (offset, count)，count 恒为 pageSize
-            int offset = (page - 1) * pageSize;
-            Set<String> alertIds = jedis.zrevrangeByScore(indexKey, max, min, offset, pageSize);
+            // 防御性入参钳制：page<1 归一为 1；pageSize<1 归一为默认值并按 [1, MAX_PAGE_SIZE] 钳制上限
+            if (page < 1) {
+                page = 1;
+            }
+            if (pageSize < 1) {
+                pageSize = DEFAULT_PAGE_SIZE;
+            } else if (pageSize > MAX_PAGE_SIZE) {
+                pageSize = MAX_PAGE_SIZE;
+            }
             long total = jedis.zcount(indexKey, min, max);
+            // 用 long 计算 offset 规避 (page-1)*pageSize 溢出；offset>=total 直接返回空页，
+            // 避免负 offset(page<=0) 或超大 offset 触发 Redis "value is out of range"
+            long offset = (long) (page - 1) * pageSize;
+            // ZREVRANGEBYSCORE 降序取分页：Jedis 签名为 (offset, count)，count 恒为 pageSize
+            Set<String> alertIds = offset >= total
+                ? Collections.<String>emptySet()
+                : jedis.zrevrangeByScore(indexKey, max, min, (int) offset, pageSize);
 
             // Pipeline 批量获取告警详情
             List<Map<String, Object>> alerts = new ArrayList<>();
