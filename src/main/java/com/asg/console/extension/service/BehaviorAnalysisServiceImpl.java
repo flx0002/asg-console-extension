@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 import com.alibaba.fastjson.JSON;
@@ -232,7 +233,14 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             version++;
             Map<String, String> fields = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : config.entrySet()) {
-                fields.put(entry.getKey(), String.valueOf(entry.getValue()));
+                // 准入目录: 允许管理端直接传 JSON 数组(自然写法), 统一归一化为 JSON 字符串;
+                // 非法值抛 IllegalArgumentException 由 Controller 转 400, 避免"写入成功但规则静默关闭"。
+                if ("global_whitelisted_models".equals(entry.getKey())
+                    || "global_whitelisted_tools".equals(entry.getKey())) {
+                    fields.put(entry.getKey(), normalizeAdmissionConfig(entry.getKey(), entry.getValue()));
+                } else {
+                    fields.put(entry.getKey(), String.valueOf(entry.getValue()));
+                }
             }
             fields.put("config_version", String.valueOf(version));
             jedis.hmset(CONFIG_KEY, fields);
@@ -1199,6 +1207,10 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
                 return;
             }
 
+            // 准入目录每轮(3s 补扫)加载一次即可, 避免逐事件 HGET 与配置非法时的日志放大。
+            Set<String> admissionModels = loadAdmissionSet(jedis, "global_whitelisted_models");
+            Set<String> admissionTools = loadAdmissionSet(jedis, "global_whitelisted_tools");
+
             // 遍历用户维度索引（跳过 untrusted 桶）
             Set<String> userIndexKeys = scanKeys(jedis, AUDIT_USER_INDEX_PREFIX + "*");
             for (String indexKey : userIndexKeys) {
@@ -1217,7 +1229,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
                     }
                     // per-log 规则
                     detectIdentityMismatch(jedis, log);
-                    detectBehaviorRarity(jedis, log);
+                    detectBehaviorRarity(jedis, log, admissionModels, admissionTools);
                 }
             }
 
@@ -1467,7 +1479,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     }
 
     // --- 7.2 行为罕见 ---
-    private void detectBehaviorRarity(Jedis jedis, JSONObject log) {
+    private void detectBehaviorRarity(Jedis jedis, JSONObject log, Set<String> whitelistedModels, Set<String> whitelistedTools) {
         boolean identityTrusted = log.getBooleanValue("identity_trusted");
         if (!identityTrusted) {
             return;
@@ -1480,7 +1492,43 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         String toolName = log.getString("tool_name");
         String sourceIp = log.getString("source_ip");
 
-        // 冷启动保护：基线不足时回退到画像判断首次使用
+        // 准入目录由 runRiskDetection 每轮加载后传入: 值为 JSON 字符串数组, 口径=请求体里的 model/tool 名。
+        // 未配置/空数组 = 该项准入管控关闭, 不告警。
+        // 边界: 本规则不判定匿名/未受信身份及 user_id 为空的事件, 与 detectIdentityMismatch、
+        //       detectPrivilegePropagation 的 identity_trusted 门控一致; 这类流量是否被阻断取决于
+        //       网关鉴权策略, 本服务不做校验, 也不构成覆盖保证。
+
+        // 未准入模型/工具: 准入目录是权威判据, 不依赖基线/画像(新用户同样要拦), 也不再判断"首次使用"。
+        // title 带违规对象名, 使去重键按对象隔离: 同会话多个不同的未准入模型/工具各自留痕。
+        // 准入违规是确定性策略判定, allowDowngrade=false 使其不被 behavior_rarity 的误报降级吞掉。
+        String modelName = model == null ? "" : model.trim();
+        if (userId != null && !userId.isEmpty() && !modelName.isEmpty()
+            && !whitelistedModels.isEmpty() && !whitelistedModels.contains(modelName)) {
+            JSONObject evidence = new JSONObject();
+            String label = clip(modelName, 64);
+            evidence.put("model", clip(modelName, 256));
+            evidence.put("whitelist_size", whitelistedModels.size());
+            createAlert(jedis, "behavior_rarity", "medium", 40,
+                userId, agentId, sessionId, traceId,
+                "使用未准入模型: " + label,
+                "用户使用了准入目录外的模型: " + label,
+                evidence, Collections.singletonList(log.getString("event_id")), false);
+        }
+        String toolNameTrimmed = toolName == null ? "" : toolName.trim();
+        if (userId != null && !userId.isEmpty() && !toolNameTrimmed.isEmpty()
+            && !whitelistedTools.isEmpty() && !whitelistedTools.contains(toolNameTrimmed)) {
+            JSONObject evidence = new JSONObject();
+            String label = clip(toolNameTrimmed, 64);
+            evidence.put("tool", clip(toolNameTrimmed, 256));
+            evidence.put("whitelist_size", whitelistedTools.size());
+            createAlert(jedis, "behavior_rarity", "medium", 40,
+                userId, agentId, sessionId, traceId,
+                "使用未准入工具: " + label,
+                "用户使用了准入目录外的工具: " + label,
+                evidence, Collections.singletonList(log.getString("event_id")), false);
+        }
+
+        // 冷启动保护: 基线不足时回退到画像; 二者都缺失则跳过后续新 IP 判定(准入判定已在上面完成)
         Map<String, String> baseline = jedis.hgetAll(BASELINE_PREFIX + "user:" + userId);
         boolean baselineAvailable = !baseline.isEmpty();
         if (baselineAvailable) {
@@ -1499,48 +1547,6 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
                 return;
             }
         }
-        String refSource = baselineAvailable ? "基线" : "画像";
-
-        // 全局白名单
-        Set<String> whitelistedModels = parseJsonArrayToSet(
-            getConfigValue(jedis, "global_whitelisted_models", "[]"));
-        Set<String> whitelistedTools = parseJsonArrayToSet(
-            getConfigValue(jedis, "global_whitelisted_tools", "[]"));
-
-        // 首次使用模型（基于 Baseline，冷启动时回退到画像）
-        if (model != null && !model.isEmpty()) {
-            Set<String> knownModels = baselineAvailable
-                ? extractNamesFromFreqJson(baseline.get("common_models"))
-                : extractNamesFromFreqJson(profile.get("common_models"));
-            if (!knownModels.contains(model) && !whitelistedModels.contains(model)) {
-                JSONObject evidence = new JSONObject();
-                evidence.put("model", model);
-                evidence.put("baseline_models", new ArrayList<>(knownModels));
-                createAlert(jedis, "behavior_rarity", "low", 20,
-                    userId, agentId, sessionId, traceId,
-                    "首次使用模型",
-                    "用户首次使用模型(" + refSource + "内未见): " + model,
-                    evidence, Collections.singletonList(log.getString("event_id")));
-            }
-        }
-
-        // 首次调用工具
-        if (toolName != null && !toolName.isEmpty()) {
-            Set<String> knownTools = baselineAvailable
-                ? extractNamesFromFreqJson(baseline.get("common_tools"))
-                : extractNamesFromFreqJson(profile.get("common_tools"));
-            if (!knownTools.contains(toolName) && !whitelistedTools.contains(toolName)) {
-                JSONObject evidence = new JSONObject();
-                evidence.put("tool", toolName);
-                evidence.put("baseline_tools", new ArrayList<>(knownTools));
-                createAlert(jedis, "behavior_rarity", "low", 20,
-                    userId, agentId, sessionId, traceId,
-                    "首次调用工具",
-                    "用户首次调用工具(" + refSource + "内未见): " + toolName,
-                    evidence, Collections.singletonList(log.getString("event_id")));
-            }
-        }
-
         // 首次从某 IP 访问: 以"只增不减"的已知IP集合(Redis SET)做严格成员判定, 规避 Top-N 截断/EMA 衰减误报
         if (sourceIp != null && !sourceIp.isEmpty() && !"0.0.0.0".equals(sourceIp)) {
             String knownIpKey = KNOWN_IPS_PREFIX + "user:" + userId;
@@ -1817,9 +1823,19 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private boolean createAlert(Jedis jedis, String riskType, String riskLevel, int riskScore,
         String userId, String agentId, String sessionId, String traceId,
         String title, String description, JSONObject evidence, List<String> relatedLogs) {
+        return createAlert(jedis, riskType, riskLevel, riskScore, userId, agentId, sessionId, traceId,
+            title, description, evidence, relatedLogs, true);
+    }
+
+    private boolean createAlert(Jedis jedis, String riskType, String riskLevel, int riskScore,
+        String userId, String agentId, String sessionId, String traceId,
+        String title, String description, JSONObject evidence, List<String> relatedLogs,
+        boolean allowDowngrade) {
         // 临时白名单降级（方案 9.2 第 4 步）：误报复盘后 user/agent 被加入临时白名单，
         // 同类风险告警在白名单有效期内降级为 low，避免持续误报打扰。
-        if (!"low".equals(riskLevel) && isTempWhitelisted(jedis, userId, agentId, riskType)) {
+        // 准入违规等确定性策略判定传 allowDowngrade=false, 不受误报降级影响。
+        if (allowDowngrade && !"low".equals(riskLevel)
+            && isTempWhitelisted(jedis, userId, agentId, riskType)) {
             riskLevel = "low";
         }
 
@@ -2447,7 +2463,10 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             Set<String> set = new HashSet<>();
             for (Object item : arr) {
                 if (item instanceof String) {
-                    set.add((String)item);
+                    String v = ((String)item).trim();
+                    if (!v.isEmpty()) {
+                        set.add(v);
+                    }
                 }
             }
             return set;
@@ -2456,27 +2475,90 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    private Set<String> extractNamesFromFreqJson(String json) {
-        if (json == null || json.isEmpty()) {
-            return Collections.emptySet();
+    // 脏值常驻时每轮都会走到这里, 按字段去重, 只在值变化时记一次, 避免按轮次刷屏。
+    private final Map<String, String> lastBadAdmission = new ConcurrentHashMap<>();
+
+    private Set<String> loadAdmissionSet(Jedis jedis, String field) {
+        String raw = jedis.hget(CONFIG_KEY, field);
+        if (raw == null || raw.trim().isEmpty()) {
+            lastBadAdmission.remove(field);   // 关闭后清账, 便于再次被写脏时重新告警
+            return Collections.emptySet();   // 未配置 = 该规则关闭
         }
+        // 非法判定与写侧 normalizeAdmissionConfig 对齐: 解析失败/解析为 null(如字符串 "null")/含非字符串元素。
+        // 合法但为空(如 [""])属正常配置(=关闭), 不记 error。
+        JSONArray arr;
         try {
-            JSONArray arr = JSON.parseArray(json);
-            Set<String> names = new HashSet<>();
-            for (Object item : arr) {
-                if (item instanceof JSONObject) {
-                    String name = ((JSONObject)item).getString("name");
-                    if (name != null) {
-                        names.add(name);
-                    }
-                } else if (item instanceof String) {
-                    names.add((String)item);
+            arr = JSON.parseArray(raw);
+        } catch (Exception e) {
+            arr = null;
+        }
+        boolean illegal = arr == null;
+        Set<String> set = new HashSet<>();
+        if (!illegal) {
+            for (int i = 0; i < arr.size(); i++) {
+                Object item = arr.get(i);
+                if (!(item instanceof String)) {
+                    illegal = true;
+                    break;
+                }
+                String v = ((String) item).trim();
+                if (!isBlankText(v)) {
+                    set.add(v);
                 }
             }
-            return names;
-        } catch (Exception e) {
-            return Collections.emptySet();
         }
+        if (illegal) {
+            set = Collections.emptySet();   // 非法目录一律关闭, 避免半可用目录造成误报
+            // put 返回旧值: 同一脏值只在写入时记一次, 判重与记账是同一次原子操作。
+            if (!raw.equals(lastBadAdmission.put(field, raw))) {
+                log.error("准入目录配置非法(要求 JSON 字符串数组), 该规则已关闭: {}={}",
+                    field, clip(raw, 256));
+            }
+        } else {
+            lastBadAdmission.remove(field);
+        }
+        return set;
+    }
+
+    private static String clip(String s, int max) {
+        return s.length() <= max ? s : s.substring(0, max) + "...";
+    }
+
+    // 空白名(含全角空格、不换行空格)不能作为准入条目: 它不等于任何真实 model/tool, 却会让规则保持开启。
+    private static boolean isBlankText(String s) {
+        return s.chars().allMatch(ch -> Character.isWhitespace(ch) || Character.isSpaceChar(ch));
+    }
+
+    private String normalizeAdmissionConfig(String key, Object value) {
+        if (value == null) {
+            throw new IllegalArgumentException(key + " 不能为 null; 如需关闭准入请显式传 []");
+        }
+        String json = value instanceof String ? ((String) value).trim() : JSON.toJSONString(value);
+        if (json.isEmpty()) {
+            throw new IllegalArgumentException(key + " 不能为空字符串; 如需关闭准入请显式传 []");
+        }
+        JSONArray arr;
+        try {
+            arr = JSON.parseArray(json);
+        } catch (Exception e) {
+            throw new IllegalArgumentException(key + " 必须是 JSON 字符串数组, 实际值: " + clip(json, 64));
+        }
+        if (arr == null) {
+            // 字符串 "null" 会被 parseArray 解析为 null, 不拦会 NPE -> 500
+            throw new IllegalArgumentException(key + " 必须是 JSON 字符串数组, 实际值: " + clip(json, 64));
+        }
+        // 读侧只收非空白字符串元素, 非字符串/空白元素会被静默丢弃导致"配置成功但规则关闭或永不匹配", 故写入前拦截。
+        for (int i = 0; i < arr.size(); i++) {
+            Object item = arr.get(i);
+            if (!(item instanceof String)) {
+                throw new IllegalArgumentException(
+                    key + " 第 " + (i + 1) + " 个元素不是字符串, 实际值: " + clip(json, 64));
+            }
+            if (isBlankText(((String) item).trim())) {
+                throw new IllegalArgumentException(
+                    key + " 第 " + (i + 1) + " 个元素为空白; 如需关闭准入请显式传 []");
+            }
+        }
+        return json;
     }
 }

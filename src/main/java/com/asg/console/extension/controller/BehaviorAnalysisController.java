@@ -105,7 +105,12 @@ public class BehaviorAnalysisController {
     @Operation(summary = "Update behavior analysis configuration")
     @ApiResponses({@ApiResponse(responseCode = "200", description = "Success")})
     public ResponseEntity<Void> updateConfig(@RequestBody Map<String, Object> config) {
-        behaviorAnalysisService.updateConfig(config);
+        try {
+            behaviorAnalysisService.updateConfig(config);
+        } catch (IllegalArgumentException e) {
+            log.warn("Invalid behavior analysis config: {}", e.getMessage());
+            return ResponseEntity.badRequest().build();
+        }
         return ResponseEntity.ok().build();
     }
 
