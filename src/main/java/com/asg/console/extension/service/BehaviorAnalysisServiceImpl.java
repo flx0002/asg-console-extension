@@ -1506,11 +1506,19 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
                     List<String> knownSample = jedis.srandmember(knownIpKey, 10);
                     evidence.put("baseline_ips", knownSample != null ? knownSample : Collections.emptyList());
                     evidence.put("known_ip_total", jedis.scard(knownIpKey));
-                    createAlert(jedis, "behavior_rarity", "medium", 30,
+                    boolean emitted = createAlert(jedis, "behavior_rarity", "medium", 30,
                         userId, agentId, sessionId, traceId,
                         "新 IP 访问",
                         "用户从新IP地址访问(历史集合内未见): " + sourceIp,
                         evidence, Collections.singletonList(log.getString("event_id")));
+                    // 告警即自愈(条件化): 仅当本次"新IP访问"告警确实新建时才并入已知集合。
+                    // 三条 rarity 规则共用 behavior_rarity 去重键, 若本条被同日志的首次模型/工具抢占而 emitted=false,
+                    // 则【不】并入, 留待去重窗口过期后补报, 避免把从未报出的IP永久静默(fail-open)。
+                    // 并入后同一来源在下一次周期 rebuild 前不再重复刷屏; SADD 幂等, 与 rebuild 合并无冲突。
+                    if (emitted) {
+                        jedis.sadd(knownIpKey, normIp);
+                        jedis.expire(knownIpKey, BASELINE_TTL);
+                    }
                 }
             }
         }
