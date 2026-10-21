@@ -372,6 +372,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             long toScore = now * 1000 + 999;
 
             // 1. 构建用户画像
+            int profileFailed = 0;   // 逐实体隔离下失败计数: >0 则不前移全局水位, 保证下轮补建(防系统性故障被静默掩盖)
             Set<String> userIndexKeys = scanKeys(jedis, AUDIT_USER_INDEX_PREFIX + "*");
             for (String indexKey : userIndexKeys) {
                 // 跳过未信任聚合桶（不为伪造身份建画像）
@@ -379,19 +380,40 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
                     continue;
                 }
                 String userId = indexKey.substring(AUDIT_USER_INDEX_PREFIX.length());
-                buildUserProfile(jedis, userId, indexKey, fromScore, toScore);
+                // 逐实体容错隔离: 单实体画像异常只跳过该实体, 不中断整批(画像为尽力而为滑窗, 全局水位仍可前移)
+                try {
+                    buildUserProfile(jedis, userId, indexKey, fromScore, toScore);
+                } catch (JedisConnectionException ce) {
+                    throw ce;   // 连接类异常上抛中止整批: 外层 catch 接手, 水位不前移, 下轮重放积压窗口(避免坏 socket 逐实体空转)
+                } catch (Exception e) {
+                    profileFailed++;
+                    log.error("buildUserProfile failed for user={}, skip and continue", userId, e);
+                }
             }
 
             // 2. 构建智能体画像
             Set<String> agentIndexKeys = scanKeys(jedis, AUDIT_AGENT_INDEX_PREFIX + "*");
             for (String indexKey : agentIndexKeys) {
                 String agentId = indexKey.substring(AUDIT_AGENT_INDEX_PREFIX.length());
-                buildAgentProfile(jedis, agentId, indexKey, fromScore, toScore);
+                try {
+                    buildAgentProfile(jedis, agentId, indexKey, fromScore, toScore);
+                } catch (JedisConnectionException ce) {
+                    throw ce;
+                } catch (Exception e) {
+                    profileFailed++;
+                    log.error("buildAgentProfile failed for agent={}, skip and continue", agentId, e);
+                }
             }
 
             // 3. 更新水位线
-            saveWatermark(jedis, "profile_build_at", now);
-            log.info("rebuildProfiles completed, users={}, agents={}", userIndexKeys.size(), agentIndexKeys.size());
+            // 水位门控: 仅当本轮无逐实体失败时才前移全局水位, 否则冻结待下轮补建(与基线每实体水位的 fail-safe 语义对齐)
+            if (profileFailed == 0) {
+                saveWatermark(jedis, "profile_build_at", now);
+                log.info("rebuildProfiles completed, users={}, agents={}", userIndexKeys.size(), agentIndexKeys.size());
+            } else {
+                log.warn("rebuildProfiles held watermark, {} entities failed (users={}, agents={})",
+                    profileFailed, userIndexKeys.size(), agentIndexKeys.size());
+            }
         } catch (JedisConnectionException e) {
             log.error("rebuildProfiles failed: Redis connection error", e);
         } catch (Exception e) {
@@ -588,13 +610,27 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             Set<String> userProfileKeys = scanKeys(jedis, PROFILE_USER_PREFIX + "*");
             for (String profileKey : userProfileKeys) {
                 String userId = profileKey.substring(PROFILE_USER_PREFIX.length());
-                rebuildBaselineForEntity(jedis, "user", userId);
+                // 逐实体容错隔离: 单实体基线重建异常只跳过该实体, 不中断整批;
+                // rebuildBaselineForEntity 末尾才 saveWatermark, 异常时水位不前移, 下轮自然重试(fail-safe 不建脏集合)。
+                try {
+                    rebuildBaselineForEntity(jedis, "user", userId);
+                } catch (JedisConnectionException ce) {
+                    throw ce;
+                } catch (Exception e) {
+                    log.error("rebuildBaseline failed for user={}, skip and continue", userId, e);
+                }
             }
 
             Set<String> agentProfileKeys = scanKeys(jedis, PROFILE_AGENT_PREFIX + "*");
             for (String profileKey : agentProfileKeys) {
                 String agentId = profileKey.substring(PROFILE_AGENT_PREFIX.length());
-                rebuildBaselineForEntity(jedis, "agent", agentId);
+                try {
+                    rebuildBaselineForEntity(jedis, "agent", agentId);
+                } catch (JedisConnectionException ce) {
+                    throw ce;
+                } catch (Exception e) {
+                    log.error("rebuildBaseline failed for agent={}, skip and continue", agentId, e);
+                }
             }
 
             log.info("rebuildBaselines completed, users={}, agents={}",
