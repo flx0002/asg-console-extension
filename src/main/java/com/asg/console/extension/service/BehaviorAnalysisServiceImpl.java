@@ -51,6 +51,9 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private static final String PROFILE_AGENT_PREFIX = "agent_behavior:profile:agent:";
     private static final String BASELINE_PREFIX = "agent_behavior:baseline:";
     private static final String KNOWN_IPS_PREFIX = "agent_behavior:knownips:";
+    // knownips 存量首刷分页参数: 每页 1000, 上限 50000(逆序=保新弃旧), 消除一次性全窗口大 pipeline
+    private static final int KNOWN_IPS_SEED_PAGE = 1000;
+    private static final int KNOWN_IPS_SEED_MAX = 50000;
     private static final String AUDIT_USER_INDEX_PREFIX = "agent_audit:user:";
     private static final String AUDIT_AGENT_INDEX_PREFIX = "agent_audit:agent:";
     private static final String AUDIT_LOG_PREFIX = "agent_audit_log:";
@@ -979,19 +982,27 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         if (jedis.exists(knownIpKey)) {
             return;
         }
-        Set<String> historyIds = jedis.zrangeByScore(indexKey, 0, Long.MAX_VALUE);
-        if (historyIds == null || historyIds.isEmpty()) {
-            return;
-        }
-        int added = 0;
-        for (JSONObject l : batchGetLogs(jedis, historyIds)) {
-            String norm = normalizeIp(l.getString("source_ip"));
-            if (norm != null) {
-                jedis.sadd(knownIpKey, norm);
-                added++;
+        // 分页回填存量历史IP: 由新到旧按固定页拉取(不一次性物化整个保留窗口), 每页即时 SADD;
+        // 逆序 + 上限 KNOWN_IPS_SEED_MAX 保证截断丢弃的是最陈旧IP而非近期IP; 更早IP靠周期 merge+写穿+TTL 收敛。
+        // SADD 幂等, 中断/重跑安全; 每批规模有界(<=PAGE)。
+        boolean seeded = false;
+        for (int offset = 0; offset < KNOWN_IPS_SEED_MAX; offset += KNOWN_IPS_SEED_PAGE) {
+            Set<String> page = jedis.zrevrangeByScore(indexKey, Double.MAX_VALUE, 0, offset, KNOWN_IPS_SEED_PAGE);
+            if (page == null || page.isEmpty()) {
+                break;
+            }
+            for (JSONObject l : batchGetLogs(jedis, page)) {
+                String norm = normalizeIp(l.getString("source_ip"));
+                if (norm != null) {
+                    jedis.sadd(knownIpKey, norm);
+                    seeded = true;
+                }
+            }
+            if (page.size() < KNOWN_IPS_SEED_PAGE) {
+                break;   // 末页
             }
         }
-        if (added > 0) {
+        if (seeded) {
             jedis.expire(knownIpKey, BASELINE_TTL);
         }
     }
