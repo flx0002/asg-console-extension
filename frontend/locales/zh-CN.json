@@ -340,7 +340,7 @@
       "dispositionSuccess": "处置成功",
       "dispositionFailed": "处置失败",
       "confirmDispose": "确认处置",
-      "disposeTip": "处置语义说明：后端风险检测为 60s 定时任务，处置动作面向后续拦截，不阻断当前流量。拉黑写入黑名单，Wasm 后续请求入口拦截。",
+      "disposeTip": "处置只对之后的请求生效，当前这次请求不会被中断；拉黑该用户或智能体后，其后续请求将被拦截。",
       "evidence": "证据链",
       "relatedLogs": "关联审计日志",
       "traceId": "Trace ID",

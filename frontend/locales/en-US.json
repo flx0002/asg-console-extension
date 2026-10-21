@@ -340,7 +340,7 @@
       "dispositionSuccess": "Disposition success",
       "dispositionFailed": "Disposition failed",
       "confirmDispose": "Confirm Disposition",
-      "disposeTip": "Disposition semantics: backend risk detection runs every 60s. Disposition targets future interception, not current traffic. Blacklist is written and Wasm blocks subsequent requests at ingress.",
+      "disposeTip": "Disposition only affects later requests; the current request is not interrupted. After blocking a user or agent, its subsequent requests are denied.",
       "evidence": "Evidence",
       "relatedLogs": "Related Audit Logs",
       "traceId": "Trace ID",
