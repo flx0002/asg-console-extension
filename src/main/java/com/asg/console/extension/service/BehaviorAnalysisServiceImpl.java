@@ -1777,8 +1777,10 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         }
 
         // 去重键：user_id:agent_id:session_id:risk_type
+        // 去重键含 title: 三条 rarity 规则共用 risk_type=behavior_rarity 但 title 不同, 加入 title 后互不抢占,
+        // 消除"首次模型"吞并"新IP"去重键导致的漏报; 同规则同 title 在窗口内仍正常去重。risk_type 不变, 前端分类无副作用。
         String dedupKey = DEDUP_KEY_PREFIX + nullSafe(userId) + ":" + nullSafe(agentId)
-            + ":" + nullSafe(sessionId) + ":" + riskType;
+            + ":" + nullSafe(sessionId) + ":" + riskType + ":" + nullSafe(title);
         int dedupTtl = Integer.parseInt(
             getConfigValue(jedis, "alert_dedup_window_seconds", String.valueOf(DEDUP_DEFAULT_TTL)));
 
