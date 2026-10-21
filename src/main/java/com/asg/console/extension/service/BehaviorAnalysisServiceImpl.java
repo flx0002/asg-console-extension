@@ -1757,8 +1757,9 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     /**
      * 创建告警（含去重）。同一 (user_id, agent_id, session_id, risk_type) 在去重窗口内只生成一条，
      * 后续命中更新 risk_score（取最高值）与 evidence。
+     * @return true=本次真正新建了告警; false=命中去重窗口仅更新分数(未新建)。调用方据此决定是否执行自愈并入。
      */
-    private void createAlert(Jedis jedis, String riskType, String riskLevel, int riskScore,
+    private boolean createAlert(Jedis jedis, String riskType, String riskLevel, int riskScore,
         String userId, String agentId, String sessionId, String traceId,
         String title, String description, JSONObject evidence, List<String> relatedLogs) {
         // 临时白名单降级（方案 9.2 第 4 步）：误报复盘后 user/agent 被加入临时白名单，
@@ -1788,7 +1789,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
                 String[] evalParams = {existingAlertId, String.valueOf(riskScore), evidenceJson};
                 jedis.eval(LUA_UPDATE_ALERT_SCORE, 1, evalParams);
             }
-            return;
+            return false;
         }
 
         // 创建新告警（Hash 结构，支持 Lua 原子字段更新）
@@ -1834,6 +1835,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         incrementProfileAlertCount(jedis, PROFILE_AGENT_PREFIX, agentId);
 
         // 去重键已在上方用 SET NX EX 原子设置
+        return true;
     }
 
     /**
