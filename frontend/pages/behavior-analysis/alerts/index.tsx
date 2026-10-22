@@ -177,6 +177,9 @@ const BehaviorAlertsPage: React.FC = () => {
           loadDetail(currentAlert.alertId);
         }
       },
+      onError: () => {
+        message.error(t('behaviorAnalysis.alert.dispositionFailed'));
+      },
     },
   );
 
@@ -219,7 +222,6 @@ const BehaviorAlertsPage: React.FC = () => {
   // 处置选项
   const dispositionOptions = [
     { value: 'blacklist', label: t('behaviorAnalysis.alert.blacklist') },
-    { value: 'degrade_config', label: t('behaviorAnalysis.alert.degradeConfig') },
     { value: 'acknowledge', label: t('behaviorAnalysis.alert.acknowledge') },
     { value: 'false_positive', label: t('behaviorAnalysis.alert.falsePositive') },
   ];

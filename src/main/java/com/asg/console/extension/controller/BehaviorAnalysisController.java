@@ -12,11 +12,17 @@
  */
 package com.asg.console.extension.controller;
 
+import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.Resource;
+import javax.servlet.http.HttpServletRequest;
 
+import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -53,9 +59,15 @@ public class BehaviorAnalysisController {
     private static final long CATCH_UP_INTERVAL_MS = 3000;
     private static final int CATCH_UP_SINCE_SECONDS = 120;
 
+    // 处置人取自控制台登录会话: SessionService 未随 SDK 暴露到编译期, 故反射调用
+    private static final String SESSION_SERVICE_CLASS = "com.alibaba.higress.console.service.SessionService";
+
     private BehaviorAnalysisService behaviorAnalysisService;
     private AuditLogCollectorService auditLogCollectorService;
     private final AtomicLong lastCatchUpAt = new AtomicLong(0);
+
+    @Autowired
+    private ApplicationContext applicationContext;
 
     @Resource
     public void setBehaviorAnalysisService(BehaviorAnalysisService behaviorAnalysisService) {
@@ -162,6 +174,7 @@ public class BehaviorAnalysisController {
     public ResponseEntity<Response<Map<String, Object>>> getAlerts(
         @RequestParam(value = "status", required = false) String status,
         @RequestParam(value = "riskType", required = false) String riskType,
+        @RequestParam(value = "riskLevel", required = false) String riskLevel,
         @RequestParam(value = "userId", required = false) String userId,
         @RequestParam(value = "agentId", required = false) String agentId,
         @RequestParam(value = "startTime", required = false, defaultValue = "0") long startTime,
@@ -170,7 +183,7 @@ public class BehaviorAnalysisController {
         @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
         catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(
-            behaviorAnalysisService.getAlerts(status, riskType, userId, agentId,
+            behaviorAnalysisService.getAlerts(status, riskType, riskLevel, userId, agentId,
                 startTime, endTime, page, pageSize));
     }
 
@@ -184,14 +197,40 @@ public class BehaviorAnalysisController {
     }
 
     @PutMapping("/alerts/{alertId}/disposition")
-    @Operation(summary = "Update alert disposition (blacklist/degrade_config/acknowledge/false_positive)")
+    @Operation(summary = "Update alert disposition (blacklist/acknowledge/false_positive)")
     @ApiResponses({@ApiResponse(responseCode = "200", description = "Success")})
     public ResponseEntity<Void> updateAlertDisposition(
         @PathVariable("alertId") String alertId,
-        @RequestBody DispositionRequest request) {
-        behaviorAnalysisService.updateAlertDisposition(alertId,
-            request.getDisposition(), request.getDisposer(), request.getNote());
-        return ResponseEntity.ok().build();
+        @RequestBody DispositionRequest request,
+        HttpServletRequest servletRequest) {
+        // JSON 字面量 null 能绕过 @RequestBody(required=true), 不拦住会在下面 NPE 成 500
+        if (request == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
+        String disposition = request.getDisposition() == null ? "" : request.getDisposition().trim();
+        // degrade_config 本期没有落地实现, 明确拒绝, 不能只改状态就返回成功
+        if ("degrade_config".equals(disposition)) {
+            return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build();
+        }
+        if (!isValidDisposition(disposition)) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
+        // 处置人取自控制台登录会话, 不信任请求体: 审计字段必须不可伪造
+        String operator;
+        try {
+            operator = resolveOperator(servletRequest);
+        } catch (RuntimeException e) {
+            // 会话服务不可用属于服务端故障: 报 401 会让控台拦截器把管理员踢回登录页, 掩盖真实原因
+            log.error("resolve disposition operator failed, alertId={}", alertId, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+        if (operator == null) {
+            // 未登录: 改变封禁状态的操作用户拿不到, 落库只会伪造出"某人处置过"的审计记录
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        boolean applied = behaviorAnalysisService.updateAlertDisposition(alertId, disposition, operator,
+            request.getNote(), request.getTtl());
+        return applied ? ResponseEntity.ok().build() : ResponseEntity.status(HttpStatus.NOT_FOUND).build();
     }
 
     // ==================== 行为统计与时间线 ====================
@@ -257,8 +296,9 @@ public class BehaviorAnalysisController {
 
     public static class DispositionRequest {
         private String disposition;
-        private String disposer;
         private String note;
+        /** 黑名单有效期(秒), 仅 blacklist 动作生效 */
+        private Integer ttl;
 
         public String getDisposition() {
             return disposition;
@@ -268,14 +308,6 @@ public class BehaviorAnalysisController {
             this.disposition = disposition;
         }
 
-        public String getDisposer() {
-            return disposer;
-        }
-
-        public void setDisposer(String disposer) {
-            this.disposer = disposer;
-        }
-
         public String getNote() {
             return note;
         }
@@ -283,5 +315,60 @@ public class BehaviorAnalysisController {
         public void setNote(String note) {
             this.note = note;
         }
+
+        public Integer getTtl() {
+            return ttl;
+        }
+
+        public void setTtl(Integer ttl) {
+            this.ttl = ttl;
+        }
     }
+
+    private static boolean isValidDisposition(String disposition) {
+        return "acknowledge".equals(disposition) || "blacklist".equals(disposition)
+            || "false_positive".equals(disposition);
+    }
+
+    /**
+     * 解析处置人 = 控制台登录用户名。
+     *
+     * <p>控制台会话鉴权由 {@code com.alibaba.higress.console.service.SessionService} 承担; 该类型未随
+     * Higress SDK 暴露到扩展的编译期, 故经 Spring 容器反射调用其 {@code validateSession(request)}。
+     * 请求体里的操作者字段可被任意伪造, 不作为审计依据。
+     *
+     * <p>不做常量回退: 回退值会与真实用户名混在同一个字段里, 事后无法分辨谁真正处置过。
+     *
+     * @return 登录用户名; 未登录返回 {@code null}
+     * @throws IllegalStateException 会话服务不可用或用户对象不可读, 属于服务端故障而非未登录
+     */
+    private String resolveOperator(HttpServletRequest request) {
+        if (request == null) {
+            return null;
+        }
+        Object user;
+        try {
+            Class<?> sessionServiceType = Class.forName(SESSION_SERVICE_CLASS);
+            Object sessionService = applicationContext.getBean(sessionServiceType);
+            Method validateSession = sessionServiceType.getMethod("validateSession", HttpServletRequest.class);
+            user = validateSession.invoke(sessionService, request);
+        } catch (Exception e) {
+            throw new IllegalStateException("console session service is unavailable", e);
+        }
+        if (user == null) {
+            // 未登录时 validateSession 返回 null(实测), 与上面的服务端故障区分开
+            return null;
+        }
+        Object name;
+        try {
+            name = user.getClass().getMethod("getName").invoke(user);
+        } catch (Exception e) {
+            throw new IllegalStateException("session user has no readable name", e);
+        }
+        if (name == null || StringUtils.isBlank(name.toString())) {
+            return null;
+        }
+        return name.toString();
+    }
+
 }

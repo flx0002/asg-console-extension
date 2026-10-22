@@ -58,7 +58,6 @@ export const updateAlertDisposition = (
     disposition: string;
     note?: string;
     ttl?: number;
-    dispositionBy?: string;
   },
 ): Promise<any> => {
   return request.put(`/v1/behavior-analysis/alerts/${encodeURIComponent(alertId)}/disposition`, data);

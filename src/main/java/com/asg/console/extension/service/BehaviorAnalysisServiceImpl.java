@@ -17,6 +17,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -34,7 +35,9 @@ import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.Response;
 import redis.clients.jedis.ScanParams;
 import redis.clients.jedis.ScanResult;
+import redis.clients.jedis.Transaction;
 import redis.clients.jedis.exceptions.JedisConnectionException;
+import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.params.SetParams;
 
 /**
@@ -64,6 +67,15 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private static final String ALERTS_USER_ZSET_PREFIX = "agent_behavior:alerts:user:";
     private static final String ALERTS_AGENT_ZSET_PREFIX = "agent_behavior:alerts:agent:";
     private static final String ALERTS_STATUS_ZSET_PREFIX = "agent_behavior:alerts:status:";
+    // risk_type/risk_level 无独立 ZSET 索引, 只能扫描索引后过滤; 单次查询最多扫描以下条数, 规避大索引拖慢接口
+    private static final int ALERT_FILTER_SCAN_BATCH = 500;
+    private static final int ALERT_FILTER_SCAN_MAX = 5000;
+    // 处置: note 服务端上限(前端 500 字仅约束界面), 黑名单 TTL 区间与前端输入框一致
+    private static final int DISPOSITION_NOTE_MAX = 500;
+    private static final int BLACKLIST_TTL_MIN = 60;
+    private static final int BLACKLIST_TTL_MAX = 365 * 86400;
+    private static final String DISPOSITION_SEEN_USER_PREFIX = "agent_behavior:disposition_seen:user:";
+    private static final String DISPOSITION_SEEN_AGENT_PREFIX = "agent_behavior:disposition_seen:agent:";
     private static final String DEDUP_KEY_PREFIX = "agent_behavior:dedup:";
     private static final String BLACKLIST_USER_PREFIX = "agent_behavior:blacklist:user:";
     private static final String BLACKLIST_AGENT_PREFIX = "agent_behavior:blacklist:agent:";
@@ -1931,8 +1943,8 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     // ==================== 告警查询 ====================
 
     @Override
-    public Map<String, Object> getAlerts(String status, String riskType, String userId, String agentId,
-        long startTime, long endTime, int page, int pageSize) {
+    public Map<String, Object> getAlerts(String status, String riskType, String riskLevel, String userId,
+        String agentId, long startTime, long endTime, int page, int pageSize) {
         Map<String, Object> result = new LinkedHashMap<>();
         try (Jedis jedis = createJedis()) {
             // 选择索引：优先按状态/用户/智能体过滤，否则用全局 ZSET
@@ -1956,39 +1968,39 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             } else if (pageSize > MAX_PAGE_SIZE) {
                 pageSize = MAX_PAGE_SIZE;
             }
-            long total = jedis.zcount(indexKey, min, max);
             // 用 long 计算 offset 规避 (page-1)*pageSize 溢出；offset>=total 直接返回空页，
             // 避免负 offset(page<=0) 或超大 offset 触发 Redis "value is out of range"
             long offset = (long) (page - 1) * pageSize;
-            // ZREVRANGEBYSCORE 降序取分页：Jedis 签名为 (offset, count)，count 恒为 pageSize
-            Set<String> alertIds = offset >= total
-                ? Collections.<String>emptySet()
-                : jedis.zrevrangeByScore(indexKey, max, min, (int) offset, pageSize);
 
-            // Pipeline 批量获取告警详情
+            // 入参归一化: 首尾空白会让精确匹配静默落空
+            riskType = riskType == null ? null : riskType.trim();
+            riskLevel = riskLevel == null ? null : riskLevel.trim();
+            // risk_type/risk_level 没有 ZSET 索引, 必须在分页前过滤:
+            // 若先分页再过滤, 页内条数会被削少, 且 total 仍是未过滤值, 前端翻页会出现空页。
+            boolean hasFieldFilter = (riskType != null && !riskType.isEmpty())
+                || (riskLevel != null && !riskLevel.isEmpty());
             List<Map<String, Object>> alerts = new ArrayList<>();
-            if (!alertIds.isEmpty()) {
-                Pipeline pipeline = jedis.pipelined();
-                List<Response<Map<String, String>>> responses = new ArrayList<>();
-                for (String alertId : alertIds) {
-                    responses.add(pipeline.hgetAll(ALERT_KEY_PREFIX + alertId));
-                }
-                pipeline.sync();
-                for (Response<Map<String, String>> resp : responses) {
-                    Map<String, String> data = resp.get();
-                    if (!data.isEmpty()) {
-                        Map<String, Object> alert = new LinkedHashMap<>(data);
-                        // risk_type 过滤（无法用 ZSET 索引时的 Java 端过滤）
-                        if (riskType != null && !riskType.isEmpty()
-                            && !riskType.equals(alert.get("risk_type"))) {
-                            continue;
-                        }
-                        alerts.add(alert);
-                    }
-                }
+            long matchedTotal;
+            boolean totalCapped = false;
+            if (!hasFieldFilter) {
+                matchedTotal = jedis.zcount(indexKey, min, max);
+                // ZREVRANGEBYSCORE 降序取分页：Jedis 签名为 (offset, count)，count 恒为 pageSize
+                Set<String> alertIds = offset >= matchedTotal
+                    ? Collections.<String>emptySet()
+                    : jedis.zrevrangeByScore(indexKey, max, min, (int) offset, pageSize);
+                alerts.addAll(fetchAlerts(jedis, alertIds));
+            } else {
+                FilterScanResult scanned = scanAlerts(jedis, indexKey, min, max, riskType, riskLevel, offset, pageSize, alerts);
+                matchedTotal = scanned.matched;
+                totalCapped = scanned.capped;
             }
+
             result.put("list", alerts);
-            result.put("total", total);
+            result.put("total", matchedTotal);
+            if (totalCapped) {
+                // 命中扫描上限时 total 只是已扫描范围内的匹配数, 显式告知, 避免被误读为全量
+                result.put("totalCapped", true);
+            }
             result.put("page", page);
             result.put("pageSize", pageSize);
         } catch (JedisConnectionException e) {
@@ -1997,6 +2009,89 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             result.put("total", 0);
         }
         return result;
+    }
+
+    // Pipeline 批量取告警详情, 顺序与传入 id 顺序一致(即分数降序, 新到旧)
+    private List<Map<String, Object>> fetchAlerts(Jedis jedis, Set<String> alertIds) {
+        List<Map<String, Object>> alerts = new ArrayList<>();
+        if (alertIds.isEmpty()) {
+            return alerts;
+        }
+        Pipeline pipeline = jedis.pipelined();
+        List<Response<Map<String, String>>> responses = new ArrayList<>();
+        for (String alertId : alertIds) {
+            responses.add(pipeline.hgetAll(ALERT_KEY_PREFIX + alertId));
+        }
+        pipeline.sync();
+        for (Response<Map<String, String>> resp : responses) {
+            Map<String, String> data = resp.get();
+            if (!data.isEmpty()) {
+                alerts.add(new LinkedHashMap<String, Object>(data));
+            }
+        }
+        return alerts;
+    }
+
+    // 字段过滤查询的结果: matched=匹配总数, capped=因扫描上限未覆盖全量
+    private static final class FilterScanResult {
+        private final long matched;
+        private final boolean capped;
+
+        private FilterScanResult(long matched, boolean capped) {
+            this.matched = matched;
+            this.capped = capped;
+        }
+    }
+
+    // 字段过滤型查询: 按分数降序分批扫描索引, 过滤后取目标页, 返回匹配总数(供 total 使用)。
+    // 扫描上限 ALERT_FILTER_SCAN_MAX 用于兜底时延, 命中上限时 capped=true。
+    private FilterScanResult scanAlerts(Jedis jedis, String indexKey, long min, long max, String riskType,
+        String riskLevel, long offset, int pageSize, List<Map<String, Object>> out) {
+        long matched = 0;
+        int cursor = 0;
+        int scanned = 0;
+        boolean exhausted = false;
+        // 分批按 offset 游标读取不是快照读, 期间新告警写入会使窗口整体位移, 按 id 去重兜底
+        Set<String> seen = new HashSet<>();
+        while (scanned < ALERT_FILTER_SCAN_MAX) {
+            int want = Math.min(ALERT_FILTER_SCAN_BATCH, ALERT_FILTER_SCAN_MAX - scanned);
+            Set<String> ids = jedis.zrevrangeByScore(indexKey, max, min, cursor, want);
+            if (ids.isEmpty()) {
+                exhausted = true;
+                break;
+            }
+            cursor += ids.size();
+            scanned += ids.size();
+            Set<String> fresh = new LinkedHashSet<>();
+            for (String id : ids) {
+                if (seen.add(id)) {
+                    fresh.add(id);
+                }
+            }
+            for (Map<String, Object> alert : fetchAlerts(jedis, fresh)) {
+                if (riskType != null && !riskType.isEmpty()
+                    && !riskType.equals(alert.get("risk_type"))) {
+                    continue;
+                }
+                if (riskLevel != null && !riskLevel.isEmpty()
+                    && !riskLevel.equalsIgnoreCase((String) alert.get("risk_level"))) {
+                    continue;
+                }
+                if (matched >= offset && matched < offset + pageSize) {
+                    out.add(alert);
+                }
+                matched++;
+            }
+            if (ids.size() < want) {
+                exhausted = true;
+                break;
+            }
+        }
+        // 恰好扫满上限时再探一条: 区分"刚好扫完"与"确有更多数据", 避免误报 capped
+        if (!exhausted && jedis.zrevrangeByScore(indexKey, max, min, cursor, 1).isEmpty()) {
+            exhausted = true;
+        }
+        return new FilterScanResult(matched, !exhausted);
     }
 
     @Override
@@ -2016,63 +2111,97 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     // ==================== 告警处置（方案 6.3） ====================
 
     @Override
-    public void updateAlertDisposition(String alertId, String disposition, String disposer, String note) {
+    public boolean updateAlertDisposition(String alertId, String disposition, String disposer, String note,
+        Integer ttl) {
         try (Jedis jedis = createJedis()) {
             String alertKey = ALERT_KEY_PREFIX + alertId;
             Map<String, String> alert = jedis.hgetAll(alertKey);
             if (alert.isEmpty()) {
-                return;
+                // 目标不存在必须让调用方知道: 静默成功会让"处置已生效"变成假象
+                return false;
             }
             long now = System.currentTimeMillis();
+            String safeNote = note == null ? "" : note;
+            if (safeNote.length() > DISPOSITION_NOTE_MAX) {
+                // 按码点边界截断, 避免把 emoji 等增补字符的代理对切一半
+                int cut = DISPOSITION_NOTE_MAX;
+                if (Character.isHighSurrogate(safeNote.charAt(cut - 1))) {
+                    cut--;
+                }
+                safeNote = safeNote.substring(0, cut);
+            }
+            String safeDisposer = nullSafe(disposer);
+
             Map<String, String> updates = new LinkedHashMap<>();
             updates.put("disposition", disposition);
-            updates.put("disposition_by", disposer != null ? disposer : "");
+            updates.put("disposition_by", safeDisposer);
             updates.put("disposition_at", String.valueOf(now));
-            updates.put("disposition_note", note != null ? note : "");
+            updates.put("disposition_note", safeNote);
 
-            // 状态映射
+            // 状态映射: degrade_config 已在 Controller 拒绝, 此处只处理三种落地的动作
             String newStatus = "acknowledged";
             if ("blacklist".equals(disposition)) {
                 newStatus = "resolved";
             } else if ("false_positive".equals(disposition)) {
                 newStatus = "false_positive";
-            } else if ("degrade_config".equals(disposition)) {
-                newStatus = "acknowledged";
             }
             updates.put("status", newStatus);
-            jedis.hmset(alertKey, updates);
 
-            // 更新状态索引 ZSET
             String oldStatus = alert.get("status");
-            if (oldStatus != null && !oldStatus.equals(newStatus)) {
-                jedis.zrem(ALERTS_STATUS_ZSET_PREFIX + oldStatus, alertId);
-                jedis.zadd(ALERTS_STATUS_ZSET_PREFIX + newStatus, now, alertId);
+            // 状态索引同时用于排序与时间窗统计, score 必须沿用告警创建时刻, 否则处置后告警会移位
+            long indexScore = resolveAlertScore(jedis, oldStatus, alertId, alert);
+
+            // 告警状态与其状态索引放在同一事务里, 避免只改一半
+            Transaction tx = jedis.multi();
+            tx.hmset(alertKey, updates);
+            // 仅在状态真正变化时迁移索引: 重复处置同一状态若先 zrem 又不补回, 会把告警从索引里抹掉
+            if (oldStatus == null) {
+                tx.zadd(ALERTS_STATUS_ZSET_PREFIX + newStatus, indexScore, alertId);
+            } else if (!oldStatus.equals(newStatus)) {
+                tx.zrem(ALERTS_STATUS_ZSET_PREFIX + oldStatus, alertId);
+                tx.zadd(ALERTS_STATUS_ZSET_PREFIX + newStatus, indexScore, alertId);
+            }
+            List<Object> txResults = tx.exec();
+            // 事务内单条命令失败不会抛异常, 而是把异常对象放回结果列表, 必须显式检查
+            if (txResults == null) {
+                throw new JedisDataException("disposition transaction discarded, alertId=" + alertId);
+            }
+            for (Object txResult : txResults) {
+                if (txResult instanceof Exception) {
+                    throw new JedisDataException("disposition transaction failed, alertId=" + alertId,
+                        (Exception) txResult);
+                }
             }
 
-            // 拉黑处置：写入黑名单（方案 6.3 处置闭环）
             String userId = alert.get("user_id");
             String agentId = alert.get("agent_id");
             if ("blacklist".equals(disposition)) {
-                int ttl = DEFAULT_BLACKLIST_TTL;
+                int blacklistTtl = normalizeBlacklistTtl(ttl);
                 JSONObject blacklistEntry = new JSONObject();
-                blacklistEntry.put("reason", alert.get("description"));
+                blacklistEntry.put("reason", nullSafe(alert.get("description")));
                 blacklistEntry.put("alert_id", alertId);
-                blacklistEntry.put("expire_at", now + (long)ttl * 1000);
-                blacklistEntry.put("disposition_by", disposer);
-                if (userId != null && !userId.isEmpty() && !"null".equals(userId)) {
-                    jedis.setex(BLACKLIST_USER_PREFIX + userId, ttl, blacklistEntry.toJSONString());
+                blacklistEntry.put("disposition_by", safeDisposer);
+                blacklistEntry.put("disposition_note", safeNote);
+                boolean written = writeBlacklist(jedis, BLACKLIST_USER_PREFIX + nullSafe(userId), userId, alertId,
+                    blacklistEntry, blacklistTtl);
+                written |= writeBlacklist(jedis, BLACKLIST_AGENT_PREFIX + nullSafe(agentId), agentId, alertId,
+                    blacklistEntry, blacklistTtl);
+                if (!written) {
+                    // 告警没有可封禁对象时不能装作已生效
+                    log.warn("blacklist disposition has no valid target, alertId={} user={} agent={}", alertId,
+                        userId, agentId);
                 }
-                if (agentId != null && !agentId.isEmpty() && !"null".equals(agentId)) {
-                    jedis.setex(BLACKLIST_AGENT_PREFIX + agentId, ttl, blacklistEntry.toJSONString());
-                }
+            } else {
+                // 改判即解封: 只删"由本告警写入"的键, 避免误删其他告警的拉黑
+                revokeBlacklist(jedis, BLACKLIST_USER_PREFIX + nullSafe(userId), userId, alertId);
+                revokeBlacklist(jedis, BLACKLIST_AGENT_PREFIX + nullSafe(agentId), agentId, alertId);
             }
 
-            // 处置反馈写入画像（方案 阶段五 任务 2）
-            // 累计 total_disposed_alerts；按处置类型累计 total_blacklisted / total_false_positives
-            updateProfileDisposition(jedis, PROFILE_USER_PREFIX, userId, disposition, disposer, now);
-            updateProfileDisposition(jedis, PROFILE_AGENT_PREFIX, agentId, disposition, disposer, now);
-        } catch (JedisConnectionException e) {
-            log.error("updateAlertDisposition failed", e);
+            updateProfileDisposition(jedis, PROFILE_USER_PREFIX, DISPOSITION_SEEN_USER_PREFIX, userId, alertId,
+                disposition, safeDisposer, now);
+            updateProfileDisposition(jedis, PROFILE_AGENT_PREFIX, DISPOSITION_SEEN_AGENT_PREFIX, agentId, alertId,
+                disposition, safeDisposer, now);
+            return true;
         }
     }
 
@@ -2080,27 +2209,37 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
      * 处置反馈写入画像（方案 阶段五 任务 2）。
      * 累计 total_disposed_alerts，按处置类型分别累计 total_blacklisted / total_false_positives，
      * 并记录最近一次处置动作 last_disposition / last_disposition_at / last_disposition_by。
+     *
+     * <p>三个计数都是"发生过该处置的告警数"(按告警去重)，不是当前生效的封禁数量;
+     * 同一告警先拉黑再改判仍会同时计入两个子计数。
      */
-    private void updateProfileDisposition(Jedis jedis, String prefix, String entityId,
-        String disposition, String disposer, long now) {
+    private void updateProfileDisposition(Jedis jedis, String profilePrefix, String seenPrefix, String entityId,
+        String alertId, String disposition, String disposer, long now) {
         if (entityId == null || entityId.isEmpty() || "null".equals(entityId)) {
             return;
         }
-        String profileKey = prefix + entityId;
-        // 仅当画像存在时更新，避免为已失效实体创建空画像
+        String profileKey = profilePrefix + entityId;
+        // 仅当画像存在时更新，避免为已失效实体创建空壳画像
         if (!jedis.exists(profileKey)) {
             return;
         }
-        // Lua 原子累加数值字段（沿用方案 5.3 的原子合并模式）
+        // total_disposed_alerts 语义是"被处置告警数": 同一告警重复处置只累计一次
+        String seenKey = seenPrefix + entityId;
         List<String> luaArgs = new ArrayList<>();
         luaArgs.add(String.valueOf(PROFILE_TTL));
-        luaArgs.add("total_disposed_alerts"); luaArgs.add("1");
-        if ("blacklist".equals(disposition)) {
+        if (markDispositionCounted(jedis, seenKey, alertId, "disposed")) {
+            luaArgs.add("total_disposed_alerts"); luaArgs.add("1");
+        }
+        if ("blacklist".equals(disposition) && markDispositionCounted(jedis, seenKey, alertId, "blacklist")) {
             luaArgs.add("total_blacklisted"); luaArgs.add("1");
-        } else if ("false_positive".equals(disposition)) {
+        } else if ("false_positive".equals(disposition)
+            && markDispositionCounted(jedis, seenKey, alertId, "false_positive")) {
             luaArgs.add("total_false_positives"); luaArgs.add("1");
         }
-        jedis.eval(LUA_MERGE_PROFILE_NUMERIC, 1, evalArgs(profileKey, luaArgs));
+        if (luaArgs.size() > 1) {
+            // 数值字段走 Lua 原子合并（沿用方案 5.3）
+            jedis.eval(LUA_MERGE_PROFILE_NUMERIC, 1, evalArgs(profileKey, luaArgs));
+        }
 
         // 非数值字段直接 HMSET
         Map<String, String> metaFields = new LinkedHashMap<>();
@@ -2108,6 +2247,118 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         metaFields.put("last_disposition_at", String.valueOf(now));
         metaFields.put("last_disposition_by", disposer != null ? disposer : "");
         jedis.hmset(profileKey, metaFields);
+    }
+
+    /**
+     * 幂等计数: 同一告警的同一种处置只统计一次。
+     *
+     * <p>计数键独立于 {@code agent_behavior:profile:*} 前缀, 避免被画像枚举(SCAN profile 前缀)当成画像。
+     */
+    private boolean markDispositionCounted(Jedis jedis, String seenKey, String alertId, String counter) {
+        boolean first = jedis.sadd(seenKey, alertId + ":" + counter) == 1;
+        // 只在集合新建时设 TTL: 每次新增都续期会让集合跟着处置量无限增长, 永不被回收
+        if (first && jedis.ttl(seenKey) < 0) {
+            jedis.expire(seenKey, PROFILE_TTL);
+        }
+        return first;
+    }
+
+    /** 取告警在时间序索引中的原始 score, 保证状态迁移不改变其时间位置。 */
+    private long resolveAlertScore(Jedis jedis, String oldStatus, String alertId, Map<String, String> alert) {
+        if (oldStatus != null) {
+            Double score = jedis.zscore(ALERTS_STATUS_ZSET_PREFIX + oldStatus, alertId);
+            if (score != null) {
+                return score.longValue();
+            }
+        }
+        Double globalScore = jedis.zscore(ALERTS_ZSET_KEY, alertId);
+        if (globalScore != null) {
+            return globalScore.longValue();
+        }
+        String timestamp = alert.get("timestamp");
+        if (timestamp != null) {
+            try {
+                return Long.parseLong(timestamp);
+            } catch (NumberFormatException e) {
+                log.warn("alert {} has non-numeric timestamp {}", alertId, timestamp);
+            }
+        }
+        return System.currentTimeMillis();
+    }
+
+    /** 黑名单有效期: 缺省 7 天, 其余按前端可选区间夹取。 */
+    private static int normalizeBlacklistTtl(Integer ttl) {
+        if (ttl == null) {
+            return DEFAULT_BLACKLIST_TTL;
+        }
+        return Math.max(BLACKLIST_TTL_MIN, Math.min(ttl, BLACKLIST_TTL_MAX));
+    }
+
+    /**
+     * 写黑名单, 返回 true 表示该实体已处于本方法负责的封禁状态; 告警没有可封禁对象时返回 false。
+     *
+     * <p>有效期与归属一起决定, 二者必须来自同一条处置:
+     * <ul>
+     *   <li>同一告警重复处置: 只允许缩短, 不允许续期, 防止反复点击把封禁无限延长;</li>
+     *   <li>其他告警且期限不短于既有封禁: 由本次处置接管, 归属改为本次告警;</li>
+     *   <li>其他告警但期限更短: 整条记录保持原样, 否则一次短处置就能把长封禁连归属一起撤掉。</li>
+     * </ul>
+     */
+    private boolean writeBlacklist(Jedis jedis, String key, String entityId, String alertId, JSONObject entry,
+        int ttlSeconds) {
+        if (entityId == null || entityId.isEmpty() || "null".equals(entityId)) {
+            return false;
+        }
+        Long remaining = jedis.ttl(key);
+        int effectiveTtl = ttlSeconds;
+        if (remaining != null && remaining > 0) {
+            boolean sameAlert = alertId.equals(parseAlertId(jedis.get(key)));
+            if (sameAlert) {
+                effectiveTtl = (int) Math.min(remaining.longValue(), (long)ttlSeconds);
+            } else if ((long)ttlSeconds < remaining.longValue()) {
+                // 既有封禁更久: 不写内容也不改归属, 避免弱处置撤销强封禁
+                return true;
+            }
+        }
+        JSONObject stored = new JSONObject();
+        stored.putAll(entry);
+        // 落库的过期时刻必须与真实 TTL 对齐, 否则界面与审计看到的有效期都是错的
+        stored.put("expire_at", System.currentTimeMillis() + (long)effectiveTtl * 1000);
+        jedis.setex(key, effectiveTtl, stored.toJSONString());
+        return true;
+    }
+
+    /**
+     * 解封: 仅删除由该告警写入的黑名单键, 其他来源的封禁保持不动。
+     *
+     * <p>一个用户/智能体只保留一条封禁记录, {@code alert_id} 记录最后处置它的告警; 因此改判只对
+     * "最后一次拉黑"生效, 更早的告警被判误报时封禁仍由后续告警支撑。
+     */
+    private void revokeBlacklist(Jedis jedis, String key, String entityId, String alertId) {
+        if (entityId == null || entityId.isEmpty() || "null".equals(entityId)) {
+            return;
+        }
+        String value = jedis.get(key);
+        if (value == null) {
+            return;
+        }
+        if (alertId.equals(parseAlertId(value))) {
+            jedis.del(key);
+        }
+    }
+
+    /** 取黑名单条目的写入方告警 id; 内容异常返回 null, 调用方据此不动该键。 */
+    private static String parseAlertId(String blacklistJson) {
+        if (blacklistJson == null) {
+            return null;
+        }
+        try {
+            return JSON.parseObject(blacklistJson).getString("alert_id");
+        } catch (Exception e) {
+            // 保留原键, 交人工核查, 避免误删有效封禁
+            log.warn("blacklist entry is not parsable, left untouched: {}", blacklistJson);
+            return null;
+        }
     }
 
     // ==================== 行为统计与时间线 ====================

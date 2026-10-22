@@ -38,12 +38,13 @@ public interface BehaviorAnalysisService {
     List<Map<String, Object>> listAgentProfiles(int page, int pageSize);
 
     // === 告警管理 ===
-    Map<String, Object> getAlerts(String status, String riskType, String userId, String agentId,
-        long startTime, long endTime, int page, int pageSize);
+    Map<String, Object> getAlerts(String status, String riskType, String riskLevel, String userId,
+        String agentId, long startTime, long endTime, int page, int pageSize);
 
     Map<String, Object> getAlertDetail(String alertId);
 
-    void updateAlertDisposition(String alertId, String disposition, String disposer, String note);
+    boolean updateAlertDisposition(String alertId, String disposition, String disposer, String note,
+        Integer ttl);
 
     // === 行为统计 ===
     Map<String, Object> getBehaviorStats(long startTime, long endTime);
