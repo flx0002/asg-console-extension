@@ -35,10 +35,10 @@ npm run build
 echo
 echo "=== [5/5] 镜像构建与部署 ==="
 if [ "$MODE" = "deploy" ]; then
+    # 部署与滚动全部交给 build-and-deploy.sh：它把镜像内容 ID 写进 pod 模板 annotation，
+    # 内容变才滚动、没变不动 pod，并打印生效 imageID。此处不要再加 rollout restart，
+    # 否则一次部署会滚动两遍（第一遍已由 build-and-deploy.sh 完成）。
     bash /home/wnt/ASG/asg-deploy/scripts/build-and-deploy.sh deploy
-    # 镜像 tag（latest）不变时 helm upgrade 不重建 pod，必须手动滚动重启
-    kubectl rollout restart deployment/higress-console -n higress-system
-    kubectl rollout status deployment/higress-console -n higress-system --timeout=300s
     echo "=== ASG BUILD+DEPLOY DONE ==="
 else
     echo "=== ASG BUILD-ONLY DONE（跳过部署）==="
