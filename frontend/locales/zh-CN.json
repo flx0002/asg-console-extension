@@ -300,6 +300,10 @@
       "todayAlerts": "今日告警",
       "highRiskSessions": "高风险会话",
       "riskTrend": "风险趋势",
+      "rangeToday": "今天",
+      "rangeWeek": "最近一周",
+      "rangeMonth": "最近一个月",
+      "riskTrendCount": "告警数",
       "alertTypeDistribution": "告警类型分布",
       "topRiskUsers": "高风险用户 Top",
       "topRiskAgents": "高风险智能体 Top",
@@ -311,7 +315,10 @@
       "falsePositiveRate": "误报率",
       "avgDispositionMinutes": "平均处置时长(分)",
       "replaySuccessRate": "高风险回放成功率",
-      "policyIterateDays": "策略迭代闭环周期(天)"
+      "policyIterateDays": "策略迭代闭环周期(天)",
+      "notCollected": "指标未采集",
+      "truncated": "告警量超出单次统计上限（2 万条），分项与卡片指标均按最近数据聚合",
+      "untrustedHint": "另有 {{count}} 条告警身份未解析"
     },
     "alert": {
       "title": "告警中心",

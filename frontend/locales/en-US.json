@@ -300,6 +300,10 @@
       "todayAlerts": "Today Alerts",
       "highRiskSessions": "High-Risk Sessions",
       "riskTrend": "Risk Trend",
+      "rangeToday": "Today",
+      "rangeWeek": "Last 7 days",
+      "rangeMonth": "Last 30 days",
+      "riskTrendCount": "Alerts",
       "alertTypeDistribution": "Alert Type Distribution",
       "topRiskUsers": "Top Risk Users",
       "topRiskAgents": "Top Risk Agents",
@@ -311,7 +315,10 @@
       "falsePositiveRate": "False Positive Rate",
       "avgDispositionMinutes": "Avg Disposition (min)",
       "replaySuccessRate": "Replay Success Rate",
-      "policyIterateDays": "Policy Iterate Cycle (days)"
+      "policyIterateDays": "Policy Iterate Cycle (days)",
+      "notCollected": "Not collected",
+      "truncated": "Alert volume exceeds the aggregation cap (20k); breakdown and cards are computed from the most recent alerts",
+      "untrustedHint": "{{count}} alerts have unresolved identity"
     },
     "alert": {
       "title": "Alert Center",

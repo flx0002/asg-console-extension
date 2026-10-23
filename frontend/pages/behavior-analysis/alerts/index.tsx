@@ -103,6 +103,16 @@ const BehaviorAlertsPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialAlertId = searchParams.get('alertId') || '';
+  // 风险趋势图点位下钻带入的筛选条件：级别 + 该时间桶的窗口
+  // URL 可被手改，非法定级别值会让后端分页前过滤静默落空，故按已知级别白名单校验
+  const rawRiskLevel = searchParams.get('riskLevel') || '';
+  const initialRiskLevel = Object.keys(RISK_LEVEL_COLORS).includes(rawRiskLevel) ? rawRiskLevel : undefined;
+  const initialStartTime = Number(searchParams.get('startTime') || '');
+  const initialEndTime = Number(searchParams.get('endTime') || '');
+  const initialTimeRange: [number, number] | undefined =
+    initialStartTime > 0 && initialEndTime > initialStartTime
+      ? [initialStartTime, initialEndTime]
+      : undefined;
 
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [total, setTotal] = useState<number>(0);
@@ -110,8 +120,8 @@ const BehaviorAlertsPage: React.FC = () => {
   const [pageSize, setPageSize] = useState<number>(20);
   const [filterStatus, setFilterStatus] = useState<string | undefined>(undefined);
   const [filterRiskType, setFilterRiskType] = useState<string | undefined>(undefined);
-  const [filterRiskLevel, setFilterRiskLevel] = useState<string | undefined>(undefined);
-  const [filterTimeRange, setFilterTimeRange] = useState<[number, number] | undefined>(undefined);
+  const [filterRiskLevel, setFilterRiskLevel] = useState<string | undefined>(initialRiskLevel);
+  const [filterTimeRange, setFilterTimeRange] = useState<[number, number] | undefined>(initialTimeRange);
 
   const [drawerVisible, setDrawerVisible] = useState<boolean>(false);
   const [currentAlert, setCurrentAlert] = useState<AlertItem | null>(null);
@@ -398,6 +408,15 @@ const BehaviorAlertsPage: React.FC = () => {
               setPage(1);
             }}
           />
+          {/* 时间窗来自下钻时 RangePicker 自身不展示值（受控需额外引入 moment），用可关闭标签把已生效的窗口显示出来 */}
+          {filterTimeRange ? (
+            <Tag
+              closable
+              onClose={() => { setFilterTimeRange(undefined); setPage(1); }}
+            >
+              {`${formatTime(filterTimeRange[0])} ~ ${formatTime(filterTimeRange[1])}`}
+            </Tag>
+          ) : null}
         </Space>
       </Card>
 
