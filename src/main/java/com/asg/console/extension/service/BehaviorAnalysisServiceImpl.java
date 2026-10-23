@@ -21,6 +21,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
@@ -36,6 +37,7 @@ import redis.clients.jedis.Response;
 import redis.clients.jedis.ScanParams;
 import redis.clients.jedis.ScanResult;
 import redis.clients.jedis.Transaction;
+import redis.clients.jedis.Tuple;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 import redis.clients.jedis.exceptions.JedisDataException;
 import redis.clients.jedis.params.SetParams;
@@ -110,6 +112,22 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private static final double DEFAULT_EMA_ALPHA = 0.1;
     private static final int SCAN_BATCH_SIZE = 200;
     private static final int MAX_SCAN_KEYS = 10000;
+
+    // ===== 统计聚合 =====
+    // 分项统计必须覆盖区间内全量告警: 逆序分页 + 管道批量读哈希, 避免只聚合一页样本导致分项之和与总数不符
+    private static final int STATS_AGG_BATCH = 500;
+    private static final int STATS_AGG_MAX = 20000;
+    // 索引回收单轮上限, 避免一次清理阻塞 Redis
+    private static final int INDEX_REAP_MAX = 2000;
+    private static final String[] ALERT_STATUSES = {"open", "resolved", "acknowledged", "false_positive"};
+    // 身份未解析的聚合桶: 计入告警数, 但不进 Top 排行(否则全部匿名流量塌陷成一行)
+    private static final Set<String> UNRESOLVED_IDENTITIES =
+        new HashSet<>(java.util.Arrays.asList("anonymous", "untrusted_anonymous"));
+    // 时间线默认窗口上限: 与告警哈希 TTL 同量级, 更早数据已无实体
+    private static final long TIMELINE_MAX_SPAN_MS = 90L * 86400000L;
+    // 趋势分级序列的展示顺序：严重度降序，取值与告警列表的 risk_level 一致
+    private static final List<String> ALERT_LEVEL_ORDER =
+        java.util.Arrays.asList("critical", "high", "medium", "low");
 
     // ===== Lua 脚本：原子合并画像数值字段（方案 5.3） =====
     // ARGV 格式：ttl, field1, delta1, field2, delta2, ...
@@ -2381,127 +2399,199 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             long userProfiles = scanKeys(jedis, PROFILE_USER_PREFIX + "*").size();
             long agentProfiles = scanKeys(jedis, PROFILE_AGENT_PREFIX + "*").size();
 
-            // 按风险类型统计 + 收集 KPI 所需指标
+            // 按风险类型统计 + 收集 KPI 所需指标（逆序分页覆盖区间内全量告警, 超出上限时保留最近数据）
             Map<String, Integer> alertsByType = new LinkedHashMap<>();
             Map<String, Integer> alertsByLevel = new LinkedHashMap<>();
-            // Top 风险用户/智能体聚合：entityId -> [alertCount, maxRiskScore]
+            // Top 风险实体聚合：entityId -> [alertCount, maxRiskScore, sumRiskScore]
             Map<String, long[]> userAlertStats = new HashMap<>();
             Map<String, long[]> agentAlertStats = new HashMap<>();
-            Set<String> recentAlertIds = jedis.zrangeByScore(ALERTS_ZSET_KEY, min, max, 0, 999);
             long sumDispositionMinutes = 0;
             long disposedCount = 0;
+            long untrustedAlerts = 0;
             Set<String> highRiskSessions = new HashSet<>();
             Set<String> highRiskSessionsReplayable = new HashSet<>();
-            for (String alertId : recentAlertIds) {
-                Map<String, String> alert = jedis.hgetAll(ALERT_KEY_PREFIX + alertId);
-                if (alert.isEmpty()) {
-                    continue;
+            // 逆序 offset 分页遇上并发写入时，后续成员下标会整体后移，导致上一页末尾被重复读到；按 id 去重
+            Set<String> seenAlertIds = new HashSet<>();
+            int offset = 0;
+            while (true) {
+                Set<String> page = jedis.zrevrangeByScore(
+                    ALERTS_ZSET_KEY, max, min, offset, STATS_AGG_BATCH);
+                if (page == null || page.isEmpty()) {
+                    break;
                 }
-                String riskType = alert.get("risk_type");
-                if (riskType != null) {
-                    alertsByType.merge(riskType, 1, Integer::sum);
-                }
-                String riskLevel = alert.get("risk_level");
-                if (riskLevel != null) {
-                    alertsByLevel.merge(riskLevel, 1, Integer::sum);
-                }
-                // 聚合 Top 风险用户/智能体（按告警数 + 最高风险分）
-                int score = (int) parseLongSafe(alert.get("risk_score"));
-                String aUserId = alert.get("user_id");
-                if (aUserId != null && !aUserId.isEmpty() && !"null".equals(aUserId)) {
-                    long[] us = userAlertStats.computeIfAbsent(aUserId, k -> new long[2]);
-                    us[0]++;
-                    if (score > us[1]) us[1] = score;
-                }
-                String aAgentId = alert.get("agent_id");
-                if (aAgentId != null && !aAgentId.isEmpty() && !"null".equals(aAgentId)) {
-                    long[] as = agentAlertStats.computeIfAbsent(aAgentId, k -> new long[2]);
-                    as[0]++;
-                    if (score > as[1]) as[1] = score;
-                }
-                // 平均处置时长：disposition_at - timestamp
-                String dispositionAtStr = alert.get("disposition_at");
-                if (dispositionAtStr != null) {
-                    long dispositionAt = parseLongSafe(dispositionAtStr);
-                    if (dispositionAt > 0) {
-                        long ts = parseLongSafe(alert.get("timestamp"));
-                        if (dispositionAt > ts) {
-                            sumDispositionMinutes += (dispositionAt - ts) / 60000L;
-                            disposedCount++;
-                        }
+                List<String> pageIds = new ArrayList<>(page.size());
+                for (String alertId : page) {
+                    if (seenAlertIds.add(alertId)) {
+                        pageIds.add(alertId);
                     }
                 }
-                // 高风险会话回放成功率：高风险告警的 session 是否仍有审计日志可回放
-                if ("high".equals(riskLevel) || "critical".equals(riskLevel)) {
-                    String sessionId = alert.get("session_id");
-                    if (sessionId != null && !sessionId.isEmpty()) {
-                        if (highRiskSessions.add(sessionId)) {
-                            long sessionAuditCount = jedis.zcard("agent_audit:" + sessionId);
-                            if (sessionAuditCount > 0) {
-                                highRiskSessionsReplayable.add(sessionId);
+                if (pageIds.isEmpty()) {
+                    // 整页都是重复成员，直接推进下标
+                    offset += page.size();
+                    continue;
+                }
+                Pipeline pipe = jedis.pipelined();
+                List<Response<Map<String, String>>> responses = new ArrayList<>(pageIds.size());
+                for (String alertId : pageIds) {
+                    responses.add(pipe.hgetAll(ALERT_KEY_PREFIX + alertId));
+                }
+                pipe.sync();
+                for (Response<Map<String, String>> response : responses) {
+                    Map<String, String> alert = response.get();
+                    if (alert == null || alert.isEmpty()) {
+                        continue;
+                    }
+                    String riskType = alert.get("risk_type");
+                    if (riskType != null) {
+                        alertsByType.merge(riskType, 1, Integer::sum);
+                    }
+                    String riskLevel = alert.get("risk_level");
+                    if (riskLevel != null) {
+                        alertsByLevel.merge(riskLevel, 1, Integer::sum);
+                    }
+                    // 聚合 Top 风险用户/智能体（按告警数 + 最高/均值告警风险分）
+                    int score = (int) parseLongSafe(alert.get("risk_score"));
+                    String aUserId = alert.get("user_id");
+                    // 空串/"null"/匿名桶都算身份未解析: 计入 untrusted 提示, 不进 Top 榜
+                    if (aUserId == null || aUserId.isEmpty() || "null".equals(aUserId)
+                        || UNRESOLVED_IDENTITIES.contains(aUserId)) {
+                        untrustedAlerts++;
+                    } else {
+                        long[] us = userAlertStats.computeIfAbsent(aUserId, k -> new long[3]);
+                        us[0]++;
+                        us[2] += score;
+                        if (score > us[1]) {
+                            us[1] = score;
+                        }
+                    }
+                    String aAgentId = alert.get("agent_id");
+                    if (aAgentId != null && !aAgentId.isEmpty() && !"null".equals(aAgentId)) {
+                        long[] as = agentAlertStats.computeIfAbsent(aAgentId, k -> new long[3]);
+                        as[0]++;
+                        as[2] += score;
+                        if (score > as[1]) {
+                            as[1] = score;
+                        }
+                    }
+                    // 平均处置时长：disposition_at - timestamp
+                    String dispositionAtStr = alert.get("disposition_at");
+                    if (dispositionAtStr != null) {
+                        long dispositionAt = parseLongSafe(dispositionAtStr);
+                        if (dispositionAt > 0) {
+                            long ts = parseLongSafe(alert.get("timestamp"));
+                            if (dispositionAt > ts) {
+                                sumDispositionMinutes += (dispositionAt - ts) / 60000L;
+                                disposedCount++;
                             }
                         }
                     }
+                    // 高风险会话回放成功率的分母：此处只收集 session, 循环外一次性管道判活
+                    if ("high".equals(riskLevel) || "critical".equals(riskLevel)) {
+                        String sessionId = alert.get("session_id");
+                        if (sessionId != null && !sessionId.isEmpty()) {
+                            highRiskSessions.add(sessionId);
+                        }
+                    }
+                }
+                offset += page.size();
+                if (seenAlertIds.size() >= STATS_AGG_MAX) {
+                    break;
                 }
             }
+            // 回放判活：把逐个 ZCARD 收敛为一次管道往返, 避免样本上限放大到 2 万后出现万级串行 RTT
+            if (!highRiskSessions.isEmpty()) {
+                List<String> replaySessions = new ArrayList<>(highRiskSessions);
+                Pipeline replayPipe = jedis.pipelined();
+                List<Response<Long>> replayCounts = new ArrayList<>(replaySessions.size());
+                for (String sessionId : replaySessions) {
+                    replayCounts.add(replayPipe.zcard("agent_audit:" + sessionId));
+                }
+                replayPipe.sync();
+                for (int i = 0; i < replaySessions.size(); i++) {
+                    Long sessionAuditCount = replayCounts.get(i).get();
+                    if (sessionAuditCount != null && sessionAuditCount > 0) {
+                        highRiskSessionsReplayable.add(replaySessions.get(i));
+                    }
+                }
+            }
+            // 只有真的撞到上限才算截断：并发写入会让 offset 分页跳过个别成员，不能因此误报「超出上限」
+            boolean statsTruncated = seenAlertIds.size() >= STATS_AGG_MAX
+                && totalAlerts > seenAlertIds.size();
 
-            // Top 风险用户/智能体（按告警数降序取 Top 5，附带画像 avg_risk_score）
+            // Top 风险用户/智能体（按告警数降序取 Top 5）
             result.put("top_risk_users", buildTopRiskList(jedis, PROFILE_USER_PREFIX, userAlertStats));
             result.put("top_risk_agents", buildTopRiskList(jedis, PROFILE_AGENT_PREFIX, agentAlertStats));
 
             result.put("total_alerts", totalAlerts);
+            // 卡片文案为「今日告警」, 必须单独按当日 00:00 统计, 不能用累计 total_alerts
+            result.put("today_alerts", countTodayAlerts(jedis));
             result.put("open_alerts", openAlerts);
             result.put("resolved_alerts", resolvedAlerts);
             result.put("acknowledged_alerts", acknowledgedAlerts);
             result.put("false_positive_alerts", falsePositiveAlerts);
+            // 去重后的高风险会话数, 由后端给出, 前端不再用告警条数冒充
+            result.put("high_risk_sessions", highRiskSessions.size());
+            result.put("untrusted_alerts", untrustedAlerts);
+            result.put("stats_truncated", statsTruncated);
             result.put("user_profiles", userProfiles);
             result.put("agent_profiles", agentProfiles);
             result.put("alerts_by_type", alertsByType);
             result.put("alerts_by_level", alertsByLevel);
 
             // ===== KPI 指标（方案 6.2 / 阶段五 任务 4） =====
+            // 比率统一返回 0~1, 目标值用可读单位下发, 避免前端二次折算
             Map<String, Object> kpi = new LinkedHashMap<>();
 
             // 1. 误报率：false_positive 处置数 / 总告警数（目标 ≤15%）
-            double falsePositiveRate = totalAlerts > 0
-                ? (double) falsePositiveAlerts / totalAlerts : 0.0;
-            kpi.put("falsePositiveRate", roundRate(falsePositiveRate));
-            kpi.put("falsePositiveRateTarget", "<=0.15");
+            //    无告警时无样本可算，不能返回 0.0 冒充达标
+            if (totalAlerts > 0) {
+                kpi.put("falsePositiveRate", roundRate((double) falsePositiveAlerts / totalAlerts));
+            } else {
+                kpi.put("falsePositiveRate", null);
+                kpi.put("falsePositiveRateNote", "no alert in range");
+            }
+            kpi.put("falsePositiveRateTarget", "<=15%");
 
             // 2. 平均处置时长（分钟）：disposed 告警 disposition_at - timestamp 均值（目标 <30min）
-            double avgDispositionMinutes = disposedCount > 0
-                ? (double) sumDispositionMinutes / disposedCount : 0.0;
-            kpi.put("avgDispositionMinutes", roundRate(avgDispositionMinutes));
-            kpi.put("avgDispositionMinutesTarget", "<30");
+            if (disposedCount > 0) {
+                kpi.put("avgDispositionMinutes", roundRate((double) sumDispositionMinutes / disposedCount));
+            } else {
+                kpi.put("avgDispositionMinutes", null);
+                kpi.put("avgDispositionMinutesNote", "no disposed alert in range");
+            }
+            kpi.put("avgDispositionMinutesTarget", "<30min");
 
             // 3. 异常会话检出率：人工确认数 / 规则命中数
             //    人工确认 = 已处置（resolved+acknowledged），规则命中 = 总告警（目标 ≥85%）
             long humanConfirmed = resolvedAlerts + acknowledgedAlerts;
-            double anomalyDetectRate = totalAlerts > 0
-                ? (double) humanConfirmed / totalAlerts : 0.0;
-            kpi.put("anomalyDetectRate", roundRate(anomalyDetectRate));
-            kpi.put("anomalyDetectRateTarget", ">=0.85");
+            if (totalAlerts > 0) {
+                kpi.put("anomalyDetectRate", roundRate((double) humanConfirmed / totalAlerts));
+            } else {
+                kpi.put("anomalyDetectRate", null);
+                kpi.put("anomalyDetectRateNote", "no alert in range");
+            }
+            kpi.put("anomalyDetectRateTarget", ">=85%");
 
-            // 4. 高风险会话回放成功率：图谱可还原的高风险会话数 / 高风险会话总数（目标 ≥99%）
-            double replaySuccessRate = highRiskSessions.size() > 0
-                ? (double) highRiskSessionsReplayable.size() / highRiskSessions.size() : 1.0;
-            kpi.put("replaySuccessRate", roundRate(replaySuccessRate));
-            kpi.put("replaySuccessRateTarget", ">=0.99");
+            // 4. 高风险会话回放成功率：无高风险会话时返回 null, 不能用 1.0 冒充达标
+            if (highRiskSessions.isEmpty()) {
+                kpi.put("replaySuccessRate", null);
+                kpi.put("replaySuccessRateNote", "no high/critical alert in range");
+            } else {
+                kpi.put("replaySuccessRate",
+                    roundRate((double) highRiskSessionsReplayable.size() / highRiskSessions.size()));
+            }
+            kpi.put("replaySuccessRateTarget", ">=99%");
 
-            // 5. 实时告警到达率：告警数 / 活跃会话数（近似值，目标 ≥95%）
-            //    真实值需对比审计日志中的"实际异常会话"，本期以告警/活跃会话比近似
-            long activeSessions = scanKeys(jedis, SESSION_META_PREFIX + "*" + SESSION_META_SUFFIX).size();
-            double alertArrivalRate = activeSessions > 0
-                ? Math.min(1.0, (double) totalAlerts / activeSessions) : 0.0;
-            kpi.put("alertArrivalRate", roundRate(alertArrivalRate));
-            kpi.put("alertArrivalRateTarget", ">=0.95");
-            kpi.put("alertArrivalRateNote",
-                "approximate: alerts/activeSessions; precise needs audit-log anomaly diff");
+            // 5. 实时告警到达率：分母 agent_session:*:meta 当前无写入方，取不到活跃会话时返回 null
+            //    已知无埋点写入，直接返回 null 并保留 Note，不再每次请求做一次全 keyspace SCAN
+            kpi.put("alertArrivalRate", null);
+            kpi.put("alertArrivalRateNote", "active session meta is empty (no writer yet)");
+            kpi.put("alertArrivalRateTarget", ">=95%");
 
             // 6. 高风险前置拦截率：blacklist 拦截的请求数 / 触发 high/critical 告警的会话数（目标 ≥90%）
             //    需 Wasm 上报 blacklist 命中计数（方案未落地埋点），本期返回 null + 说明
             kpi.put("blockInterceptRate", null);
-            kpi.put("blockInterceptRateTarget", ">=0.90");
+            kpi.put("blockInterceptRateTarget", ">=90%");
             kpi.put("blockInterceptRateNote",
                 "needs Wasm blacklist hit counter instrumentation");
 
@@ -2509,7 +2599,7 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             //    需 RuleFeedbackTask 变更记录 + 后续误报率对比，本期返回最近变更距今（天）
             Long policyIterateDays = computePolicyIterateDays(jedis);
             kpi.put("policyIterateDays", policyIterateDays);
-            kpi.put("policyIterateDaysTarget", "<=7");
+            kpi.put("policyIterateDaysTarget", "<=7d");
             if (policyIterateDays == null) {
                 kpi.put("policyIterateDaysNote", "no rule change record yet");
             }
@@ -2519,6 +2609,13 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             log.error("getBehaviorStats failed", e);
         }
         return result;
+    }
+
+    /** 今日告警数（产品时区当日 00:00 起），与累计 total_alerts 区分开。 */
+    private long countTodayAlerts(Jedis jedis) {
+        java.time.ZoneId zone = resolveZone(jedis);
+        long todayStart = java.time.LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli();
+        return jedis.zcount(ALERTS_ZSET_KEY, todayStart, System.currentTimeMillis() + 60000);
     }
 
     /**
@@ -2550,7 +2647,8 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
 
     /**
      * 构建 Top 风险实体列表（按告警数降序，Top 5）。
-     * 每条包含：entity_id, alert_count, max_risk_score, avg_risk_score（从画像读取，可能为 null）。
+     * 每条包含：entity_id, alert_count, max_risk_score, avg_alert_risk_score（告警风险分均值 0~100）。
+     * 风险分与榜单排序同源（告警 risk_score），不用画像 7 天全流量均分，避免口径与量级错配。
      */
     private List<Map<String, Object>> buildTopRiskList(Jedis jedis, String profilePrefix,
         Map<String, long[]> stats) {
@@ -2562,17 +2660,21 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             .sorted((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]))
             .limit(5)
             .forEach(e -> {
+                long alertCount = e.getValue()[0];
                 Map<String, Object> item = new LinkedHashMap<>();
                 item.put("entity_id", e.getKey());
-                item.put("alert_count", e.getValue()[0]);
+                item.put("alert_count", alertCount);
                 item.put("max_risk_score", e.getValue()[1]);
-                // 读取画像 avg_risk_score（best-effort，画像可能尚未构建）
-                String avgStr = jedis.hget(profilePrefix + e.getKey(), "avg_risk_score");
-                item.put("avg_risk_score", avgStr != null ? parseDoubleSafe(avgStr) : null);
-                // 用户名（仅用户画像有意义，智能体画像无 user_name 字段）
+                item.put("avg_alert_risk_score", alertCount > 0
+                    ? Math.round(e.getValue()[2] * 10.0 / alertCount) / 10.0 : 0);
+                // 用户名与会话数取自用户画像（智能体画像无这两个字段）
                 if (PROFILE_USER_PREFIX.equals(profilePrefix)) {
-                    String name = jedis.hget(profilePrefix + e.getKey(), "user_name");
+                    List<String> profile = jedis.hmget(profilePrefix + e.getKey(), "user_name", "total_sessions");
+                    String name = profile.get(0);
                     item.put("user_name", name != null ? name : e.getKey());
+                    // 画像缺失时返回 null 而不是 0：页面上「会话数 0」会被读成该用户没有任何会话
+                    String sessions = profile.get(1);
+                    item.put("total_sessions", sessions != null ? parseLongSafe(sessions) : null);
                 }
                 top.add(item);
             });
@@ -2584,33 +2686,228 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         Map<String, Object> result = new LinkedHashMap<>();
         List<Map<String, Object>> timeline = new ArrayList<>();
         try (Jedis jedis = createJedis()) {
-            long min = startTime > 0 ? startTime : 0;
-            long max = endTime > 0 ? endTime : System.currentTimeMillis() + 60000;
-            // 按 granularity 分桶（hour/day）
-            long bucketMs = "day".equals(granularity) ? 86400000L : 3600000L;
-            Map<Long, Integer> buckets = new LinkedHashMap<>();
-            Set<String> alertIds = jedis.zrangeByScore(ALERTS_ZSET_KEY, min, max);
-            for (String alertId : alertIds) {
-                String tsStr = jedis.hget(ALERT_KEY_PREFIX + alertId, "timestamp");
-                if (tsStr == null) {
-                    continue;
-                }
-                long ts = parseLongSafe(tsStr);
-                long bucket = ts / bucketMs * bucketMs;
-                buckets.merge(bucket, 1, Integer::sum);
+            long now = System.currentTimeMillis();
+            long max = endTime > 0 ? endTime : now + 60000;
+            // 显式 startTime 也要夹进哈希 TTL 窗口: 索引残留成员更老, 否则补零会生成上千个空桶
+            long min = Math.max(startTime > 0 ? startTime : 0, now - TIMELINE_MAX_SPAN_MS);
+            String bucketUnit = resolveGranularity(granularity, max - min);
+            boolean dayBucket = "day".equals(bucketUnit);
+            // 天界必须与产品时区一致（默认 Asia/Shanghai），否则 UTC 对齐会把每日 00:00-08:00 的告警算成前一天
+            java.time.ZoneId zone = resolveZone(jedis);
+            // 告警 ZSET 的 score 即告警发生时刻，直接按 score 分桶，不再逐条读哈希（原实现为 N+1 查询）
+            List<Tuple> alerts = new ArrayList<>(
+                jedis.zrangeByScoreWithScores(ALERTS_ZSET_KEY, min, max));
+            TreeMap<Long, Integer> buckets = new TreeMap<>();
+            for (Tuple alert : alerts) {
+                buckets.merge(bucketStart((long) alert.getScore(), dayBucket, zone), 1, Integer::sum);
             }
-            for (Map.Entry<Long, Integer> entry : buckets.entrySet()) {
+            // 分级序列与总量共用同一次扫描的桶键, 保证同一时间轴; 超出聚合上限时不做分级(前端退回单系列)
+            boolean levelsTruncated = alerts.size() > STATS_AGG_MAX;
+            Map<String, TreeMap<Long, Integer>> levelBuckets = levelsTruncated
+                ? Collections.<String, TreeMap<Long, Integer>>emptyMap()
+                : collectAlertLevelBuckets(jedis, alerts, dayBucket, zone);
+            // 空桶补零：稀疏点直接连线会画出并不存在的高位趋势。
+            // 轴必须覆盖整个请求窗口：起点取窗口首桶而非首个有数据的桶，
+            // 否则区间前段无告警时头部桶缺失，X 轴起点随数据漂移（周视图只剩 5 天、今天视图只剩半天）
+            List<Long> axis = new ArrayList<>();
+            long axisStart = bucketStart(min, dayBucket, zone);
+            long lastBucket = Math.max(buckets.isEmpty() ? axisStart : buckets.lastKey(),
+                bucketStart(Math.min(max, now), dayBucket, zone));
+            for (long cursor = axisStart; cursor <= lastBucket;
+                    cursor = nextBucketStart(cursor, dayBucket, zone)) {
+                axis.add(cursor);
+            }
+            for (Long bucket : axis) {
                 Map<String, Object> point = new LinkedHashMap<>();
-                point.put("timestamp", entry.getKey());
-                point.put("count", entry.getValue());
+                point.put("timestamp", bucket);
+                point.put("count", buckets.getOrDefault(bucket, 0));
                 timeline.add(point);
             }
-            timeline.sort((a, b) -> Long.compare((Long)a.get("timestamp"), (Long)b.get("timestamp")));
+            result.put("list", timeline);
+            result.put("levels", buildLevelSeries(levelBuckets, axis));
+            result.put("levels_truncated", levelsTruncated);
+            result.put("granularity", bucketUnit);
+            result.put("start", min);
+            result.put("end", max);
         } catch (JedisConnectionException e) {
             log.error("getBehaviorTimeline failed", e);
         }
-        result.put("list", timeline);
         return result;
+    }
+
+    /**
+     * 按 risk_level 分桶统计趋势。只读 risk_level 单字段并分批 pipeline,
+     * 避免逐条 hgetAll（总量序列已按 score 分桶, 这里只为拆分级别）。
+     * 哈希已过期的条目取不到字段, 只计入总量, 因此各级别求和可能小于总量。
+     */
+    private Map<String, TreeMap<Long, Integer>> collectAlertLevelBuckets(
+        Jedis jedis, List<Tuple> alerts, boolean dayBucket, java.time.ZoneId zone) {
+        Map<String, TreeMap<Long, Integer>> levelBuckets = new LinkedHashMap<>();
+        for (int from = 0; from < alerts.size(); from += STATS_AGG_BATCH) {
+            int to = Math.min(from + STATS_AGG_BATCH, alerts.size());
+            Pipeline pipe = jedis.pipelined();
+            List<Response<List<String>>> responses = new ArrayList<>(to - from);
+            for (int i = from; i < to; i++) {
+                responses.add(pipe.hmget(ALERT_KEY_PREFIX + alerts.get(i).getElement(), "risk_level"));
+            }
+            pipe.sync();
+            for (int i = 0; i < responses.size(); i++) {
+                String level = responses.get(i).get().get(0);
+                if (level == null || level.isEmpty()) {
+                    continue;
+                }
+                long bucket = bucketStart((long) alerts.get(from + i).getScore(), dayBucket, zone);
+                levelBuckets.computeIfAbsent(level, k -> new TreeMap<>()).merge(bucket, 1, Integer::sum);
+            }
+        }
+        return levelBuckets;
+    }
+
+    /**
+     * 组装分级序列：按严重度降序输出（图例顺序不随告警写入顺序漂移），
+     * 未收录的级别值排在已知级别之后并保持原有先后顺序, 每个级别都沿总量轴补零以对齐折线。
+     */
+    private static List<Map<String, Object>> buildLevelSeries(
+        Map<String, TreeMap<Long, Integer>> levelBuckets, List<Long> axis) {
+        List<Map<String, Object>> levels = new ArrayList<>();
+        List<String> ordered = new ArrayList<>(levelBuckets.keySet());
+        ordered.sort(java.util.Comparator.<String>comparingInt(level -> {
+            int rank = ALERT_LEVEL_ORDER.indexOf(level);
+            return rank < 0 ? ALERT_LEVEL_ORDER.size() : rank;
+        }));
+        for (String level : ordered) {
+            TreeMap<Long, Integer> levelBucket = levelBuckets.get(level);
+            List<Map<String, Object>> points = new ArrayList<>(axis.size());
+            for (Long bucket : axis) {
+                Map<String, Object> point = new LinkedHashMap<>();
+                point.put("timestamp", bucket);
+                point.put("count", levelBucket.getOrDefault(bucket, 0));
+                points.add(point);
+            }
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("level", level);
+            item.put("points", points);
+            levels.add(item);
+        }
+        return levels;
+    }
+
+    /**
+     * 分桶粒度：显式 day 用天桶；显式 hour 在跨度超过 7 天时降为天桶；未指定时按跨度自适应。
+     */
+    private static String resolveGranularity(String requested, long spanMs) {
+        long sevenDays = 7L * 86400000L;
+        if ("day".equalsIgnoreCase(requested)) {
+            return "day";
+        }
+        if ("hour".equalsIgnoreCase(requested)) {
+            return spanMs > sevenDays ? "day" : "hour";
+        }
+        return spanMs <= 2L * 86400000L ? "hour" : "day";
+    }
+
+    /** 取产品时区（与检测规则的 timezone 配置同源），配置异常时回退系统时区。 */
+    private java.time.ZoneId resolveZone(Jedis jedis) {
+        String timezone = getConfigValue(jedis, "timezone", "Asia/Shanghai");
+        try {
+            return java.time.ZoneId.of(timezone);
+        } catch (Exception e) {
+            return java.time.ZoneId.systemDefault();
+        }
+    }
+
+    /** 桶起点：天桶取时区当日 00:00，小时桶取整点。 */
+    private static long bucketStart(long timestamp, boolean dayBucket, java.time.ZoneId zone) {
+        java.time.ZonedDateTime t = java.time.Instant.ofEpochMilli(timestamp).atZone(zone);
+        if (dayBucket) {
+            return t.toLocalDate().atStartOfDay(zone).toInstant().toEpochMilli();
+        }
+        return t.truncatedTo(java.time.temporal.ChronoUnit.HOURS).toInstant().toEpochMilli();
+    }
+
+    /**
+     * 下一个桶起点：按日历推进后重新取桶起点，保证与 bucketStart 落在同一键空间
+     * （午夜被夏令时跳过的时区，atStartOfDay 不是 00:00，直接取 instant 会与真实桶键错位）。
+     */
+    private static long nextBucketStart(long bucketStart, boolean dayBucket, java.time.ZoneId zone) {
+        java.time.ZonedDateTime t = java.time.Instant.ofEpochMilli(bucketStart).atZone(zone);
+        long next = (dayBucket ? t.plusDays(1) : t.plusHours(1)).toInstant().toEpochMilli();
+        return bucketStart(next, dayBucket, zone);
+    }
+
+    /**
+     * 回收残留索引：告警哈希 90 天过期，但索引 ZSET 无 TTL，
+     * 哈希消失后成员会永久留在索引里，使 total/open 等计数只增不减。
+     */
+    @Override
+    public void cleanupStaleAlertIndexes() {
+        try (Jedis jedis = createJedis()) {
+            long cutoff = System.currentTimeMillis() - ALERT_TTL * 1000L;
+            // 单轮总预算：全局索引与所有实体索引共享，达到即结束，剩余留给下一轮，
+            // 否则「每键 2000」在同键多、成员多时仍会把一次清理拉成数分钟
+            int budget = INDEX_REAP_MAX;
+            int removed = 0;
+
+            // 全局索引：整页批量判活后再批量 ZREM
+            Set<String> stale = jedis.zrangeByScore(ALERTS_ZSET_KEY, 0, cutoff, 0, INDEX_REAP_MAX);
+            List<String> deadGlobal = collectExpiredAlertIds(jedis, stale);
+            if (!deadGlobal.isEmpty()) {
+                jedis.zrem(ALERTS_ZSET_KEY, deadGlobal.toArray(new String[0]));
+                for (String status : ALERT_STATUSES) {
+                    jedis.zrem(ALERTS_STATUS_ZSET_PREFIX + status, deadGlobal.toArray(new String[0]));
+                }
+                removed += deadGlobal.size();
+                budget -= deadGlobal.size();
+            }
+
+            // 实体索引按实体分键，需逐键回收
+            for (String prefix : new String[] {ALERTS_USER_ZSET_PREFIX, ALERTS_AGENT_ZSET_PREFIX}) {
+                if (budget <= 0) {
+                    break;
+                }
+                for (String indexKey : scanKeys(jedis, prefix + "*")) {
+                    if (budget <= 0) {
+                        break;
+                    }
+                    Set<String> members = jedis.zrangeByScore(indexKey, 0, cutoff, 0, budget);
+                    // 预算按「扫描量」扣减：全判活为真的键也要计入, 否则空转键多时一轮仍会扫上万次
+                    budget -= members.size();
+                    List<String> dead = collectExpiredAlertIds(jedis, members);
+                    if (dead.isEmpty()) {
+                        continue;
+                    }
+                    // 成员清空后 Redis 会自动删除该 key, 无需再 ZCARD+DEL（DEL 与并发新建告警存在竞态）
+                    jedis.zrem(indexKey, dead.toArray(new String[0]));
+                    removed += dead.size();
+                }
+            }
+            if (removed > 0) {
+                log.info("cleanupStaleAlertIndexes removed {} stale index members", removed);
+            }
+        } catch (Exception e) {
+            log.warn("cleanupStaleAlertIndexes failed", e);
+        }
+    }
+
+    /** 批量判活：返回告警哈希已过期（不存在）的 id；Pipeline 把 N 次 EXISTS 压成一次往返。 */
+    private List<String> collectExpiredAlertIds(Jedis jedis, Set<String> alertIds) {
+        List<String> expired = new ArrayList<>();
+        if (alertIds == null || alertIds.isEmpty()) {
+            return expired;
+        }
+        List<String> ids = new ArrayList<>(alertIds);
+        Pipeline pipe = jedis.pipelined();
+        List<Response<Boolean>> exists = new ArrayList<>(ids.size());
+        for (String alertId : ids) {
+            exists.add(pipe.exists(ALERT_KEY_PREFIX + alertId));
+        }
+        pipe.sync();
+        for (int i = 0; i < ids.size(); i++) {
+            if (!Boolean.TRUE.equals(exists.get(i).get())) {
+                expired.add(ids.get(i));
+            }
+        }
+        return expired;
     }
 
     // ==================== 会话图谱（方案 5.6） ====================

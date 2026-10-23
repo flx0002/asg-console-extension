@@ -14,7 +14,6 @@ package com.asg.console.extension.controller;
 
 import java.lang.reflect.Method;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
@@ -36,7 +35,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.util.ControllerUtil;
-import com.asg.console.extension.service.AuditLogCollectorService;
 import com.asg.console.extension.service.BehaviorAnalysisService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -56,15 +54,10 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class BehaviorAnalysisController {
 
-    private static final long CATCH_UP_INTERVAL_MS = 3000;
-    private static final int CATCH_UP_SINCE_SECONDS = 120;
-
     // 处置人取自控制台登录会话: SessionService 未随 SDK 暴露到编译期, 故反射调用
     private static final String SESSION_SERVICE_CLASS = "com.alibaba.higress.console.service.SessionService";
 
     private BehaviorAnalysisService behaviorAnalysisService;
-    private AuditLogCollectorService auditLogCollectorService;
-    private final AtomicLong lastCatchUpAt = new AtomicLong(0);
 
     @Autowired
     private ApplicationContext applicationContext;
@@ -72,36 +65,6 @@ public class BehaviorAnalysisController {
     @Resource
     public void setBehaviorAnalysisService(BehaviorAnalysisService behaviorAnalysisService) {
         this.behaviorAnalysisService = behaviorAnalysisService;
-    }
-
-    @Resource
-    public void setAuditLogCollectorService(AuditLogCollectorService auditLogCollectorService) {
-        this.auditLogCollectorService = auditLogCollectorService;
-    }
-
-    private void catchUpRecentAnalysis() {
-        long now = System.currentTimeMillis();
-        long last = lastCatchUpAt.get();
-        if (now - last < CATCH_UP_INTERVAL_MS || !lastCatchUpAt.compareAndSet(last, now)) {
-            return;
-        }
-        try {
-            if (auditLogCollectorService != null) {
-                auditLogCollectorService.collect(CATCH_UP_SINCE_SECONDS);
-            }
-        } catch (Exception e) {
-            log.warn("Behavior analysis catch-up audit collection failed", e);
-        }
-        try {
-            behaviorAnalysisService.rebuildProfiles();
-        } catch (Exception e) {
-            log.warn("Behavior analysis catch-up profile rebuild failed", e);
-        }
-        try {
-            behaviorAnalysisService.runRiskDetection();
-        } catch (Exception e) {
-            log.warn("Behavior analysis catch-up risk detection failed", e);
-        }
     }
 
     // ==================== 配置管理 ====================
@@ -134,7 +97,6 @@ public class BehaviorAnalysisController {
     public ResponseEntity<Response<java.util.List<Map<String, Object>>>> listUserProfiles(
         @RequestParam(value = "page", defaultValue = "1") int page,
         @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(behaviorAnalysisService.listUserProfiles(page, pageSize));
     }
 
@@ -143,7 +105,6 @@ public class BehaviorAnalysisController {
     @ApiResponses({@ApiResponse(responseCode = "200", description = "Success")})
     public ResponseEntity<Response<Map<String, Object>>> getUserProfile(
         @PathVariable("userId") String userId) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(behaviorAnalysisService.getUserProfile(userId));
     }
 
@@ -153,7 +114,6 @@ public class BehaviorAnalysisController {
     public ResponseEntity<Response<java.util.List<Map<String, Object>>>> listAgentProfiles(
         @RequestParam(value = "page", defaultValue = "1") int page,
         @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(behaviorAnalysisService.listAgentProfiles(page, pageSize));
     }
 
@@ -162,7 +122,6 @@ public class BehaviorAnalysisController {
     @ApiResponses({@ApiResponse(responseCode = "200", description = "Success")})
     public ResponseEntity<Response<Map<String, Object>>> getAgentProfile(
         @PathVariable("agentId") String agentId) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(behaviorAnalysisService.getAgentProfile(agentId));
     }
 
@@ -181,7 +140,6 @@ public class BehaviorAnalysisController {
         @RequestParam(value = "endTime", required = false, defaultValue = "0") long endTime,
         @RequestParam(value = "page", defaultValue = "1") int page,
         @RequestParam(value = "pageSize", defaultValue = "20") int pageSize) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(
             behaviorAnalysisService.getAlerts(status, riskType, riskLevel, userId, agentId,
                 startTime, endTime, page, pageSize));
@@ -192,7 +150,6 @@ public class BehaviorAnalysisController {
     @ApiResponses({@ApiResponse(responseCode = "200", description = "Success")})
     public ResponseEntity<Response<Map<String, Object>>> getAlertDetail(
         @PathVariable("alertId") String alertId) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(behaviorAnalysisService.getAlertDetail(alertId));
     }
 
@@ -241,7 +198,6 @@ public class BehaviorAnalysisController {
     public ResponseEntity<Response<Map<String, Object>>> getBehaviorStats(
         @RequestParam(value = "startTime", required = false, defaultValue = "0") long startTime,
         @RequestParam(value = "endTime", required = false, defaultValue = "0") long endTime) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(
             behaviorAnalysisService.getBehaviorStats(startTime, endTime));
     }
@@ -252,8 +208,8 @@ public class BehaviorAnalysisController {
     public ResponseEntity<Response<Map<String, Object>>> getBehaviorTimeline(
         @RequestParam(value = "startTime", required = false, defaultValue = "0") long startTime,
         @RequestParam(value = "endTime", required = false, defaultValue = "0") long endTime,
-        @RequestParam(value = "granularity", defaultValue = "hour") String granularity) {
-        catchUpRecentAnalysis();
+        // 不指定粒度时交给服务端按跨度自适应（≤2 天小时桶，否则天桶）
+        @RequestParam(value = "granularity", required = false, defaultValue = "") String granularity) {
         return ControllerUtil.buildResponseEntity(
             behaviorAnalysisService.getBehaviorTimeline(startTime, endTime, granularity));
     }
@@ -266,7 +222,6 @@ public class BehaviorAnalysisController {
     public ResponseEntity<Response<Map<String, Object>>> getSessionGraph(
         @PathVariable("sessionId") String sessionId,
         @RequestParam(value = "maxNodes", required = false, defaultValue = "50") int maxNodes) {
-        catchUpRecentAnalysis();
         return ControllerUtil.buildResponseEntity(behaviorAnalysisService.getSessionGraph(sessionId));
     }
 

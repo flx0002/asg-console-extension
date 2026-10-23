@@ -51,6 +51,9 @@ public interface BehaviorAnalysisService {
 
     Map<String, Object> getBehaviorTimeline(long startTime, long endTime, String granularity);
 
+    // 索引回收：清理哈希已过期但索引残留的告警成员（定时任务调用）
+    void cleanupStaleAlertIndexes();
+
     // === 会话图谱 ===
     Map<String, Object> getSessionGraph(String sessionId);
 
