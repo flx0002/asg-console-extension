@@ -271,6 +271,10 @@ const BehaviorDashboardPage: React.FC = () => {
     { title: t('behaviorAnalysis.stats.highRiskSessions'), value: stats.highRiskSessions ?? 0, color: stats.highRiskSessions > 0 ? '#cf1322' : '#3f8600' },
   ];
 
+  // KPI 指标暂不展示：方案 6.2 的 7 项指标当前均处于「指标未采集」状态，展示无意义。
+  // 代码与文案保留，恢复展示只需把此开关改为 true。
+  const SHOW_KPI_SECTION: boolean = false;
+
   // KPI 指标（方案 6.2 KPI 体系）：单位与目标阈值均以后端 kpi 子对象为准
   const KPI_UNITS: Record<string, 'percent' | 'minutes' | 'days'> = {
     alertArrivalRate: 'percent',
@@ -514,26 +518,28 @@ const BehaviorDashboardPage: React.FC = () => {
         </Row>
       </Spin>
 
-      {/* KPI 指标行 */}
-      <Card size="small" title={t('behaviorAnalysis.stats.kpi')} style={{ marginBottom: 16 }} loading={statsLoading}>
-        <Row gutter={[16, 16]}>
-          {kpiList.map((kpi) => (
-            <Col span={Math.floor(24 / kpiList.length)} key={kpi.key}>
-              <div style={{ textAlign: 'center' }}>
-                <div style={{ color: '#999', fontSize: 12, marginBottom: 4 }}>{kpi.label}</div>
-                <Tooltip title={kpi.target}>
-                  {renderKpiValue(kpi.value, kpi.unit)}
-                </Tooltip>
-                <div style={{ color: '#bbb', fontSize: 11 }}>
-                  {kpi.value === undefined || kpi.value === null
-                    ? t('behaviorAnalysis.stats.notCollected')
-                    : kpi.target}
+      {/* KPI 指标行（由 SHOW_KPI_SECTION 控制，当前隐藏，代码保留） */}
+      {SHOW_KPI_SECTION && (
+        <Card size="small" title={t('behaviorAnalysis.stats.kpi')} style={{ marginBottom: 16 }} loading={statsLoading}>
+          <Row gutter={[16, 16]}>
+            {kpiList.map((kpi) => (
+              <Col span={Math.floor(24 / kpiList.length)} key={kpi.key}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ color: '#999', fontSize: 12, marginBottom: 4 }}>{kpi.label}</div>
+                  <Tooltip title={kpi.target}>
+                    {renderKpiValue(kpi.value, kpi.unit)}
+                  </Tooltip>
+                  <div style={{ color: '#bbb', fontSize: 11 }}>
+                    {kpi.value === undefined || kpi.value === null
+                      ? t('behaviorAnalysis.stats.notCollected')
+                      : kpi.target}
+                  </div>
                 </div>
-              </div>
-            </Col>
-          ))}
-        </Row>
-      </Card>
+              </Col>
+            ))}
+          </Row>
+        </Card>
+      )}
 
       {/* 风险趋势 + 告警类型分布 */}
       <Row gutter={16} style={{ marginBottom: 16 }}>
