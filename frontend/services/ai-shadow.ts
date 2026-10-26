@@ -1,6 +1,6 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/no-invalid-void-type */
 import request from './request';
-import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendPoint, AiShadowDnsPolicyView, AiShadowAuthzUpdate } from '@/interfaces/ai-shadow';
+import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate } from '@/interfaces/ai-shadow';
 
 export const getAiShadowStatus = (): Promise<AiShadowStatus[]> => {
   return request.get<any, AiShadowStatus[]>('/v1/ai-shadow/status');
@@ -42,8 +42,11 @@ export const getAiShadowDetectEvents = (params: AiShadowDetectEventQuery = {}): 
   return request.get<any, AiShadowDetectEventPage>('/v1/ai-shadow/detect-events', { params });
 };
 
-export const getAiShadowDetectedTrend = (hours = 24): Promise<AiShadowTrendPoint[]> => {
-  return request.get<any, AiShadowTrendPoint[]>('/v1/ai-shadow/detected-trend', { params: { hours } });
+// Trend over an explicit window (epoch millis). The backend picks hourly buckets for
+// spans up to two days and daily buckets beyond, and reports the choice back.
+export const getAiShadowDetectedTrend = (params: { startTime: number; endTime: number }):
+Promise<AiShadowTrendResponse> => {
+  return request.get<any, AiShadowTrendResponse>('/v1/ai-shadow/detected-trend', { params });
 };
 
 export const getAiShadowAuthorizedDomains = (): Promise<AiShadowDnsPolicyView> => {

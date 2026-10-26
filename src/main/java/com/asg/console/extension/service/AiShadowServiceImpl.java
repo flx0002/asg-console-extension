@@ -17,14 +17,12 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -80,14 +78,21 @@ public class AiShadowServiceImpl implements AiShadowService {
     private static final String OUTPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_output_token";
     private static final String AI_SHADOW_DETECT_METRIC_PREFIX = "ai_shadow_detect_category_";
 
-    /** PromQL for the hourly detection trend: per-status increase of the detect counter over each 1h bucket. */
-    private static final String AI_SHADOW_TREND_QUERY =
-        "sum by (status) (increase(ai_shadow_detect_category_domain_risk_status_requests[1h]))";
+    /** Gateway-side detect counter: one series per status, aggregated over a bucket. */
+    private static final String AI_SHADOW_TREND_METRIC = "ai_shadow_detect_category_domain_risk_status_requests";
     /** Bypass collector exposes its own counter with a different name and labels. */
-    private static final String AI_SHADOW_BYPASS_TREND_QUERY =
-        "sum by (status) (increase(ai_shadow_detect_bypass_requests_total[1h]))";
+    private static final String AI_SHADOW_BYPASS_TREND_METRIC = "ai_shadow_detect_bypass_requests_total";
     /** Stable legend ordering for trend series. */
     private static final List<String> TREND_STATUS_ORDER = Arrays.asList("blocked", "allowed", "monitored");
+
+    /** Default lookback when the caller supplies no window (kept at the historical 24h). */
+    private static final long DEFAULT_TREND_WINDOW_MS = 24L * 3600L * 1000L;
+    /** Hard cap on the lookback so a bad caller cannot trigger a multi-year scan. */
+    private static final long MAX_TREND_WINDOW_MS = 31L * 86400L * 1000L;
+    /** Spans up to two days stay on hourly buckets; wider spans switch to daily buckets. */
+    private static final long HOURLY_MAX_SPAN_MS = 2L * 86400L * 1000L;
+    private static final String GRANULARITY_HOUR = "hour";
+    private static final String GRANULARITY_DAY = "day";
 
     /** Fixed virtual session holding all shadow AI admin (authorization) operations. */
     private static final String ADMIN_OPS_SESSION_ID = "admin_ops";
@@ -629,47 +634,97 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     @Override
-    public List<Map<String, Object>> getDetectedTrend(int hours) {
-        // Clamp the lookback window: 1h ~ 7d, default 24h.
-        int window = Math.min(Math.max(hours, 1), 168);
-        List<Map<String, Object>> result = new ArrayList<>();
+    public Map<String, Object> getDetectedTrend(Long startTime, Long endTime) {
+        long now = System.currentTimeMillis();
+        // The window never runs into the future: a future end only yields empty buckets.
+        long end = (endTime == null || endTime <= 0L) ? now : Math.min(endTime, now);
+        long start = (startTime == null || startTime <= 0L) ? end - DEFAULT_TREND_WINDOW_MS : startTime;
+        if (end - start > MAX_TREND_WINDOW_MS) {
+            start = end - MAX_TREND_WINDOW_MS;
+        }
+        if (end <= start) {
+            end = start + 1L;
+        }
+        // Granularity follows the span (same rule as the behaviour dashboard): <=2d hourly, else daily.
+        boolean hourly = (end - start) <= HOURLY_MAX_SPAN_MS;
+        long stepSeconds = hourly ? 3600L : 86400L;
+        // Bucket edges come from the caller. The console aligns the window to its own local
+        // midnight; re-aligning here would use the JVM zone, and the container runs in UTC.
+        long windowStart = start;
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("start", windowStart);
+        result.put("end", end);
+        result.put("granularity", hourly ? GRANULARITY_HOUR : GRANULARITY_DAY);
+        // Distinguishes "Prometheus unreachable" from "no detections": both yield an empty
+        // list, and the console fills an all-zero axis, which would hide the outage.
+        result.put("degraded", false);
+        List<Map<String, Object>> points = new ArrayList<>();
         try {
-            long end = System.currentTimeMillis() / 1000L;
-            long start = end - window * 3600L;
+            // `increase(m[1h])` evaluated at t measures (t-1h, t], so a point has to be filed one
+            // bucket earlier for the label to match the interval it actually covers.
+            long bucketSeconds = hourly ? 3600L : 86400L;
+            String range = hourly ? "1h" : "1d";
+            long alignedStartSeconds = windowStart / 1000L;
+            long endSeconds = end / 1000L;
             // Two sources: gateway-side WasmPlugin counter and bypass collector counter.
-            // They are separate Prometheus metrics, so aggregate by (status, timestamp).
+            // They are separate Prometheus metrics, so aggregate by (status, bucket).
             Map<String, Long> counts = new HashMap<>();
             Map<String, Long> timestamps = new HashMap<>();
-            mergeTrendSeries(counts, timestamps, queryRange(AI_SHADOW_TREND_QUERY, start, end, 3600));
-            mergeTrendSeries(counts, timestamps, queryRange(AI_SHADOW_BYPASS_TREND_QUERY, start, end, 3600));
-            if (counts.isEmpty()) {
-                return result;
-            }
-            DateTimeFormatter fmt = DateTimeFormatter.ofPattern("MM-dd HH:00").withZone(ZoneId.systemDefault());
+            JSONArray gatewaySeries =
+                queryRange(trendQuery(AI_SHADOW_TREND_METRIC, range), alignedStartSeconds, endSeconds, stepSeconds);
+            JSONArray bypassSeries =
+                queryRange(trendQuery(AI_SHADOW_BYPASS_TREND_METRIC, range), alignedStartSeconds, endSeconds,
+                    stepSeconds);
+            result.put("degraded", gatewaySeries == null && bypassSeries == null);
+            mergeTrendSeries(counts, timestamps, gatewaySeries, bucketSeconds, alignedStartSeconds);
+            mergeTrendSeries(counts, timestamps, bypassSeries, bucketSeconds, alignedStartSeconds);
+            // A range query only yields closed buckets, so the bucket in progress ("today" in the
+            // daily view) would never appear; measure it with one extra instant query.
+            long currentBucketSeconds = alignedStartSeconds
+                + (endSeconds - alignedStartSeconds) / bucketSeconds * bucketSeconds;
+            // Prometheus needs a sane range: below a minute `increase` has no second sample to work with.
+            String partialRange = Math.max(60L, endSeconds - currentBucketSeconds) + "s";
+            mergeInstantSeries(counts, timestamps,
+                queryInstant(trendQuery(AI_SHADOW_TREND_METRIC, partialRange)), currentBucketSeconds);
+            mergeInstantSeries(counts, timestamps,
+                queryInstant(trendQuery(AI_SHADOW_BYPASS_TREND_METRIC, partialRange)), currentBucketSeconds);
             for (Map.Entry<String, Long> e : counts.entrySet()) {
                 Map<String, Object> p = new HashMap<>();
-                p.put("time", fmt.format(Instant.ofEpochSecond(timestamps.get(e.getKey()))));
+                // Milliseconds: the console formats the label itself, per granularity.
+                p.put("timestamp", timestamps.get(e.getKey()) * 1000L);
                 p.put("status", e.getKey().substring(0, e.getKey().indexOf('|')));
                 p.put("count", e.getValue());
-                result.add(p);
+                points.add(p);
             }
             // Stable ordering: status (blocked/allowed/monitored first), then time ascending.
-            result.sort((a, b) -> {
+            points.sort((a, b) -> {
                 int sa = TREND_STATUS_ORDER.indexOf(a.get("status"));
                 int sb = TREND_STATUS_ORDER.indexOf(b.get("status"));
                 if (sa != sb) {
                     return Integer.compare(sa < 0 ? Integer.MAX_VALUE : sa, sb < 0 ? Integer.MAX_VALUE : sb);
                 }
-                return String.valueOf(a.get("time")).compareTo(String.valueOf(b.get("time")));
+                return Long.compare((Long)a.get("timestamp"), (Long)b.get("timestamp"));
             });
         } catch (Exception e) {
             log.error("Error querying shadow AI detection trend", e);
         }
+        result.put("list", points);
         return result;
     }
 
-    /** Accumulate one range-query series array into the (status|ts -> count) aggregation maps. */
-    private void mergeTrendSeries(Map<String, Long> counts, Map<String, Long> timestamps, JSONArray series) {
+    /** Per-status increase query over the given PromQL range (e.g. "1h", "1d", "5400s"). */
+    private static String trendQuery(String metric, String range) {
+        return "sum by (status) (increase(" + metric + "[" + range + "]))";
+    }
+
+    /**
+     * Accumulate one range-query series array into the (status|bucket -> count) aggregation maps.
+     * Each sample is stamped one {@code bucketSeconds} earlier, because the expression at t
+     * measures the interval that ended at t. Samples before {@code lowerBoundSeconds} belong to
+     * an interval that starts outside the requested window and are dropped.
+     */
+    private void mergeTrendSeries(Map<String, Long> counts, Map<String, Long> timestamps, JSONArray series,
+        long bucketSeconds, long lowerBoundSeconds) {
         if (series == null) {
             return;
         }
@@ -685,12 +740,35 @@ public class AiShadowServiceImpl implements AiShadowService {
                 if (point == null || point.size() < 2) {
                     continue;
                 }
-                long ts = point.getLongValue(0);
-                long count = (long) parsePromValue(point.getString(1));
-                String key = status + "|" + ts;
+                long bucketTs = point.getLongValue(0) - bucketSeconds;
+                if (bucketTs < lowerBoundSeconds) {
+                    continue;
+                }
+                long count = (long)parsePromValue(point.getString(1));
+                String key = status + "|" + bucketTs;
                 counts.merge(key, count, Long::sum);
-                timestamps.putIfAbsent(key, ts);
+                timestamps.putIfAbsent(key, bucketTs);
             }
+        }
+    }
+
+    /** Accumulate an instant-query vector into the aggregation maps at one fixed bucket start. */
+    private void mergeInstantSeries(Map<String, Long> counts, Map<String, Long> timestamps, JSONArray result,
+        long bucketSeconds) {
+        if (result == null) {
+            return;
+        }
+        for (int i = 0; i < result.size(); i++) {
+            JSONObject item = result.getJSONObject(i);
+            String status = item.getJSONObject("metric").getString("status");
+            JSONArray value = item.getJSONArray("value");
+            if (StringUtils.isEmpty(status) || value == null || value.size() < 2) {
+                continue;
+            }
+            long count = (long)parsePromValue(value.getString(1));
+            String key = status + "|" + bucketSeconds;
+            counts.merge(key, count, Long::sum);
+            timestamps.putIfAbsent(key, bucketSeconds);
         }
     }
 
@@ -699,10 +777,27 @@ public class AiShadowServiceImpl implements AiShadowService {
      * and returns the raw result array (one series per label combination).
      */
     private JSONArray queryRange(String query, long start, long end, long stepSeconds) {
+        return fetchResult(PROMETHEUS_RANGE_PATH,
+            "query=" + encodeQuery(query) + "&start=" + start + "&end=" + end + "&step=" + stepSeconds);
+    }
+
+    /** Prometheus instant query; returns the raw result vector. */
+    private JSONArray queryInstant(String query) {
+        return fetchResult(PROMETHEUS_QUERY_PATH, "query=" + encodeQuery(query));
+    }
+
+    private static String encodeQuery(String query) {
         try {
-            String queryUrl = prometheusBaseUrl + PROMETHEUS_RANGE_PATH + "?query="
-                + java.net.URLEncoder.encode(query, "UTF-8")
-                + "&start=" + start + "&end=" + end + "&step=" + stepSeconds;
+            return java.net.URLEncoder.encode(query, "UTF-8");
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Unable to encode PromQL: " + query, e);
+        }
+    }
+
+    /** Shared HTTP call for both query endpoints; null means Prometheus itself was unreachable. */
+    private JSONArray fetchResult(String path, String queryString) {
+        try {
+            String queryUrl = prometheusBaseUrl + path + "?" + queryString;
             HttpURLConnection connection = (HttpURLConnection)new URL(queryUrl).openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(5000);
@@ -710,7 +805,7 @@ public class AiShadowServiceImpl implements AiShadowService {
 
             int responseCode = connection.getResponseCode();
             if (responseCode != 200) {
-                log.warn("Prometheus query_range returned non-200 status: {}", responseCode);
+                log.warn("Prometheus {} returned non-200 status: {}", path, responseCode);
                 return null;
             }
 
@@ -725,13 +820,13 @@ public class AiShadowServiceImpl implements AiShadowService {
 
             JSONObject response = JSON.parseObject(responseBody.toString());
             if (!"success".equals(response.getString("status"))) {
-                log.warn("Prometheus query_range was not successful");
+                log.warn("Prometheus {} was not successful", path);
                 return null;
             }
             JSONObject data = response.getJSONObject("data");
             return data == null ? null : data.getJSONArray("result");
         } catch (Exception e) {
-            log.error("Error querying Prometheus range: {}", query, e);
+            log.error("Error querying Prometheus {}: {}", path, queryString, e);
             return null;
         }
     }

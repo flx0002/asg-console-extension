@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.asg.console.extension.controller.dto.Response;
@@ -103,12 +104,21 @@ public class AiShadowController {
     }
 
     @GetMapping("/detected-trend")
-    @Operation(summary = "Hourly shadow AI detection trend (IR-004)")
+    @Operation(summary = "Shadow AI detection trend over a time window (IR-004)")
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Trend points listed successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<List<Map<String, Object>>>> getDetectedTrend(
-        @org.springframework.web.bind.annotation.RequestParam(value = "hours", defaultValue = "24") int hours) {
-        return ControllerUtil.buildResponseEntity(aiShadowService.getDetectedTrend(hours));
+    public ResponseEntity<Response<Map<String, Object>>> getDetectedTrend(
+        @RequestParam(value = "startTime", required = false) Long startTime,
+        @RequestParam(value = "endTime", required = false) Long endTime,
+        @RequestParam(value = "hours", required = false) Integer hours) {
+        // `hours` stays supported for older callers; startTime/endTime take precedence.
+        Long resolvedStart = startTime;
+        Long resolvedEnd = endTime;
+        if (resolvedStart == null && hours != null) {
+            long end = resolvedEnd == null ? System.currentTimeMillis() : resolvedEnd;
+            resolvedStart = end - hours.longValue() * 3600L * 1000L;
+        }
+        return ControllerUtil.buildResponseEntity(aiShadowService.getDetectedTrend(resolvedStart, resolvedEnd));
     }
 
     @GetMapping("/authorized-domains")

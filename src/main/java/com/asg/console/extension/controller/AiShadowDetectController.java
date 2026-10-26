@@ -135,6 +135,8 @@ public class AiShadowDetectController {
 
     /**
      * Query detect events for the management console, with filters and paging.
+     * startTime/endTime (epoch millis) narrow the result to one trend bucket when
+     * the user drills down from the detection trend chart.
      */
     @GetMapping("/detect-events")
     @Operation(summary = "Query shadow AI detect events")
@@ -144,10 +146,12 @@ public class AiShadowDetectController {
         @RequestParam(value = "category", required = false) String category,
         @RequestParam(value = "riskLevel", required = false) String riskLevel,
         @RequestParam(value = "source", required = false) String source,
+        @RequestParam(value = "startTime", required = false) Long startTime,
+        @RequestParam(value = "endTime", required = false) Long endTime,
         @RequestParam(value = "page", defaultValue = "0") int page,
         @RequestParam(value = "size", defaultValue = "20") int size) {
         Page<AiShadowDetectEvent> result =
-            detectEventService.query(domain, status, category, riskLevel, source, page, size);
+            detectEventService.query(domain, status, category, riskLevel, source, startTime, endTime, page, size);
         // IR-025/S5: attach weak audit-chain links (domain handling audit +
         // same-source host aggregation) for bypass/dns events.
         detectEventService.attachAuditLinks(result.getContent());

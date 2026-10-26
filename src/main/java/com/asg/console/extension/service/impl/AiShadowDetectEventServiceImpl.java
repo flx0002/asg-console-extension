@@ -9,7 +9,9 @@
 package com.asg.console.extension.service;
 
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -72,15 +74,24 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
 
     @Override
     public Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel,
-        String source, int page, int size) {
+        String source, Long startTime, Long endTime, int page, int size) {
         if (page < 0) {
             page = 0;
         }
         if (size <= 0 || size > 500) {
             size = 20;
         }
-        Specification<AiShadowDetectEvent> spec = buildSpec(domain, status, category, riskLevel, source);
+        Specification<AiShadowDetectEvent> spec =
+            buildSpec(domain, status, category, riskLevel, source, toLocalDateTime(startTime), toLocalDateTime(endTime));
         return eventRepository.findAll(spec, PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "eventTime")));
+    }
+
+    /** Convert an epoch-millis filter bound to the product time zone; null stays null (no bound). */
+    private static LocalDateTime toLocalDateTime(Long epochMillis) {
+        if (epochMillis == null || epochMillis <= 0L) {
+            return null;
+        }
+        return LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneId.systemDefault());
     }
 
     @Override
@@ -233,7 +244,7 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
     }
 
     private Specification<AiShadowDetectEvent> buildSpec(String domain, String status, String category,
-        String riskLevel, String source) {
+        String riskLevel, String source, LocalDateTime startTime, LocalDateTime endTime) {
         return (root, query, cb) -> {
             List<javax.persistence.criteria.Predicate> predicates = new ArrayList<>();
             if (domain != null && !StringUtils.isBlank(domain)) {
@@ -250,6 +261,12 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
             }
             if (source != null && !StringUtils.isBlank(source)) {
                 predicates.add(cb.equal(root.get("source"), source.trim()));
+            }
+            if (startTime != null) {
+                predicates.add(cb.greaterThanOrEqualTo(root.get("eventTime"), startTime));
+            }
+            if (endTime != null) {
+                predicates.add(cb.lessThanOrEqualTo(root.get("eventTime"), endTime));
             }
             return cb.and(predicates.toArray(new javax.persistence.criteria.Predicate[0]));
         };

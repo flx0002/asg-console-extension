@@ -65,14 +65,27 @@ export interface AiShadowDetectEventQuery {
   category?: string;
   riskLevel?: string;
   source?: string;
+  // Epoch millis; both bounds are needed to narrow the list to one trend bucket.
+  startTime?: number;
+  endTime?: number;
 }
 
 // Long-format trend point for the detection trend chart (IR-004):
-// { time: "MM-dd HH:00", status: 'blocked' | 'allowed' | 'monitored', count }
+// { timestamp: epoch millis of the bucket start, status: 'blocked' | 'allowed' | 'monitored', count }
 export interface AiShadowTrendPoint {
-  time: string;
+  timestamp: number;
   status: string;
   count: number;
+}
+
+// Trend payload: the window actually served and the bucket granularity chosen for its span.
+export interface AiShadowTrendResponse {
+  start: number;
+  end: number;
+  granularity: 'hour' | 'day';
+  // true when the trend source itself was unreachable, which is distinct from an empty window
+  degraded?: boolean;
+  list: AiShadowTrendPoint[];
 }
 
 // Authorized-domain view of the DNS/bypass policy (IR-003 unified authorization)

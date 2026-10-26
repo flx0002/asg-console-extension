@@ -33,10 +33,12 @@ public interface AiShadowService {
     List<AiShadowDetectedAccess> getDetectedAccesses();
 
     /**
-     * Hourly detection trend over the requested lookback window (IR-004).
-     * Returns long-format points: {time="MM-dd HH:00", status, count}.
+     * Detection trend over the requested window (IR-004). The bucket granularity
+     * follows the span (hourly up to two days, daily beyond) and the bucket edges
+     * are aligned to the product time zone.
+     * Returns {start, end, granularity, list=[{timestamp(ms), status, count}]}.
      */
-    List<Map<String, Object>> getDetectedTrend(int hours);
+    Map<String, Object> getDetectedTrend(Long startTime, Long endTime);
 
     /**
      * Current authorized-domain view of the DNS/bypass policy (IR-003 unified
