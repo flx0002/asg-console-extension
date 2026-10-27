@@ -137,8 +137,10 @@ public class AiShadowController {
     @Operation(summary = "List authorized shadow AI domains (DNS/bypass policy, IR-003)")
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Authorized domains listed successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<Map<String, Object>>> getAuthorizedDomains() {
-        return ControllerUtil.buildResponseEntity(aiShadowService.getAuthorizedDomains());
+    public ResponseEntity<Response<Map<String, Object>>> getAuthorizedDomains(
+        @RequestParam(value = "startTime", required = false) Long startTime,
+        @RequestParam(value = "endTime", required = false) Long endTime) {
+        return ControllerUtil.buildResponseEntity(aiShadowService.getAuthorizedDomains(startTime, endTime));
     }
 
     @PutMapping("/authorized-domains")

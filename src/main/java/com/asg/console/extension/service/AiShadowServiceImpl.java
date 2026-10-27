@@ -747,15 +747,21 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     /**
-     * Normalize a domain for authorization matching: metric label values may
-     * carry underscores where the Wasm plugin sanitized dots/hyphens.
+     * 归一化域名用于授权匹配。
+     * <p>
+     * 只把下划线当成点：授权列表里存在从旧 Prometheus 标签还原出来的历史条目
+     * （{@code chat_example_com} 这类），保留这条替换是为了让它们仍能被解释成
+     * {@code chat.example.com}。
+     * <p>
+     * 连字符必须保留：{@code -} 是合法域名字符（{@code demo-llm.local}），把它也换成点会让
+     * 授权 {@code abc.com} 连带覆盖 {@code abc-com} / {@code abc_com}，属于过度匹配 —— 现在
+     * 它只影响「已授权」标记的准确性，一旦用于放行判断就是越权。
      */
     private static String normalizeDomain(String domain) {
         if (StringUtils.isEmpty(domain)) {
             return "";
         }
-        String normalized = domain.trim().toLowerCase()
-            .replace('_', '.').replace('-', '.');
+        String normalized = domain.trim().toLowerCase().replace('_', '.');
         while (normalized.startsWith(".")) {
             normalized = normalized.substring(1);
         }
@@ -815,7 +821,7 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     @Override
-    public Map<String, Object> getAuthorizedDomains() {
+    public Map<String, Object> getAuthorizedDomains(Long startTime, Long endTime) {
         Map<String, Object> result = new HashMap<>();
         List<String> domains = new ArrayList<>();
         // R9: unify mode source with GET /detect-mode (WasmPlugin config is authoritative)
@@ -839,11 +845,12 @@ public class AiShadowServiceImpl implements AiShadowService {
         result.put("domains", domains);
         // 元数据表只补展示字段，权威域名集合仍是 DNS policy：缺行时按「导入」呈现，
         // 不影响授权判定，因此 collector 读的 dns-policy 契约保持不变。
-        result.put("items", buildAuthorizedDomainItems(domains, policyUpdatedAt));
+        result.put("items", buildAuthorizedDomainItems(domains, policyUpdatedAt, startTime, endTime));
         return result;
     }
 
-    private List<Map<String, Object>> buildAuthorizedDomainItems(List<String> domains, LocalDateTime fallbackTime) {
+    private List<Map<String, Object>> buildAuthorizedDomainItems(List<String> domains, LocalDateTime fallbackTime,
+                                                                 Long startTime, Long endTime) {
         List<Map<String, Object>> items = new ArrayList<>();
         if (CollectionUtils.isEmpty(domains)) {
             return items;
@@ -856,6 +863,37 @@ public class AiShadowServiceImpl implements AiShadowService {
         } catch (Exception e) {
             log.warn("Failed to load authorized domain metadata", e);
         }
+        // 窗口内命中统计：让「看起来授权了、实际一条也没覆盖」的空转条目在界面上无处藏身。
+        // 统计失败时给 null（前端显示 -）而不是 0 —— 0 的语义是「确认没有流量」，
+        // 与「没查到」完全不同，混为一谈会让人误判这条授权该删。
+        Map<String, Long> hitCounts = new HashMap<>();
+        Map<String, List<String>> hitDomainLists = new HashMap<>();
+        boolean statsOk = true;
+        try {
+            long[] window = resolveWindow(startTime, endTime);
+            List<Object[]> rows = detectEventRepository.aggregateByDomain(window[0] / 1000L, window[1] / 1000L);
+            for (String domain : domains) {
+                long hits = 0L;
+                List<String> matched = new ArrayList<>();
+                for (Object[] row : rows) {
+                    if (row == null || row.length < 2 || row[0] == null || row[1] == null) {
+                        continue;
+                    }
+                    String detected = String.valueOf(row[0]);
+                    // 用与运行时完全相同的判定函数、对单个条目求值，保证「界面显示的命中」
+                    // 就是「实际会被标记为已授权的流量」，不另写一套匹配逻辑。
+                    if (isDomainAuthorized(detected, Collections.singletonList(domain))) {
+                        hits += ((Number)row[1]).longValue();
+                        matched.add(detected);
+                    }
+                }
+                hitCounts.put(domain, hits);
+                hitDomainLists.put(domain, matched);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to compute authorized domain hit counts", e);
+            statsOk = false;
+        }
         long fallbackMillis = toEpochMillis(fallbackTime);
         for (String domain : domains) {
             AiShadowAuthorizedDomain row = meta.get(domain);
@@ -867,6 +905,8 @@ public class AiShadowServiceImpl implements AiShadowService {
             item.put("source", row == null ? SOURCE_IMPORTED : row.getSource());
             item.put("createdBy", row == null ? null : row.getCreatedBy());
             item.put("createdAt", row == null ? fallbackMillis : toEpochMillis(row.getCreatedAt()));
+            item.put("hitCount", statsOk ? hitCounts.get(domain) : null);
+            item.put("hitDomains", statsOk ? hitDomainLists.get(domain) : null);
             items.add(item);
         }
         return items;
@@ -942,7 +982,10 @@ public class AiShadowServiceImpl implements AiShadowService {
         Map<String, Object> result = new HashMap<>();
         result.put("mode", targetMode);
         result.put("domains", merged);
-        result.put("items", buildAuthorizedDomainItems(merged, null));
+        // 写接口不携带时间窗口，命中数只能按默认窗口算；调用方（控制台）随后会用
+        // 页面当前窗口重新拉取 GET /authorized-domains，因此这里的 hitCount 只是一次
+        // 过渡值，不用于最终展示。
+        result.put("items", buildAuthorizedDomainItems(merged, null, null, null));
         return result;
     }
 

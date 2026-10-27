@@ -53,9 +53,12 @@ public interface AiShadowService {
 
     /**
      * Current authorized-domain view of the DNS/bypass policy (IR-003 unified
-     * authorization). Returns {mode, domains}.
+     * authorization). Returns {mode, domains, items}. Each item also carries
+     * {@code hitCount} / {@code hitDomains}: how much traffic inside the given window
+     * that single entry actually covers, so entries that match nothing are visible.
+     * Pass null bounds to use the default window.
      */
-    Map<String, Object> getAuthorizedDomains();
+    Map<String, Object> getAuthorizedDomains(Long startTime, Long endTime);
 
     /**
      * Add/remove authorized domains on the DNS/bypass policy (IR-003).

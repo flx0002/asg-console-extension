@@ -240,10 +240,15 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     },
   );
 
-  // Authorized domains of the DNS/bypass policy (IR-003 unified authorization entry)
-  const { data: authzData, refresh: refreshAuthz } = useRequest(() => getAiShadowAuthorizedDomains(), {
-    onError: () => {},
-  });
+  // Authorized domains of the DNS/bypass policy (IR-003 unified authorization entry).
+  // 带着页面窗口一起取：每条授权要显示「窗口内命中多少流量」，窗口变了命中数就得重算。
+  const { data: authzData, refresh: refreshAuthz } = useRequest(
+    () => getAiShadowAuthorizedDomains(currentWindow()),
+    {
+      refreshDeps: [windowKey],
+      onError: () => {},
+    },
+  );
   const [authzInput, setAuthzInput] = useState('');
   const [authzSearch, setAuthzSearch] = useState('');
   const [authzSelected, setAuthzSelected] = useState<string[]>([]);
@@ -674,6 +679,40 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
           </Tag>
         </Tooltip>
       ),
+    },
+    {
+      // 让「看起来授权了、实际一条也没覆盖」的空转条目在界面上直接暴露：
+      // 授权列表里混入过从旧指标标签还原出来的下划线条目，它们匹配不到任何真实域名。
+      title: (
+        <Tooltip title={t('aiShadow.authzHitsHint')}>
+          <span>{t('aiShadow.authzColHits')}</span>
+        </Tooltip>
+      ),
+      dataIndex: 'hitCount',
+      key: 'hitCount',
+      width: 130,
+      render: (value: number | null | undefined, record: AiShadowAuthzItem) => {
+        // null 表示统计失败，与 0（确认没有流量）不是一回事，必须分开显示
+        if (value === null || value === undefined) {
+          return (
+            <Tooltip title={t('aiShadow.authzHitsUnknown')}>
+              <span style={{ color: '#bfbfbf' }}>-</span>
+            </Tooltip>
+          );
+        }
+        const domains = record.hitDomains || [];
+        const tip = value === 0
+          ? t('aiShadow.authzHitsZero')
+          : t('aiShadow.authzHitsDetail', { domains: domains.join(', ') });
+        return (
+          <Tooltip title={tip}>
+            <span style={{ color: value === 0 ? '#bfbfbf' : undefined, fontWeight: value > 0 ? 600 : undefined }}>
+              {value.toLocaleString()}
+            </span>
+          </Tooltip>
+        );
+      },
+      sorter: (a: AiShadowAuthzItem, b: AiShadowAuthzItem) => (a.hitCount ?? -1) - (b.hitCount ?? -1),
     },
     {
       title: t('aiShadow.authzColSource'),

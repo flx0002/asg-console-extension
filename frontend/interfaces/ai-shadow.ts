@@ -125,6 +125,11 @@ export interface AiShadowAuthzItem {
   createdBy?: string | null;
   // Epoch millis; 0 when unknown.
   createdAt?: number;
+  // Traffic covered by this single entry inside the queried window.
+  // null means the count could not be computed (shown as '-'), which is NOT the same as 0.
+  hitCount?: number | null;
+  // Detected domains this entry currently covers; empty means the entry matches nothing.
+  hitDomains?: string[] | null;
 }
 
 // Incremental update of the authorized-domain list (add or remove entries)

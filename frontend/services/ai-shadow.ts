@@ -57,8 +57,11 @@ Promise<AiShadowTrendResponse> => {
   return request.get<any, AiShadowTrendResponse>('/v1/ai-shadow/detected-trend', { params });
 };
 
-export const getAiShadowAuthorizedDomains = (): Promise<AiShadowDnsPolicyView> => {
-  return request.get<any, AiShadowDnsPolicyView>('/v1/ai-shadow/authorized-domains');
+export const getAiShadowAuthorizedDomains = (
+  // Window used to compute each entry's hitCount; omit for the backend default window.
+  params: { startTime?: number; endTime?: number } = {},
+): Promise<AiShadowDnsPolicyView> => {
+  return request.get<any, AiShadowDnsPolicyView>('/v1/ai-shadow/authorized-domains', { params });
 };
 
 export const updateAiShadowAuthorizedDomains = (payload: AiShadowAuthzUpdate): Promise<AiShadowDnsPolicyView> => {
