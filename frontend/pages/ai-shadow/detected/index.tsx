@@ -77,15 +77,13 @@ const formatAxisNumber = (v: string): string => {
 const buildZeroAxis = (start?: number, end?: number, granularity?: string): number[] => {
   if (start === undefined || end === undefined || !isFinite(start) || !isFinite(end) || end < start) return [];
   const step = granularity === 'hour' ? 3600000 : 86400000;
-  // 桶起点对齐：小时桶对齐整点；天桶对齐本地零点
-  const first = granularity === 'hour'
-    ? Math.floor(start / step) * step
-    : new Date(start).setHours(0, 0, 0, 0);
-  const last = granularity === 'hour'
-    ? Math.floor(end / step) * step
-    : new Date(end).setHours(0, 0, 0, 0);
+  // 桶网格必须与后端同构：后端以调用方传入的 start 为起点（不做对齐）、按 step 递增。
+  // 天桶在此再对齐到本地零点（与后端按产品时区取当日 00:00 同构）；
+  // 小时桶不能独立按整点 floor，否则非整点时区（如 +05:30）会与后端网格错开最多
+  // 59 分钟，补零后真实值全部落不到轴上、整条曲线被显示成全 0。
+  const first = granularity === 'hour' ? start : new Date(start).setHours(0, 0, 0, 0);
   const axis: number[] = [];
-  for (let ts = first; ts <= last; ts += step) axis.push(ts);
+  for (let ts = first; ts <= end; ts += step) axis.push(ts);
   return axis;
 };
 
@@ -189,28 +187,6 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     [trendData, trendGranularity],
   );
   const trendPoints = trendData?.list || [];
-  const useStatusSeries = trendPoints.length > 0;
-
-  // 多系列摊平成 G2 需要的行；一个点都没有时退回单系列零轴，
-  // 保证「没检测到」和「控件坏了」在图上能区分开
-  const trendChartData = useMemo(() => {
-    if (useStatusSeries) {
-      return trendPoints.map((p) => ({
-        timestamp: p.timestamp,
-        timeLabel: formatTooltipTime(p.timestamp, trendGranularity),
-        statusLabel: trendLabel(p.status),
-        statusKey: p.status,
-        count: p.count,
-      }));
-    }
-    return trendAxis.map((ts) => ({
-      timestamp: ts,
-      timeLabel: formatTooltipTime(ts, trendGranularity),
-      statusLabel: '',
-      statusKey: '',
-      count: 0,
-    }));
-  }, [trendData, trendGranularity, trendAxis, useStatusSeries, t]);
 
   // 图例顺序即取色顺序：后端已按严重度定序，这里保持首次出现顺序
   const trendStatusKeys = useMemo(() => {
@@ -220,6 +196,34 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     });
     return seen;
   }, [trendData]);
+
+  // 存在任意状态系列才按多系列渲染（此时补零后的行才有 statusLabel 可用）
+  const useStatusSeries = trendStatusKeys.length > 0;
+
+  // 多系列摊平成 G2 需要的行。
+  // 必须以完整桶轴为骨架逐桶补零：后端只回「有数据的桶」（Prometheus 仅对 series
+  // 存在的求值点返回样本），若直接摊平 list，7/30 天窗口只要有一个桶有值，
+  // 横轴就会塌成那几个桶（实测只剩 1 个点），与「窗口内其余天为 0」的语义不符。
+  // 补零只针对出现过的 status，不凭空造图例项；完全无数据时退化为单系列零轴。
+  const trendChartData = useMemo(() => {
+    const keys = trendStatusKeys.length ? trendStatusKeys : [''];
+    const hit = new Map<string, number>();
+    trendPoints.forEach((p) => hit.set(`${p.timestamp}|${p.status}`, p.count));
+    const rows: Record<string, string | number>[] = [];
+    trendAxis.forEach((ts) => {
+      const timeLabel = formatTooltipTime(ts, trendGranularity);
+      keys.forEach((k) => {
+        rows.push({
+          timestamp: ts,
+          timeLabel,
+          statusLabel: k ? trendLabel(k) : '',
+          statusKey: k,
+          count: k ? (hit.get(`${ts}|${k}`) ?? 0) : 0,
+        });
+      });
+    });
+    return rows;
+  }, [trendData, trendGranularity, trendAxis, trendStatusKeys, t]);
 
   // 缩放窗口内的可见数据；下钻仍按全量桶轴换算时间窗，切片不影响下钻
   const zoomLo = trendZoom ? trendAxis[trendZoom.start] : undefined;
