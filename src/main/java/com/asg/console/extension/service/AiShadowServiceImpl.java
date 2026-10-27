@@ -1164,13 +1164,13 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
         switch (category) {
             case "saas_ai":
-                return "浜戠SaaS AI";
+                return "云端SaaS AI";
             case "api_integrated_ai":
-                return "API闆嗘垚AI";
+                return "API集成AI";
             case "embedded_ai":
-                return "宓屽叆寮廇I";
+                return "嵌入式AI";
             case "local_deployed_ai":
-                return "鏈湴閮ㄧ讲AI";
+                return "本地部署AI";
             case "ai_agent":
                 return "AI Agent";
             default:

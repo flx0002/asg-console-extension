@@ -122,7 +122,7 @@ const formatDateTime = (ms?: number): string => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
-// 鍚庣 LocalDateTime 鍙兘搴忓垪鍖栦负 [y,m,d,h,m,s,ns] 鏁扮粍锛岀粺涓€杞彲璇诲瓧绗︿覆
+// 后端 LocalDateTime 可能序列化为 [y,m,d,h,m,s,ns] 数组，统一转可读字符串
 const formatEventTime = (t: string | number[] | undefined): string => {
   if (!t) return '-';
   if (Array.isArray(t) && t.length >= 6) {
