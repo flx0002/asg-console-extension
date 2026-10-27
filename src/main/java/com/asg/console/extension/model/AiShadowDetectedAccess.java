@@ -37,4 +37,10 @@ public class AiShadowDetectedAccess {
 
     /** 该域名在统计窗口内最近一次出现的时刻（epoch 毫秒），用于前端「最近访问」列。 */
     private Long lastSeen;
+
+    /**
+     * 该域名是否已被授权。已授权域名仍然出现在检测列表里（全量口径），
+     * 只是被标记出来：授权表示「已放行，并持续监控」，不是「不再展示」。
+     */
+    private Boolean authorized;
 }

@@ -35,6 +35,8 @@ export interface AiShadowDetectedAccess {
   requestCount: number;
   // Epoch millis of the last event for this domain inside the queried window.
   lastSeen?: number;
+  // Authorized domains stay in this list (full-volume scope) and are only flagged.
+  authorized?: boolean;
 }
 
 // KPI summary over the same window as the trend and the event list.
@@ -46,6 +48,9 @@ export interface AiShadowDetectedStats {
   high: number;
   blocked: number;
   domainCount: number;
+  // Subset of `total` / `domainCount` contributed by already-authorized domains.
+  authorizedTotal?: number;
+  authorizedDomainCount?: number;
   degraded?: boolean;
 }
 

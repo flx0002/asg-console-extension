@@ -534,7 +534,11 @@ public class AiShadowServiceImpl implements AiShadowService {
         // 数据源改为事件表：Prometheus 指标缺 risk 标签（riskLevel 恒为 null，"严重/高风险"
         // 永远算不出来），且只保留 6h。事件表由 Wasm 插件逐条上报，是流量的真相源。
         List<AiShadowDetectedAccess> result = new ArrayList<>();
-        // IR-003: accesses to authorized domains are removed from the shadow AI list.
+        // 口径：全量。已授权域名不再从列表里剔除，只用 authorized 标记出来。
+        // 原实现（IR-003）把授权当作「从检测视图里隐藏」，结果同一页面出现两套口径：
+        // KPI 与列表剔除授权域名、趋势与事件明细不剔除，用户一授权就看到
+        // 「趋势有数据、KPI 全 0」。授权语义应该是「已放行，但仍在监控」，
+        // 隐藏流量会让授权变成一次无法复核的操作。
         List<String> authorizedDomains = loadAuthorizedDomains();
         long[] window = resolveWindow(startTime, endTime);
         long start = window[0];
@@ -546,9 +550,6 @@ public class AiShadowServiceImpl implements AiShadowService {
                     continue;
                 }
                 String domain = String.valueOf(row[0]);
-                if (isDomainAuthorized(domain, authorizedDomains)) {
-                    continue;
-                }
                 String category = row[5] == null ? null : String.valueOf(row[5]);
                 String status = rankToValue(STATUS_BY_RANK, row[3]);
                 result.add(AiShadowDetectedAccess.builder()
@@ -562,6 +563,7 @@ public class AiShadowServiceImpl implements AiShadowService {
                     .status(status == null ? "monitored" : status)
                     .requestCount(((Number)row[1]).longValue())
                     .lastSeen(row[4] == null ? null : ((Number)row[4]).longValue() * 1000L)
+                    .authorized(isDomainAuthorized(domain, authorizedDomains))
                     .build());
             }
         } catch (Exception e) {
@@ -596,24 +598,28 @@ public class AiShadowServiceImpl implements AiShadowService {
         long high = 0L;
         long blocked = 0L;
         long domainCount = 0L;
+        // 已授权域名单独累计，供前端在「检测总量」旁注明「其中已授权 N 条」。
+        // 口径与列表、趋势统一为全量：三者对同一个窗口必然得出同一个合计数。
+        long authorizedTotal = 0L;
+        long authorizedDomainCount = 0L;
         boolean degraded = false;
         try {
-            // 复用 /detected 列表的同一聚合与同一授权过滤：卡片上的数字因此恒等于
-            // 下方列表可解释的量，不会出现"统计有值、列表空"或反过来的情况。
             List<String> authorizedDomains = loadAuthorizedDomains();
             List<Object[]> rows = detectEventRepository.aggregateByDomain(start / 1000L, end / 1000L);
             for (Object[] row : rows) {
                 if (row == null || row.length < 9 || row[0] == null || row[1] == null) {
                     continue;
                 }
-                if (isDomainAuthorized(String.valueOf(row[0]), authorizedDomains)) {
-                    continue;
-                }
+                long count = ((Number)row[1]).longValue();
                 domainCount++;
-                total += ((Number)row[1]).longValue();
+                total += count;
                 critical += numberOrZero(row[6]);
                 high += numberOrZero(row[7]);
                 blocked += numberOrZero(row[8]);
+                if (isDomainAuthorized(String.valueOf(row[0]), authorizedDomains)) {
+                    authorizedDomainCount++;
+                    authorizedTotal += count;
+                }
             }
         } catch (Exception e) {
             // degraded=true 时前端显示告警，而不是把 0 当成"没有风险"
@@ -625,6 +631,8 @@ public class AiShadowServiceImpl implements AiShadowService {
         stats.put("high", high);
         stats.put("blocked", blocked);
         stats.put("domainCount", domainCount);
+        stats.put("authorizedTotal", authorizedTotal);
+        stats.put("authorizedDomainCount", authorizedDomainCount);
         stats.put("degraded", degraded);
         return stats;
     }
