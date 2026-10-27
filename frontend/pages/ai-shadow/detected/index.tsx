@@ -1,15 +1,19 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/indent, react/jsx-indent */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Card, Table, Switch, Tag, Button, message, Modal, Statistic, Row, Col, Space, Spin, Empty, Tooltip, Descriptions, Input, Segmented, Alert } from 'antd';
+import { Card, Table, Switch, Tag, Button, message, Modal, Statistic, Row, Col, Space, Spin, Empty, Tooltip, Descriptions, Input, Segmented, Alert, DatePicker } from 'antd';
 import { EyeOutlined, WarningOutlined, ReloadOutlined, LineChartOutlined, CheckOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Line } from '@ant-design/charts';
 import { useRequest } from 'ahooks';
 import { getAiShadowDetectedAccesses, getAiShadowDetectedStats, setAiShadowDetectMode, getAiShadowDetectMode, getAiShadowDetectEvents, getAiShadowDetectedTrend, getAiShadowAuthorizedDomains, updateAiShadowAuthorizedDomains } from '@/services';
 import { AiShadowDetectedAccess, AiShadowDetectEvent, AiShadowAuthzItem } from '@/interfaces/ai-shadow';
 import { useTranslation } from 'react-i18next';
+// antd 4 的 RangePicker 受控值必须是 moment 对象（项目未迁 dayjs），
+// 只在自定义区间控件里用到，不另引日期库。
+import moment from 'moment';
 
 const REFRESH_INTERVAL = 30000;
 const EVENT_PAGE_SIZE = 10;
+const { RangePicker } = DatePicker;
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
@@ -21,12 +25,15 @@ const TREND_STATUS_COLORS: Record<string, string> = {
 };
 const TREND_STATUS_DEFAULT_COLOR = '#1890ff';
 
-// 检测趋势的三种时间视图：今天按小时桶，其余按后端按跨度自适应的天桶
-type TrendRangeKey = 'today' | 'week' | 'month';
+// 页面级时间范围：三档固定窗口 + 自定义区间。
+// 它同时决定 KPI、趋势、事件明细三处口径，所以必须挂在页面层，
+// 而不是塞进某一张卡片的 extra 里造成「只有那张图会变」的错觉。
+type FixedRangeKey = 'today' | 'week' | 'month';
+type TimeRangeKey = FixedRangeKey | 'custom';
 
 // 三档时间窗，起点一律对齐浏览器本地零点。后端按调用方给的边界切桶
 // （容器跑 UTC，不能让它自己按 JVM 时区对齐），所以这里必须给出本地零点。
-const rangeWindow = (key: TrendRangeKey): { startTime: number; endTime: number } => {
+const rangeWindow = (key: FixedRangeKey): { startTime: number; endTime: number } => {
   const endTime = Date.now();
   const days = key === 'today' ? 1 : key === 'week' ? 7 : 30;
   const start = new Date();
@@ -34,6 +41,16 @@ const rangeWindow = (key: TrendRangeKey): { startTime: number; endTime: number }
   start.setDate(start.getDate() - (days - 1));
   return { startTime: start.getTime(), endTime };
 };
+
+// 后端 MAX_TREND_WINDOW_MS = 31 天，超出会被静默截断起点：
+// 界面显示的范围与实际统计范围就不再一致，所以前端先卡住。
+const MAX_CUSTOM_DAYS = 31;
+
+// 自定义区间按自然日取整（起点当日 00:00、终点当日 23:59:59.999）。
+// 后端以传入值作起点切桶且不做对齐，跨天窗口必须给整日边界，
+// 否则天桶从半天处开始，与前端按本地零点补的零轴错位、真实值落不到轴上。
+const startOfDay = (ms: number): number => new Date(ms).setHours(0, 0, 0, 0);
+const endOfDay = (ms: number): number => new Date(ms).setHours(23, 59, 59, 999);
 
 // 轴标签只留与粒度相关的部分：天桶看日期、小时桶看时刻，完整时间留给 tooltip
 const formatAxisTime = (ts?: number | string, granularity?: string): string => {
@@ -134,7 +151,22 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   const [eventTimeFilter, setEventTimeFilter] = useState<
     { startTime: number; endTime: number; status?: string } | null
   >(null);
-  const [trendRange, setTrendRange] = useState<TrendRangeKey>('today');
+  // 页面级时间范围：KPI / 趋势 / 明细三处共用，改一处全页生效
+  const [timeRange, setTimeRange] = useState<TimeRangeKey>('today');
+  // 自定义区间（毫秒，闭区间）。仅在 timeRange === 'custom' 时参与取数
+  const [customRange, setCustomRange] = useState<[number, number] | null>(null);
+
+  // 取数窗口的唯一来源。windowKey 是给 refreshDeps 用的稳定标量键：
+  // 直接用对象会让每次渲染都触发重新请求。
+  const windowKey = timeRange === 'custom'
+    ? `custom:${customRange?.[0] ?? 0}:${customRange?.[1] ?? 0}`
+    : timeRange;
+  const currentWindow = (): { startTime: number; endTime: number } => {
+    if (timeRange !== 'custom') return rangeWindow(timeRange);
+    if (customRange) return { startTime: startOfDay(customRange[0]), endTime: endOfDay(customRange[1]) };
+    // 刚切到自定义还没选日期：先按近 7 天取数，避免整页空白
+    return rangeWindow('week');
+  };
   // onEvent 在图表挂载时只绑一次，回调必须读 ref，否则拿到的是首次渲染的旧轴
   const trendAxisRef = useRef<number[]>([]);
   const trendGranularityRef = useRef<string>('day');
@@ -154,9 +186,9 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   // 未授权访问列表、KPI、趋势三处共用同一个时间档位窗口，口径一致才不会出现
   // 「明细有数据、上面全 0」这种自相矛盾的画面。
   const { data: detectedList, loading: detectedLoading, refresh: refreshDetected } = useRequest(
-    () => getAiShadowDetectedAccesses(rangeWindow(trendRange)),
+    () => getAiShadowDetectedAccesses(currentWindow()),
     {
-      refreshDeps: [trendRange],
+      refreshDeps: [windowKey],
       pollingInterval: REFRESH_INTERVAL,
       pollingWhenHidden: false,
       onError: () => {},
@@ -166,9 +198,9 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   // 必须拿到 loading / error：直接把缺失值 ?? 0，会在请求失败时静默显示成
   // 「没有检测到」，正是本次要修掉的原始症状（KPI 全 0 但明细有数据）。
   const { data: statsData, loading: statsLoading, error: statsError } = useRequest(
-    () => getAiShadowDetectedStats(rangeWindow(trendRange)),
+    () => getAiShadowDetectedStats(currentWindow()),
     {
-      refreshDeps: [trendRange],
+      refreshDeps: [windowKey],
       pollingInterval: REFRESH_INTERVAL,
       pollingWhenHidden: false,
       onError: () => {},
@@ -176,16 +208,21 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   );
 
   const { data: eventPageData, loading: eventsLoading, refresh: refreshEvents } = useRequest(
-    () => getAiShadowDetectEvents({
-      page: eventPage,
-      size: eventSize,
-      ...(eventTimeFilter
+    () => {
+      // 事件明细同样属于本页，必须跟随页面级时间范围：
+      // 只有在下钻（点了趋势某个桶）时才用更窄的桶窗口覆盖。
+      const win = eventTimeFilter
         ? { startTime: eventTimeFilter.startTime, endTime: eventTimeFilter.endTime }
-        : {}),
-      ...(eventTimeFilter?.status ? { status: eventTimeFilter.status } : {}),
-    }),
+        : currentWindow();
+      return getAiShadowDetectEvents({
+        page: eventPage,
+        size: eventSize,
+        ...win,
+        ...(eventTimeFilter?.status ? { status: eventTimeFilter.status } : {}),
+      });
+    },
     {
-      refreshDeps: [eventPage, eventSize, eventTimeFilter],
+      refreshDeps: [eventPage, eventSize, eventTimeFilter, windowKey],
       pollingInterval: REFRESH_INTERVAL,
       pollingWhenHidden: false,
       onError: () => {},
@@ -194,9 +231,9 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
 
   // 检测趋势：时间窗由视图决定，粒度由后端按跨度自适应（≤2 天小时桶，否则天桶）
   const { data: trendData, loading: trendLoading } = useRequest(
-    () => getAiShadowDetectedTrend(rangeWindow(trendRange)),
+    () => getAiShadowDetectedTrend(currentWindow()),
     {
-      refreshDeps: [trendRange],
+      refreshDeps: [windowKey],
       pollingInterval: REFRESH_INTERVAL,
       pollingWhenHidden: false,
       onError: () => {},
@@ -275,11 +312,15 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     trendGranularityRef.current = trendGranularity;
   }, [trendAxis, trendGranularity]);
 
-  // 换时间窗后旧的桶索引窗口不再对应同一根轴，缩放必须回到全量
+  // 换时间窗后：旧桶索引不再对应同一根轴，缩放回到全量；
+  // 下钻窗口同样失效（它可能落在新窗口之外），必须清掉，
+  // 否则明细会被一个已经不在页面口径内的桶卡住。
   useEffect(() => {
     trendZoomRef.current = null;
     setTrendZoom(null);
-  }, [trendRange]);
+    setEventTimeFilter((prev) => (prev ? null : prev));
+    setEventPage(0);
+  }, [windowKey]);
 
   // 滚轮缩放：G2Plot 的 Line 没有 dataZoom，这里按桶索引收放可见窗口来达到同样的放大/缩小效果。
   // React 的 wheel 代理监听是 passive 的，必须用原生监听 + passive:false 才能拦住页面滚动。
@@ -453,9 +494,29 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   // Compute summary statistics for detected access view
   // KPI 取后端在同一窗口上的聚合结果，不再由前端对列表求和：列表被授权过滤且分页截断，
   // 前端求和必然与事件明细对不上（这正是"明细有数据、KPI 全 0"的成因之一）。
-  const trendRangeLabel = trendRange === 'today'
+  const trendRangeLabel = timeRange === 'today'
     ? t('aiShadow.trendRangeToday')
-    : trendRange === 'week' ? t('aiShadow.trendRangeWeek') : t('aiShadow.trendRangeMonth');
+    : timeRange === 'week' ? t('aiShadow.trendRangeWeek')
+      : timeRange === 'month' ? t('aiShadow.trendRangeMonth') : t('aiShadow.trendRangeCustom');
+
+  // 筛选栏右侧的实际统计区间：固定档位也显示具体边界，
+  // 避免「近 7 天」这类相对说法与后端实际取值产生歧义。
+  const rangeSummary = useMemo(() => {
+    const w = currentWindow();
+    return `${formatDateTime(w.startTime)} ~ ${formatDateTime(w.endTime)}`;
+  }, [windowKey]);
+
+  const handleTimeRangeChange = useCallback((next: TimeRangeKey) => {
+    setTimeRange(next);
+    // 首次切到自定义且还没有区间时给一个可用初值（近 7 天），
+    // 否则选择器为空、下方却在用上一档数据，界面自相矛盾。
+    if (next === 'custom' && !customRange) {
+      const w = rangeWindow('week');
+      // 存整日边界，与 currentWindow() 的取整保持同一口径，
+      // 否则选择器显示 12:30、实际统计到 23:59，控件与结果对不上。
+      setCustomRange([startOfDay(w.startTime), endOfDay(w.endTime)]);
+    }
+  }, [customRange]);
   // 区分三种"空"：加载中（卡片骨架）、请求失败（显示 - 并告警）、窗口内真的没有（显示 0）。
   const statsUnavailable = Boolean(statsError);
   const statsDegraded = statsUnavailable || Boolean(statsData?.degraded);
@@ -778,8 +839,56 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
 
   return (
     <div style={{ padding: '0 0 24px' }}>
-      <div style={{ marginBottom: 8, fontSize: 12, color: '#8c8c8c' }}>
-        {t('aiShadow.kpiWindowHint', { range: trendRangeLabel })}
+      {/* 页面级时间范围：同时作用于下方 KPI、趋势与明细三块。
+          它原先挂在趋势卡片的 extra 里，会让人误以为只有那张图跟着变，
+          而实际上 KPI 和明细也在一起变——口径控件必须放在它管辖的范围内。 */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: 12,
+        padding: '12px 16px',
+        marginBottom: 16,
+        background: '#fff',
+        borderRadius: 8,
+        boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
+      }}>
+        <span style={{ fontSize: 13, color: '#595959' }}>{t('aiShadow.timeRangeLabel')}</span>
+        <Segmented
+          value={timeRange}
+          onChange={(v) => handleTimeRangeChange(v as TimeRangeKey)}
+          options={[
+            { value: 'today', label: t('aiShadow.trendRangeToday') },
+            { value: 'week', label: t('aiShadow.trendRangeWeek') },
+            { value: 'month', label: t('aiShadow.trendRangeMonth') },
+            { value: 'custom', label: t('aiShadow.trendRangeCustom') },
+          ]}
+        />
+        {timeRange === 'custom' ? (
+          <RangePicker
+            allowClear={false}
+            style={{ width: 260 }}
+            // antd 4 的受控值必须是 moment 对象，null 表示未选择
+            value={customRange ? ([moment(customRange[0]), moment(customRange[1])] as any) : null}
+            // 不允许选未来日期（窗口不会跑到未来）
+            disabledDate={(d: any) => !!d && startOfDay(d.valueOf()) > startOfDay(Date.now())}
+            onChange={(v: any) => {
+              if (!v || !v[0] || !v[1]) return;
+              const start = startOfDay(v[0].valueOf());
+              const end = endOfDay(v[1].valueOf());
+              // 超过后端窗口上限时后端会静默截断起点，界面与实际口径就会对不上，
+              // 所以这里直接拒绝并提示，不放进一个"看起来生效其实被截断"的窗口。
+              if (end - start > MAX_CUSTOM_DAYS * 86400000) {
+                message.warning(t('aiShadow.timeRangeTooLong', { days: MAX_CUSTOM_DAYS }));
+                return;
+              }
+              setCustomRange([start, end]);
+            }}
+          />
+        ) : null}
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#8c8c8c' }}>
+          {t('aiShadow.kpiWindowHint', { range: rangeSummary })}
+        </span>
       </div>
       {statsDegraded ? (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={t('aiShadow.trendDegraded')} />
@@ -823,18 +932,9 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
             <span>{t('aiShadow.trendCardTitle')}</span>
           </Space>
         }
-        extra={(
-          <Segmented
-            size="small"
-            value={trendRange}
-            onChange={(v) => setTrendRange(v as TrendRangeKey)}
-            options={[
-              { value: 'today', label: t('aiShadow.trendRangeToday') },
-              { value: 'week', label: t('aiShadow.trendRangeWeek') },
-              { value: 'month', label: t('aiShadow.trendRangeMonth') },
-            ]}
-          />
-        )}
+        // 这里只读展示当前口径，选择器已上移到页面级筛选栏：
+        // 时间范围同时影响 KPI 与明细，挂在单张卡片上会误导。
+        extra={<Tag>{trendRangeLabel}</Tag>}
         style={{ marginBottom: 16 }}
       >
         {/* 滚轮缩放监听挂在这层：图表为空时节点也必须在，否则挂载阶段拿不到 DOM */}
