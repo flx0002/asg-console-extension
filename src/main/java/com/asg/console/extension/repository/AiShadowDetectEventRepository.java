@@ -68,7 +68,12 @@ public interface AiShadowDetectEventRepository extends JpaRepository<AiShadowDet
     @Query(value = "SELECT domain, COUNT(*) AS cnt,"
         + " MIN(NULLIF(FIELD(risk_level, 'critical', 'high', 'medium', 'low'), 0)) AS risk_rank,"
         + " MIN(NULLIF(FIELD(status, 'blocked', 'alerted', 'monitored', 'masked', 'allowed'), 0)) AS status_rank,"
-        + " UNIX_TIMESTAMP(MAX(event_time)) AS last_seen, MAX(category) AS category,"
+        // category 优先取「有真实分类的那一条」：同一域名可能同时被 ai-shadow-detect
+        // 上报为 saas_ai、被 key-auth 上报为写死的 unknown，而 MAX('unknown') 在字典序上
+        // 大于 MAX('saas_ai')，会让页面把有分类的域名显示成 unknown。全部为 unknown 时兜底。
+        + " UNIX_TIMESTAMP(MAX(event_time)) AS last_seen,"
+        + " COALESCE(MAX(CASE WHEN category IS NOT NULL AND category <> 'unknown' THEN category END),"
+        + " MAX(category)) AS category,"
         + " SUM(CASE WHEN risk_level = 'critical' THEN 1 ELSE 0 END) AS critical_cnt,"
         + " SUM(CASE WHEN risk_level = 'high' THEN 1 ELSE 0 END) AS high_cnt,"
         + " SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked_cnt"
