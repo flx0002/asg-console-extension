@@ -463,6 +463,26 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   const criticalDetected = statsUnavailable ? '-' : (statsData?.critical ?? 0);
   const highDetected = statsUnavailable ? '-' : (statsData?.high ?? 0);
 
+  // 以下两个 useMemo 必须留在下方 `detectedLoading` 早返回之前：hook 数量在两次渲染间
+  // 不一致会直接抛 React #310（首屏 `!detectedList` 必然成立，等于每次进页面都崩）。
+  // 授权域名管理表：元数据来自后端 items，缺失时按 domains 兜底为「历史导入」
+  const authzItems = useMemo<AiShadowAuthzItem[]>(() => {
+    const items = authzData?.items;
+    if (items && items.length) return items;
+    return (authzData?.domains || []).map((domain) => ({
+      domain,
+      matchType: 'suffix',
+      source: 'imported',
+      createdAt: 0,
+    }));
+  }, [authzData]);
+
+  const authzFiltered = useMemo(() => {
+    const keyword = authzSearch.trim().toLowerCase();
+    if (!keyword) return authzItems;
+    return authzItems.filter((item) => item.domain.includes(keyword));
+  }, [authzItems, authzSearch]);
+
   if (detectedLoading && !detectedList) {
     return (
       <div style={{ width: '100%', height: '50vh', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
@@ -549,24 +569,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     },
   ];
 
-  // 授权域名管理表：元数据来自后端 items，缺失时按 domains 兜底为「历史导入」
-  const authzItems = useMemo<AiShadowAuthzItem[]>(() => {
-    const items = authzData?.items;
-    if (items && items.length) return items;
-    return (authzData?.domains || []).map((domain) => ({
-      domain,
-      matchType: 'suffix',
-      source: 'imported',
-      createdAt: 0,
-    }));
-  }, [authzData]);
-
-  const authzFiltered = useMemo(() => {
-    const keyword = authzSearch.trim().toLowerCase();
-    if (!keyword) return authzItems;
-    return authzItems.filter((item) => item.domain.includes(keyword));
-  }, [authzItems, authzSearch]);
-
+  // 表格列定义不是 hook，放在早返回之后不影响 hooks 顺序
   const authzColumns = [
     {
       title: t('aiShadow.authzColDomain'),
