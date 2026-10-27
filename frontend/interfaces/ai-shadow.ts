@@ -33,6 +33,20 @@ export interface AiShadowDetectedAccess {
   riskLevel: string;
   status: string;
   requestCount: number;
+  // Epoch millis of the last event for this domain inside the queried window.
+  lastSeen?: number;
+}
+
+// KPI summary over the same window as the trend and the event list.
+export interface AiShadowDetectedStats {
+  start: number;
+  end: number;
+  total: number;
+  critical: number;
+  high: number;
+  blocked: number;
+  domainCount: number;
+  degraded?: boolean;
 }
 
 export interface AiShadowDetectEvent {
@@ -92,6 +106,20 @@ export interface AiShadowTrendResponse {
 export interface AiShadowDnsPolicyView {
   mode: string;
   domains: string[];
+  // Per-domain metadata for the management table; entries without metadata
+  // (legacy rows written straight into the policy) come back as source='imported'.
+  items?: AiShadowAuthzItem[];
+}
+
+export interface AiShadowAuthzItem {
+  domain: string;
+  // 'suffix' means authorizing example.com also covers api.example.com.
+  matchType: string;
+  note?: string | null;
+  source?: string | null;
+  createdBy?: string | null;
+  // Epoch millis; 0 when unknown.
+  createdAt?: number;
 }
 
 // Incremental update of the authorized-domain list (add or remove entries)
@@ -99,4 +127,6 @@ export interface AiShadowAuthzUpdate {
   mode?: string;
   addDomains?: string[];
   removeDomains?: string[];
+  // 'manual' when added from the form, 'detected' when authorized from a detection row.
+  source?: 'manual' | 'detected';
 }

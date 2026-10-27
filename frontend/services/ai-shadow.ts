@@ -1,6 +1,6 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/no-invalid-void-type */
 import request from './request';
-import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate } from '@/interfaces/ai-shadow';
+import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate } from '@/interfaces/ai-shadow';
 
 export const getAiShadowStatus = (): Promise<AiShadowStatus[]> => {
   return request.get<any, AiShadowStatus[]>('/v1/ai-shadow/status');
@@ -18,8 +18,16 @@ export const performAiShadowAction = (payload: AiShadowActionRequest): Promise<A
   return request.put<any, AiShadowStatus>('/v1/ai-shadow/action', payload);
 };
 
-export const getAiShadowDetectedAccesses = (): Promise<AiShadowDetectedAccess[]> => {
-  return request.get<any, AiShadowDetectedAccess[]>('/v1/ai-shadow/detected');
+// Window-scoped variant: the list, the KPI cards and the trend all aggregate the
+// same detection-event table, so they must be queried with the same window.
+export const getAiShadowDetectedAccesses = (params: { startTime?: number; endTime?: number } = {}):
+Promise<AiShadowDetectedAccess[]> => {
+  return request.get<any, AiShadowDetectedAccess[]>('/v1/ai-shadow/detected', { params });
+};
+
+export const getAiShadowDetectedStats = (params: { startTime: number; endTime: number }):
+Promise<AiShadowDetectedStats> => {
+  return request.get<any, AiShadowDetectedStats>('/v1/ai-shadow/detected-stats', { params });
 };
 
 export const setAiShadowDetectMode = (mode: 'monitoring' | 'enforcement'): Promise<void> => {

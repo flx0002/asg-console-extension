@@ -98,9 +98,21 @@ public class AiShadowController {
     @Operation(summary = "List detected unauthorized AI service accesses")
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Detected accesses listed successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<List<AiShadowDetectedAccess>>> listDetectedAccesses() {
-        List<AiShadowDetectedAccess> detectedList = aiShadowService.getDetectedAccesses();
+    public ResponseEntity<Response<List<AiShadowDetectedAccess>>> listDetectedAccesses(
+        @RequestParam(value = "startTime", required = false) Long startTime,
+        @RequestParam(value = "endTime", required = false) Long endTime) {
+        List<AiShadowDetectedAccess> detectedList = aiShadowService.getDetectedAccessesInWindow(startTime, endTime);
         return ControllerUtil.buildResponseEntity(detectedList);
+    }
+
+    @GetMapping("/detected-stats")
+    @Operation(summary = "KPI summary of shadow AI detections over a time window")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Stats aggregated successfully"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<Map<String, Object>>> getDetectedStats(
+        @RequestParam(value = "startTime", required = false) Long startTime,
+        @RequestParam(value = "endTime", required = false) Long endTime) {
+        return ControllerUtil.buildResponseEntity(aiShadowService.getDetectedStats(startTime, endTime));
     }
 
     @GetMapping("/detected-trend")
@@ -143,8 +155,10 @@ public class AiShadowController {
         String mode = body.get("mode") != null ? String.valueOf(body.get("mode")) : null;
         List<String> addDomains = (List<String>) body.get("addDomains");
         List<String> removeDomains = (List<String>) body.get("removeDomains");
+        // manual = 控制台表单添加，detected = 从检测结果一键授权；缺省按 manual 记录。
+        String source = body.get("source") != null ? String.valueOf(body.get("source")) : null;
         return ControllerUtil.buildResponseEntity(
-            aiShadowService.updateAuthorizedDomains(mode, addDomains, removeDomains));
+            aiShadowService.updateAuthorizedDomains(mode, addDomains, removeDomains, source));
     }
 
     @PutMapping("/detect-mode")

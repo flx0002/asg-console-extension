@@ -8,6 +8,8 @@ import com.asg.console.extension.service.AuditLogCollectorService;
 import com.asg.console.extension.service.BehaviorAnalysisService;
 import com.asg.console.extension.service.BehaviorAnalysisServiceImpl;
 import com.asg.console.extension.service.RedisAuditSyncService;
+import com.asg.console.extension.repository.AiShadowAuthorizedDomainRepository;
+import com.asg.console.extension.repository.AiShadowDetectEventRepository;
 import com.asg.console.extension.service.AiShadowDnsPolicyService;
 import com.asg.console.extension.service.AiShadowService;
 import com.asg.console.extension.service.AiShadowServiceImpl;
@@ -37,9 +39,12 @@ public class AsgServiceBeansConfiguration {
     @Bean
     public AiShadowService aiShadowService(WasmPluginInstanceService wasmPluginInstanceService,
             ConsumerService consumerService, AiRouteService aiRouteService,
-            AuditChainService auditChainService, AiShadowDnsPolicyService aiShadowDnsPolicyService) {
+            AuditChainService auditChainService, AiShadowDnsPolicyService aiShadowDnsPolicyService,
+            AiShadowDetectEventRepository aiShadowDetectEventRepository,
+            AiShadowAuthorizedDomainRepository aiShadowAuthorizedDomainRepository) {
         return new AiShadowServiceImpl(wasmPluginInstanceService, consumerService, aiRouteService, null,
-            auditChainService, aiShadowDnsPolicyService);
+            auditChainService, aiShadowDnsPolicyService, aiShadowDetectEventRepository,
+            aiShadowAuthorizedDomainRepository);
     }
 
     @Bean

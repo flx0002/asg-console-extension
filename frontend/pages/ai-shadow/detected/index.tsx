@@ -1,11 +1,11 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/indent, react/jsx-indent */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Card, Table, Switch, Tag, Button, message, Statistic, Row, Col, Space, Spin, Empty, Tooltip, Descriptions, Input, Segmented, Alert } from 'antd';
+import { Card, Table, Switch, Tag, Button, message, Modal, Statistic, Row, Col, Space, Spin, Empty, Tooltip, Descriptions, Input, Segmented, Alert } from 'antd';
 import { EyeOutlined, WarningOutlined, ReloadOutlined, LineChartOutlined, CheckOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Line } from '@ant-design/charts';
 import { useRequest } from 'ahooks';
-import { getAiShadowDetectedAccesses, setAiShadowDetectMode, getAiShadowDetectMode, getAiShadowDetectEvents, getAiShadowDetectedTrend, getAiShadowAuthorizedDomains, updateAiShadowAuthorizedDomains } from '@/services';
-import { AiShadowDetectedAccess, AiShadowDetectEvent } from '@/interfaces/ai-shadow';
+import { getAiShadowDetectedAccesses, getAiShadowDetectedStats, setAiShadowDetectMode, getAiShadowDetectMode, getAiShadowDetectEvents, getAiShadowDetectedTrend, getAiShadowAuthorizedDomains, updateAiShadowAuthorizedDomains } from '@/services';
+import { AiShadowDetectedAccess, AiShadowDetectEvent, AiShadowAuthzItem } from '@/interfaces/ai-shadow';
 import { useTranslation } from 'react-i18next';
 
 const REFRESH_INTERVAL = 30000;
@@ -87,6 +87,24 @@ const buildZeroAxis = (start?: number, end?: number, granularity?: string): numb
   return axis;
 };
 
+// 授权域名输入规范化：去空白、转小写、剥掉用户习惯性输入的 *. 通配前缀
+// （后端 isDomainAuthorized 用后缀匹配实现子域包含，通配符写法会被当成非法域名）。
+const normalizeAuthzInput = (raw: string): string => raw.trim().toLowerCase().replace(/^\*\.?/, '');
+
+// 只接受后端 isDomainAuthorized 真能命中的写法。后端做的是字面后缀匹配，
+// 含下划线的输入（chat_example_com 这类指标标签还原产物）永远匹配不到真实域名，
+// 空标签（a..b / 结尾点 / 标签边界连字符）同理——放进来就是「授权成功但不生效」。
+const isPlausibleDomain = (value: string): boolean => value.length > 0 && value.length <= 255
+  && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/.test(value);
+
+const formatDateTime = (ms?: number): string => {
+  if (!ms) return '-';
+  const d = new Date(Number(ms));
+  if (isNaN(d.getTime())) return '-';
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+};
+
 // 鍚庣 LocalDateTime 鍙兘搴忓垪鍖栦负 [y,m,d,h,m,s,ns] 鏁扮粍锛岀粺涓€杞彲璇诲瓧绗︿覆
 const formatEventTime = (t: string | number[] | undefined): string => {
   if (!t) return '-';
@@ -133,11 +151,29 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     }).catch(() => {});
   }, []);
 
-  const { data: detectedList, loading: detectedLoading, refresh: refreshDetected } = useRequest(() => getAiShadowDetectedAccesses(), {
-    pollingInterval: REFRESH_INTERVAL,
-    pollingWhenHidden: false,
-    onError: () => {},
-  });
+  // 未授权访问列表、KPI、趋势三处共用同一个时间档位窗口，口径一致才不会出现
+  // 「明细有数据、上面全 0」这种自相矛盾的画面。
+  const { data: detectedList, loading: detectedLoading, refresh: refreshDetected } = useRequest(
+    () => getAiShadowDetectedAccesses(rangeWindow(trendRange)),
+    {
+      refreshDeps: [trendRange],
+      pollingInterval: REFRESH_INTERVAL,
+      pollingWhenHidden: false,
+      onError: () => {},
+    },
+  );
+
+  // 必须拿到 loading / error：直接把缺失值 ?? 0，会在请求失败时静默显示成
+  // 「没有检测到」，正是本次要修掉的原始症状（KPI 全 0 但明细有数据）。
+  const { data: statsData, loading: statsLoading, error: statsError } = useRequest(
+    () => getAiShadowDetectedStats(rangeWindow(trendRange)),
+    {
+      refreshDeps: [trendRange],
+      pollingInterval: REFRESH_INTERVAL,
+      pollingWhenHidden: false,
+      onError: () => {},
+    },
+  );
 
   const { data: eventPageData, loading: eventsLoading, refresh: refreshEvents } = useRequest(
     () => getAiShadowDetectEvents({
@@ -172,6 +208,8 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     onError: () => {},
   });
   const [authzInput, setAuthzInput] = useState('');
+  const [authzSearch, setAuthzSearch] = useState('');
+  const [authzSelected, setAuthzSelected] = useState<string[]>([]);
 
   // Map raw status values to localized labels and stable colors for the chart
   const trendLabel = (status: string) => {
@@ -339,10 +377,10 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
 
   // Authorize a domain on the DNS/bypass policy; the entry disappears from the
   // detected list immediately (same "authorize = remove" semantics as the route page).
-  const handleAuthorizeDomain = useCallback(async (domain: string) => {
+  const handleAuthorizeDomain = useCallback(async (domain: string, source: 'manual' | 'detected' = 'manual') => {
     if (!domain) return;
     try {
-      await updateAiShadowAuthorizedDomains({ addDomains: [domain] });
+      await updateAiShadowAuthorizedDomains({ addDomains: [domain], source });
       message.success(t('aiShadow.authzSuccess', { domain }));
       refreshAuthz();
       refreshDetected();
@@ -351,28 +389,79 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     }
   }, [t, refreshAuthz, refreshDetected]);
 
-  const handleRemoveDomain = useCallback(async (domain: string) => {
-    try {
-      await updateAiShadowAuthorizedDomains({ removeDomains: [domain] });
-      message.success(t('aiShadow.deauthzSuccess', { domain }));
-      refreshAuthz();
-      refreshDetected();
-    } catch {
-      message.error(t('aiShadow.actionFailed'));
-    }
+  // 移除授权会让该域名重新回到「未授权访问」列表，是影响安全判断的破坏性操作，
+  // 单条与批量都必须先确认，避免误点即生效、且没有撤销入口。
+  const handleRemoveDomain = useCallback((domain: string) => {
+    Modal.confirm({
+      title: t('aiShadow.deauthzConfirmSingle', { domain }),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await updateAiShadowAuthorizedDomains({ removeDomains: [domain] });
+          message.success(t('aiShadow.deauthzSuccess', { domain }));
+          setAuthzSelected((keys) => keys.filter((k) => k !== domain));
+          refreshAuthz();
+          refreshDetected();
+        } catch {
+          message.error(t('aiShadow.actionFailed'));
+        }
+      },
+    });
   }, [t, refreshAuthz, refreshDetected]);
 
   const handleAddDomain = useCallback(async () => {
-    const domain = authzInput.trim().toLowerCase();
+    const domain = normalizeAuthzInput(authzInput);
     if (!domain) return;
-    await handleAuthorizeDomain(domain);
+    if (!isPlausibleDomain(domain)) {
+      message.error(t('aiShadow.authzInvalidDomain'));
+      return;
+    }
+    // 后端 isDomainAuthorized 是后缀匹配：已有 example.com 时再授权 api.example.com
+    // 不报重复，但它永远会被父域覆盖，属于加了也没意义的冗余条目。
+    const existing = authzData?.domains || [];
+    const covered = existing.some((authorized) => {
+      const base = normalizeAuthzInput(authorized);
+      return base.length > 0 && (domain === base || domain.endsWith(`.${base}`));
+    });
+    if (covered) {
+      message.warning(t('aiShadow.authzDuplicate'));
+      return;
+    }
+    await handleAuthorizeDomain(domain, 'manual');
     setAuthzInput('');
-  }, [authzInput, handleAuthorizeDomain]);
+  }, [authzInput, authzData, handleAuthorizeDomain, t]);
+
+  const handleBatchDeauthz = useCallback((domains: string[]) => {
+    if (!domains.length) return;
+    Modal.confirm({
+      title: t('aiShadow.deauthzConfirmBatch', { count: domains.length }),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await updateAiShadowAuthorizedDomains({ removeDomains: domains });
+          message.success(t('aiShadow.authzBatchDeauthzSuccess', { count: domains.length }));
+          setAuthzSelected([]);
+          refreshAuthz();
+          refreshDetected();
+        } catch {
+          message.error(t('aiShadow.actionFailed'));
+        }
+      },
+    });
+  }, [t, refreshAuthz, refreshDetected]);
 
   // Compute summary statistics for detected access view
-  const totalDetected = (detectedList || []).reduce((sum, item) => sum + item.requestCount, 0);
-  const criticalDetected = (detectedList || []).filter(e => e.riskLevel === 'critical').reduce((sum, item) => sum + item.requestCount, 0);
-  const highDetected = (detectedList || []).filter(e => e.riskLevel === 'high').reduce((sum, item) => sum + item.requestCount, 0);
+  // KPI 取后端在同一窗口上的聚合结果，不再由前端对列表求和：列表被授权过滤且分页截断，
+  // 前端求和必然与事件明细对不上（这正是"明细有数据、KPI 全 0"的成因之一）。
+  const trendRangeLabel = trendRange === 'today'
+    ? t('aiShadow.trendRangeToday')
+    : trendRange === 'week' ? t('aiShadow.trendRangeWeek') : t('aiShadow.trendRangeMonth');
+  // 区分三种"空"：加载中（卡片骨架）、请求失败（显示 - 并告警）、窗口内真的没有（显示 0）。
+  const statsUnavailable = Boolean(statsError);
+  const statsDegraded = statsUnavailable || Boolean(statsData?.degraded);
+  const totalDetected = statsUnavailable ? '-' : (statsData?.total ?? 0);
+  const criticalDetected = statsUnavailable ? '-' : (statsData?.critical ?? 0);
+  const highDetected = statsUnavailable ? '-' : (statsData?.high ?? 0);
 
   if (detectedLoading && !detectedList) {
     return (
@@ -414,12 +503,17 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
       dataIndex: 'status',
       key: 'status',
       render: (status: string) => {
-        const isBlocked = status === 'blocked';
-        return (
-          <Tag color={isBlocked ? 'red' : 'green'}>
-            {isBlocked ? t('aiShadow.statusBlocked') : t('aiShadow.statusAllowed')}
-          </Tag>
-        );
+        // 状态取值来自事件表，比 Prometheus 计数器更全（含 alerted / masked），
+        // 不能再用「blocked 否则放行」的二值判断，否则已告警会被显示成允许。
+        const meta: Record<string, { color: string; label: string }> = {
+          blocked: { color: 'red', label: t('aiShadow.statusBlocked') },
+          alerted: { color: 'volcano', label: t('aiShadow.statusAlerted') },
+          monitored: { color: 'blue', label: t('aiShadow.statusMonitored') },
+          masked: { color: 'purple', label: t('aiShadow.statusMasked') },
+          allowed: { color: 'green', label: t('aiShadow.statusAllowed') },
+        };
+        const hit = meta[status] || { color: 'default', label: status || '-' };
+        return <Tag color={hit.color}>{hit.label}</Tag>;
       },
     },
     {
@@ -428,6 +522,14 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
       key: 'requestCount',
       render: (val: number) => val?.toLocaleString() ?? '-',
       sorter: (a: AiShadowDetectedAccess, b: AiShadowDetectedAccess) => a.requestCount - b.requestCount,
+    },
+    {
+      title: t('aiShadow.detectedLastSeen'),
+      dataIndex: 'lastSeen',
+      key: 'lastSeen',
+      width: 160,
+      render: (value: number) => <span style={{ color: value ? undefined : '#bfbfbf' }}>{formatDateTime(value)}</span>,
+      sorter: (a: AiShadowDetectedAccess, b: AiShadowDetectedAccess) => (a.lastSeen ?? 0) - (b.lastSeen ?? 0),
     },
     {
       title: t('aiShadow.detectedActions'),
@@ -439,9 +541,87 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
           size="small"
           icon={<CheckOutlined />}
           disabled={!enabled}
-          onClick={() => handleAuthorizeDomain(record.sni)}
+          onClick={() => handleAuthorizeDomain(record.sni, 'detected')}
         >
           {t('aiShadow.authzBtn')}
+        </Button>
+      ),
+    },
+  ];
+
+  // 授权域名管理表：元数据来自后端 items，缺失时按 domains 兜底为「历史导入」
+  const authzItems = useMemo<AiShadowAuthzItem[]>(() => {
+    const items = authzData?.items;
+    if (items && items.length) return items;
+    return (authzData?.domains || []).map((domain) => ({
+      domain,
+      matchType: 'suffix',
+      source: 'imported',
+      createdAt: 0,
+    }));
+  }, [authzData]);
+
+  const authzFiltered = useMemo(() => {
+    const keyword = authzSearch.trim().toLowerCase();
+    if (!keyword) return authzItems;
+    return authzItems.filter((item) => item.domain.includes(keyword));
+  }, [authzItems, authzSearch]);
+
+  const authzColumns = [
+    {
+      title: t('aiShadow.authzColDomain'),
+      dataIndex: 'domain',
+      key: 'domain',
+      render: (value: string) => <span style={{ fontFamily: 'monospace' }}>{value}</span>,
+    },
+    {
+      title: t('aiShadow.authzColMatch'),
+      dataIndex: 'matchType',
+      key: 'matchType',
+      width: 150,
+      render: (value: string) => (
+        <Tooltip title={t('aiShadow.authzSuffixHint')}>
+          <Tag color={value === 'suffix' ? 'blue' : 'default'}>
+            {value === 'suffix' ? t('aiShadow.authzMatchSuffix') : t('aiShadow.authzMatchExact')}
+          </Tag>
+        </Tooltip>
+      ),
+    },
+    {
+      title: t('aiShadow.authzColSource'),
+      dataIndex: 'source',
+      key: 'source',
+      width: 140,
+      render: (value: string) => {
+        const meta: Record<string, { color: string; label: string }> = {
+          manual: { color: 'green', label: t('aiShadow.authzSourceManual') },
+          detected: { color: 'gold', label: t('aiShadow.authzSourceDetected') },
+          imported: { color: 'default', label: t('aiShadow.authzSourceImported') },
+        };
+        const hit = meta[value] || meta.imported;
+        return <Tag color={hit.color}>{hit.label}</Tag>;
+      },
+    },
+    {
+      title: t('aiShadow.authzColCreatedAt'),
+      dataIndex: 'createdAt',
+      key: 'createdAt',
+      width: 180,
+      render: (value: number) => <span style={{ color: value ? undefined : '#bfbfbf' }}>{formatDateTime(value)}</span>,
+    },
+    {
+      title: t('aiShadow.authzColActions'),
+      key: 'actions',
+      width: 100,
+      render: (_: unknown, record: AiShadowAuthzItem) => (
+        <Button
+          type="link"
+          size="small"
+          danger
+          disabled={!enabled}
+          onClick={() => handleRemoveDomain(record.domain)}
+        >
+          {t('aiShadow.deauthzBtn')}
         </Button>
       ),
     },
@@ -595,9 +775,15 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
 
   return (
     <div style={{ padding: '0 0 24px' }}>
+      <div style={{ marginBottom: 8, fontSize: 12, color: '#8c8c8c' }}>
+        {t('aiShadow.kpiWindowHint', { range: trendRangeLabel })}
+      </div>
+      {statsDegraded ? (
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={t('aiShadow.trendDegraded')} />
+      ) : null}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col span={8}>
-          <Card>
+          <Card loading={statsLoading && !statsData}>
             <Statistic
               title={t('aiShadow.totalDetectedAccesses')}
               value={totalDetected}
@@ -606,7 +792,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
           </Card>
         </Col>
         <Col span={8}>
-          <Card>
+          <Card loading={statsLoading && !statsData}>
             <Statistic
               title={t('aiShadow.criticalRiskAccesses')}
               value={criticalDetected}
@@ -616,7 +802,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
           </Card>
         </Col>
         <Col span={8}>
-          <Card>
+          <Card loading={statsLoading && !statsData}>
             <Statistic
               title={t('aiShadow.highRiskAccesses')}
               value={highDetected}
@@ -676,6 +862,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
             <Tag color={isEnforcement ? 'red' : 'blue'}>
               {isEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}
             </Tag>
+            <Tag>{trendRangeLabel}</Tag>
           </Space>
         }
         extra={
@@ -721,7 +908,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
         }
         style={{ marginBottom: 16 }}
       >
-        <Space style={{ marginBottom: 12 }}>
+        <Space style={{ marginBottom: 12 }} wrap>
           <Input
             style={{ width: 320 }}
             value={authzInput}
@@ -729,27 +916,41 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
             onChange={(e) => setAuthzInput(e.target.value)}
             disabled={!enabled}
             onPressEnter={handleAddDomain}
+            allowClear
           />
           <Button type="primary" icon={<PlusOutlined />} disabled={!enabled} onClick={handleAddDomain}>
             {t('aiShadow.authzAddBtn')}
           </Button>
+          <Input.Search
+            allowClear
+            style={{ width: 220 }}
+            placeholder={t('aiShadow.authzSearchPlaceholder')}
+            value={authzSearch}
+            onChange={(e) => setAuthzSearch(e.target.value)}
+          />
+          <Button
+            danger
+            disabled={!enabled || authzSelected.length === 0}
+            onClick={() => handleBatchDeauthz(authzSelected)}
+          >
+            {t('aiShadow.authzBatchDeauthz', { count: authzSelected.length })}
+          </Button>
         </Space>
-        <div>
-          {(authzData?.domains || []).length === 0 ? (
-            <Empty description={t('aiShadow.authzNoData')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
-          ) : (
-            (authzData?.domains || []).map((domain: string) => (
-              <Tag
-                key={domain}
-                closable={enabled}
-                onClose={(e) => { e.preventDefault(); handleRemoveDomain(domain); }}
-                style={{ fontFamily: 'monospace', marginBottom: 4 }}
-              >
-                {domain}
-              </Tag>
-            ))
-          )}
+        <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 8 }}>
+          {t('aiShadow.authzSuffixHint')}
         </div>
+        <Table
+          dataSource={authzFiltered}
+          columns={authzColumns}
+          rowKey="domain"
+          size="small"
+          pagination={{ pageSize: 10, hideOnSinglePage: true, size: 'small' }}
+          locale={{ emptyText: t('aiShadow.authzNoData') }}
+          rowSelection={{
+            selectedRowKeys: authzSelected,
+            onChange: (keys) => setAuthzSelected(keys as string[]),
+          }}
+        />
       </Card>
 
       <Card

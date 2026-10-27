@@ -30,7 +30,18 @@ public interface AiShadowService {
 
     AiShadowStatus performAction(AiShadowActionRequest request);
 
-    List<AiShadowDetectedAccess> getDetectedAccesses();
+    /**
+     * Detected accesses aggregated over the requested window. Same source (detection
+     * event table) as the trend and the KPI summary, so all three views agree.
+     */
+    List<AiShadowDetectedAccess> getDetectedAccessesInWindow(Long startTime, Long endTime);
+
+    /**
+     * KPI summary over the requested window: total events, critical / high risk event
+     * counts, blocked events and the number of distinct domains involved.
+     * Returns {start, end, total, critical, high, blocked, domainCount, degraded}.
+     */
+    Map<String, Object> getDetectedStats(Long startTime, Long endTime);
 
     /**
      * Detection trend over the requested window (IR-004). The bucket granularity
@@ -48,9 +59,12 @@ public interface AiShadowService {
 
     /**
      * Add/remove authorized domains on the DNS/bypass policy (IR-003).
-     * Returns the updated {mode, domains} view; each change is audited.
+     * {@code source} records how the entry was created (manual / detected) for the
+     * management table; it has no effect on the authorization decision itself.
+     * Returns the updated {mode, domains, items} view; each change is audited.
      */
-    Map<String, Object> updateAuthorizedDomains(String mode, List<String> addDomains, List<String> removeDomains);
+    Map<String, Object> updateAuthorizedDomains(String mode, List<String> addDomains, List<String> removeDomains,
+        String source);
 
     void setDetectMode(String mode);
 

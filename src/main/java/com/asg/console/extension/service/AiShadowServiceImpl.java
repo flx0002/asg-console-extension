@@ -17,6 +17,8 @@ import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -24,6 +26,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -39,11 +42,14 @@ import com.alibaba.higress.sdk.exception.ResourceConflictException;
 import com.alibaba.higress.sdk.model.CommonPageQuery;
 import com.alibaba.higress.sdk.model.PaginatedResult;
 import com.asg.console.extension.model.AiShadowActionRequest;
+import com.asg.console.extension.model.AiShadowAuthorizedDomain;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
 import com.asg.console.extension.model.AiShadowDnsPolicy;
 import com.asg.console.extension.model.AiShadowEntry;
 import com.asg.console.extension.model.AiShadowModeRequest;
 import com.asg.console.extension.model.AiShadowStatus;
+import com.asg.console.extension.repository.AiShadowAuthorizedDomainRepository;
+import com.asg.console.extension.repository.AiShadowDetectEventRepository;
 import com.alibaba.higress.sdk.model.WasmPluginInstance;
 import com.alibaba.higress.sdk.model.WasmPluginInstanceScope;
 import com.alibaba.higress.sdk.model.ai.AiRoute;
@@ -73,17 +79,16 @@ public class AiShadowServiceImpl implements AiShadowService {
     private static final String CONSUMER_NONE = "none";
 
     private static final String PROMETHEUS_QUERY_PATH = "/api/v1/query";
-    private static final String PROMETHEUS_RANGE_PATH = "/api/v1/query_range";
     private static final String INPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_input_token";
     private static final String OUTPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_output_token";
     private static final String AI_SHADOW_DETECT_METRIC_PREFIX = "ai_shadow_detect_category_";
 
-    /** Gateway-side detect counter: one series per status, aggregated over a bucket. */
-    private static final String AI_SHADOW_TREND_METRIC = "ai_shadow_detect_category_domain_risk_status_requests";
-    /** Bypass collector exposes its own counter with a different name and labels. */
-    private static final String AI_SHADOW_BYPASS_TREND_METRIC = "ai_shadow_detect_bypass_requests_total";
-    /** Stable legend ordering for trend series. */
-    private static final List<String> TREND_STATUS_ORDER = Arrays.asList("blocked", "allowed", "monitored");
+    /**
+     * Stable legend ordering for trend series. 事件表还会带 alerted / masked，
+     * 漏在列表外会被 indexOf=-1 推到最末，图例看起来像事后追加的。
+     */
+    private static final List<String> TREND_STATUS_ORDER =
+        Arrays.asList("blocked", "alerted", "monitored", "masked", "allowed");
 
     /** Default lookback when the caller supplies no window (kept at the historical 24h). */
     private static final long DEFAULT_TREND_WINDOW_MS = 24L * 3600L * 1000L;
@@ -100,6 +105,12 @@ public class AiShadowServiceImpl implements AiShadowService {
     private static final String ADMIN_OPS_RECORD_TYPE = "admin_operation";
     /** Fallback operator when the console request carries no resolvable identity. */
     private static final String OPERATOR_CONSOLE = "console";
+    /** 授权域名的匹配方式：当前实现对子域采用后缀匹配，前端据此提示"含子域"。 */
+    private static final String MATCH_TYPE_SUFFIX = "suffix";
+    /** 授权来源：控制台手动添加 / 从检测结果一键授权 / 策略中已存在但无元数据。 */
+    private static final String SOURCE_MANUAL = "manual";
+    private static final String SOURCE_DETECTED = "detected";
+    private static final String SOURCE_IMPORTED = "imported";
 
     private final WasmPluginInstanceService wasmPluginInstanceService;
     private final ConsumerService consumerService;
@@ -107,10 +118,14 @@ public class AiShadowServiceImpl implements AiShadowService {
     private final String prometheusBaseUrl;
     private final AuditChainService auditChainService;
     private final AiShadowDnsPolicyService dnsPolicyService;
+    private final AiShadowDetectEventRepository detectEventRepository;
+    private final AiShadowAuthorizedDomainRepository authorizedDomainRepository;
 
     public AiShadowServiceImpl(WasmPluginInstanceService wasmPluginInstanceService,
         ConsumerService consumerService, AiRouteService aiRouteService, String prometheusBaseUrl,
-        AuditChainService auditChainService, AiShadowDnsPolicyService dnsPolicyService) {
+        AuditChainService auditChainService, AiShadowDnsPolicyService dnsPolicyService,
+        AiShadowDetectEventRepository detectEventRepository,
+        AiShadowAuthorizedDomainRepository authorizedDomainRepository) {
         this.wasmPluginInstanceService = wasmPluginInstanceService;
         this.consumerService = consumerService;
         this.aiRouteService = aiRouteService;
@@ -118,6 +133,8 @@ public class AiShadowServiceImpl implements AiShadowService {
             "http://higress-console-prometheus.higress-system:9090/prometheus");
         this.auditChainService = auditChainService;
         this.dnsPolicyService = dnsPolicyService;
+        this.detectEventRepository = detectEventRepository;
+        this.authorizedDomainRepository = authorizedDomainRepository;
     }
 
     @Override
@@ -513,130 +530,121 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     @Override
-    public List<AiShadowDetectedAccess> getDetectedAccesses() {
+    public List<AiShadowDetectedAccess> getDetectedAccessesInWindow(Long startTime, Long endTime) {
+        // 数据源改为事件表：Prometheus 指标缺 risk 标签（riskLevel 恒为 null，"严重/高风险"
+        // 永远算不出来），且只保留 6h。事件表由 Wasm 插件逐条上报，是流量的真相源。
         List<AiShadowDetectedAccess> result = new ArrayList<>();
         // IR-003: accesses to authorized domains are removed from the shadow AI list.
         List<String> authorizedDomains = loadAuthorizedDomains();
+        long[] window = resolveWindow(startTime, endTime);
+        long start = window[0];
+        long end = window[1];
         try {
-            // After adding stats_tags, Prometheus exports the metric as:
-            // ai_shadow_detect_category_domain_risk_status_requests{category="...", domain="...", risk="...", status="..."}
-            String queryUrl = prometheusBaseUrl + PROMETHEUS_QUERY_PATH
-                + "?query=" + java.net.URLEncoder.encode("ai_shadow_detect_category_domain_risk_status_requests", "UTF-8");
-            HttpURLConnection connection = (HttpURLConnection)new URL(queryUrl).openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(5000);
-            connection.setReadTimeout(10000);
-
-            int responseCode = connection.getResponseCode();
-            if (responseCode != 200) {
-                log.warn("Prometheus query returned non-200 status: {} for shadow AI detect metric", responseCode);
-                return result;
-            }
-
-            StringBuilder responseBody = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    responseBody.append(line);
+            List<Object[]> rows = detectEventRepository.aggregateByDomain(start / 1000L, end / 1000L);
+            for (Object[] row : rows) {
+                if (row == null || row.length < 6 || row[0] == null || row[1] == null) {
+                    continue;
                 }
-            }
-
-            JSONObject response = JSON.parseObject(responseBody.toString());
-            if (!"success".equals(response.getString("status"))) {
-                return result;
-            }
-
-            JSONObject data = response.getJSONObject("data");
-            if (data == null) {
-                return result;
-            }
-
-            JSONArray results = data.getJSONArray("result");
-            if (results == null) {
-                return result;
-            }
-
-            for (int i = 0; i < results.size(); i++) {
-                JSONObject item = results.getJSONObject(i);
-                JSONObject metric = item.getJSONObject("metric");
-                JSONArray value = item.getJSONArray("value");
-
-                long requestCount = 0;
-                if (value != null && value.size() >= 2) {
-                    try {
-                        requestCount = Long.parseLong(value.getString(1));
-                    } catch (NumberFormatException e) {
-                        log.warn("Failed to parse request count: {}", value.getString(1));
-                    }
-                }
-
-                // Parse metric using Prometheus labels (new format with "." separator)
-                // Format: ai_shadow_detect_requests{category="saas_ai", domain="www_deepseek_com", risk="high", status="allowed"}
-                String category = metric.getString("category");
-                String domain = metric.getString("domain");
-                String riskLevel = metric.getString("risk");
-                String status = metric.getString("status");
-                if (status == null) {
-                    status = "allowed";
-                }
-
-                // Restore dots and hyphens that were sanitized in metric values
-                domain = restoreDomainFromMetric(domain);
-
+                String domain = String.valueOf(row[0]);
                 if (isDomainAuthorized(domain, authorizedDomains)) {
                     continue;
                 }
-
+                String category = row[5] == null ? null : String.valueOf(row[5]);
+                String status = rankToValue(STATUS_BY_RANK, row[3]);
                 result.add(AiShadowDetectedAccess.builder()
                     .sni(domain)
                     .category(category)
-                    .categoryLabel(getCategoryLabel(category))
-                    .riskLevel(riskLevel)
-                    .status(status)
-                    .requestCount(requestCount)
+                    .categoryLabel(category == null ? null : getCategoryLabel(category))
+                    .riskLevel(rankToValue(RISK_BY_RANK, row[2]))
+                    // null 表示该域名的所有事件 status 都不在已知枚举内（FIELD 全为 0）。
+                    // 兜底成 monitored 而非 allowed：把「未知」显示成「已放行」会掩盖风险，
+                    // monitored 的语义是「已记录未处置」，方向上更保守。
+                    .status(status == null ? "monitored" : status)
+                    .requestCount(((Number)row[1]).longValue())
+                    .lastSeen(row[4] == null ? null : ((Number)row[4]).longValue() * 1000L)
                     .build());
             }
         } catch (Exception e) {
-            log.error("Error querying shadow AI detect metrics", e);
+            log.error("Error aggregating shadow AI detected accesses", e);
         }
         return result;
     }
 
-    /**
-     * Restore domain name from metric value.
-     * In Wasm plugin, dots and hyphens are replaced with underscores in metric names.
-     * We try to restore them by matching against known domains in the config.
-     */
-    private static String restoreDomainFromMetric(String metricDomain) {
-        // Common AI service domains - used to restore dots/hyphens from underscored metric names
-        String[] knownDomains = {
-            "api.openai.com", "chat.openai.com", "api.anthropic.com", "claude.ai",
-            "gemini.google.com", "deepseek.com", "api.deepseek.com", "chat.deepseek.com",
-            "www.deepseek.com", "mistral.ai", "api.mistral.ai", "coze.com", "www.coze.com",
-            "doubao.com", "www.doubao.com", "kimi.moonshot.cn", "chatglm.cn", "tongyi.aliyun.com",
-            "yiyan.baidu.com", "chat.zhipu.ai", "api.groq.com", "copilot.github.com", "api.githubcopilot.com",
-            "cursor.sh", "codeium.com", "windsurf.com", "notion.so",
-            "models.openclaw.ai", "api.openclaw.ai", "langchain.com", "winclaw.ai"
-        };
+    /** FIELD() 在 SQL 里返回的严重度序号（1 起）到实际取值的映射，0 表示该列全为未知值。 */
+    private static final String[] RISK_BY_RANK = {null, "critical", "high", "medium", "low"};
+    private static final String[] STATUS_BY_RANK =
+        {null, "blocked", "alerted", "monitored", "masked", "allowed"};
 
-        // Convert known domains to metric format and compare
-        for (String known : knownDomains) {
-            String metricFormat = known.replace(".", "_").replace("-", "_");
-            if (metricFormat.equals(metricDomain)) {
-                return known;
-            }
+    private static String rankToValue(String[] table, Object rank) {
+        if (rank == null) {
+            return null;
         }
-
-        // Fallback: try heuristic restoration (replace first few underscores with dots)
-        // This is imperfect but better than showing underscores
-        return metricDomain;
+        int idx = ((Number)rank).intValue();
+        return (idx > 0 && idx < table.length) ? table[idx] : null;
     }
 
     @Override
-    public Map<String, Object> getDetectedTrend(Long startTime, Long endTime) {
+    public Map<String, Object> getDetectedStats(Long startTime, Long endTime) {
+        long[] window = resolveWindow(startTime, endTime);
+        long start = window[0];
+        long end = window[1];
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("start", start);
+        stats.put("end", end);
+        long total = 0L;
+        long critical = 0L;
+        long high = 0L;
+        long blocked = 0L;
+        long domainCount = 0L;
+        boolean degraded = false;
+        try {
+            // 复用 /detected 列表的同一聚合与同一授权过滤：卡片上的数字因此恒等于
+            // 下方列表可解释的量，不会出现"统计有值、列表空"或反过来的情况。
+            List<String> authorizedDomains = loadAuthorizedDomains();
+            List<Object[]> rows = detectEventRepository.aggregateByDomain(start / 1000L, end / 1000L);
+            for (Object[] row : rows) {
+                if (row == null || row.length < 9 || row[0] == null || row[1] == null) {
+                    continue;
+                }
+                if (isDomainAuthorized(String.valueOf(row[0]), authorizedDomains)) {
+                    continue;
+                }
+                domainCount++;
+                total += ((Number)row[1]).longValue();
+                critical += numberOrZero(row[6]);
+                high += numberOrZero(row[7]);
+                blocked += numberOrZero(row[8]);
+            }
+        } catch (Exception e) {
+            // degraded=true 时前端显示告警，而不是把 0 当成"没有风险"
+            log.error("Error aggregating shadow AI detection stats", e);
+            degraded = true;
+        }
+        stats.put("total", total);
+        stats.put("critical", critical);
+        stats.put("high", high);
+        stats.put("blocked", blocked);
+        stats.put("domainCount", domainCount);
+        stats.put("degraded", degraded);
+        return stats;
+    }
+
+    private static long numberOrZero(Object value) {
+        return value == null ? 0L : ((Number)value).longValue();
+    }
+
+    /**
+     * 归一化查询窗口，返回 {start, end}（epoch 毫秒）。列表、KPI、趋势三条查询必须共用这一份
+     * 归一化逻辑：任何一处口径不同，就会出现「明细有数据、卡片是 0」的自相矛盾画面。
+     * <ul>
+     *   <li>end 不越界到未来——未来的区间只会得到空桶；</li>
+     *   <li>start 缺省回退到默认窗口；</li>
+     *   <li>超长窗口按上限截断，避免一次查全表；</li>
+     *   <li>end 必须严格大于 start，否则 SQL 的 {@code BETWEEN} 语义会退化成空集。</li>
+     * </ul>
+     */
+    private static long[] resolveWindow(Long startTime, Long endTime) {
         long now = System.currentTimeMillis();
-        // The window never runs into the future: a future end only yields empty buckets.
         long end = (endTime == null || endTime <= 0L) ? now : Math.min(endTime, now);
         long start = (startTime == null || startTime <= 0L) ? end - DEFAULT_TREND_WINDOW_MS : startTime;
         if (end - start > MAX_TREND_WINDOW_MS) {
@@ -645,6 +653,15 @@ public class AiShadowServiceImpl implements AiShadowService {
         if (end <= start) {
             end = start + 1L;
         }
+        return new long[] {start, end};
+    }
+
+    @Override
+    public Map<String, Object> getDetectedTrend(Long startTime, Long endTime) {
+        // The window never runs into the future: a future end only yields empty buckets.
+        long[] window = resolveWindow(startTime, endTime);
+        long start = window[0];
+        long end = window[1];
         // Granularity follows the span (same rule as the behaviour dashboard): <=2d hourly, else daily.
         boolean hourly = (end - start) <= HOURLY_MAX_SPAN_MS;
         long stepSeconds = hourly ? 3600L : 86400L;
@@ -660,40 +677,22 @@ public class AiShadowServiceImpl implements AiShadowService {
         result.put("degraded", false);
         List<Map<String, Object>> points = new ArrayList<>();
         try {
-            // `increase(m[1h])` evaluated at t measures (t-1h, t], so a point has to be filed one
-            // bucket earlier for the label to match the interval it actually covers.
-            long bucketSeconds = hourly ? 3600L : 86400L;
-            String range = hourly ? "1h" : "1d";
-            long alignedStartSeconds = windowStart / 1000L;
+            long startSeconds = windowStart / 1000L;
             long endSeconds = end / 1000L;
-            // Two sources: gateway-side WasmPlugin counter and bypass collector counter.
-            // They are separate Prometheus metrics, so aggregate by (status, bucket).
-            Map<String, Long> counts = new HashMap<>();
-            Map<String, Long> timestamps = new HashMap<>();
-            JSONArray gatewaySeries =
-                queryRange(trendQuery(AI_SHADOW_TREND_METRIC, range), alignedStartSeconds, endSeconds, stepSeconds);
-            JSONArray bypassSeries =
-                queryRange(trendQuery(AI_SHADOW_BYPASS_TREND_METRIC, range), alignedStartSeconds, endSeconds,
-                    stepSeconds);
-            result.put("degraded", gatewaySeries == null && bypassSeries == null);
-            mergeTrendSeries(counts, timestamps, gatewaySeries, bucketSeconds, alignedStartSeconds);
-            mergeTrendSeries(counts, timestamps, bypassSeries, bucketSeconds, alignedStartSeconds);
-            // A range query only yields closed buckets, so the bucket in progress ("today" in the
-            // daily view) would never appear; measure it with one extra instant query.
-            long currentBucketSeconds = alignedStartSeconds
-                + (endSeconds - alignedStartSeconds) / bucketSeconds * bucketSeconds;
-            // Prometheus needs a sane range: below a minute `increase` has no second sample to work with.
-            String partialRange = Math.max(60L, endSeconds - currentBucketSeconds) + "s";
-            mergeInstantSeries(counts, timestamps,
-                queryInstant(trendQuery(AI_SHADOW_TREND_METRIC, partialRange)), currentBucketSeconds);
-            mergeInstantSeries(counts, timestamps,
-                queryInstant(trendQuery(AI_SHADOW_BYPASS_TREND_METRIC, partialRange)), currentBucketSeconds);
-            for (Map.Entry<String, Long> e : counts.entrySet()) {
+            // 事件表由 Wasm 插件（key-auth / ai-pii-guard）逐条上报，是流量的真相源，且自带
+            // risk_level / status / domain；Prometheus 计数器缺 risk 标签、会随 Pod 重启归零、
+            // 并受 6h retention 限制，导致 KPI / 趋势 / 明细三处口径对不上。此处统一到事件表。
+            List<Object[]> rows = detectEventRepository.countByBucketAndStatus(startSeconds, endSeconds, stepSeconds);
+            for (Object[] row : rows) {
+                if (row == null || row.length < 3 || row[0] == null || row[1] == null || row[2] == null) {
+                    continue;
+                }
+                long bucketIdx = ((Number)row[0]).longValue();
                 Map<String, Object> p = new HashMap<>();
                 // Milliseconds: the console formats the label itself, per granularity.
-                p.put("timestamp", timestamps.get(e.getKey()) * 1000L);
-                p.put("status", e.getKey().substring(0, e.getKey().indexOf('|')));
-                p.put("count", e.getValue());
+                p.put("timestamp", (startSeconds + bucketIdx * stepSeconds) * 1000L);
+                p.put("status", String.valueOf(row[1]));
+                p.put("count", ((Number)row[2]).longValue());
                 points.add(p);
             }
             // Stable ordering: status (blocked/allowed/monitored first), then time ascending.
@@ -706,140 +705,13 @@ public class AiShadowServiceImpl implements AiShadowService {
                 return Long.compare((Long)a.get("timestamp"), (Long)b.get("timestamp"));
             });
         } catch (Exception e) {
-            log.error("Error querying shadow AI detection trend", e);
+            // 聚合失败时置 degraded：前端会先渲染告警再铺零轴，
+            // 避免把"查询挂了"显示成"窗口内没有检测到"。
+            log.error("Error aggregating shadow AI detection trend", e);
+            result.put("degraded", true);
         }
         result.put("list", points);
         return result;
-    }
-
-    /** Per-status increase query over the given PromQL range (e.g. "1h", "1d", "5400s"). */
-    private static String trendQuery(String metric, String range) {
-        return "sum by (status) (increase(" + metric + "[" + range + "]))";
-    }
-
-    /**
-     * Accumulate one range-query series array into the (status|bucket -> count) aggregation maps.
-     * Each sample is stamped one {@code bucketSeconds} earlier, because the expression at t
-     * measures the interval that ended at t. Samples before {@code lowerBoundSeconds} belong to
-     * an interval that starts outside the requested window and are dropped.
-     */
-    private void mergeTrendSeries(Map<String, Long> counts, Map<String, Long> timestamps, JSONArray series,
-        long bucketSeconds, long lowerBoundSeconds) {
-        if (series == null) {
-            return;
-        }
-        for (int i = 0; i < series.size(); i++) {
-            JSONObject item = series.getJSONObject(i);
-            String status = item.getJSONObject("metric").getString("status");
-            JSONArray values = item.getJSONArray("values");
-            if (StringUtils.isEmpty(status) || values == null) {
-                continue;
-            }
-            for (int j = 0; j < values.size(); j++) {
-                JSONArray point = values.getJSONArray(j);
-                if (point == null || point.size() < 2) {
-                    continue;
-                }
-                long bucketTs = point.getLongValue(0) - bucketSeconds;
-                if (bucketTs < lowerBoundSeconds) {
-                    continue;
-                }
-                long count = (long)parsePromValue(point.getString(1));
-                String key = status + "|" + bucketTs;
-                counts.merge(key, count, Long::sum);
-                timestamps.putIfAbsent(key, bucketTs);
-            }
-        }
-    }
-
-    /** Accumulate an instant-query vector into the aggregation maps at one fixed bucket start. */
-    private void mergeInstantSeries(Map<String, Long> counts, Map<String, Long> timestamps, JSONArray result,
-        long bucketSeconds) {
-        if (result == null) {
-            return;
-        }
-        for (int i = 0; i < result.size(); i++) {
-            JSONObject item = result.getJSONObject(i);
-            String status = item.getJSONObject("metric").getString("status");
-            JSONArray value = item.getJSONArray("value");
-            if (StringUtils.isEmpty(status) || value == null || value.size() < 2) {
-                continue;
-            }
-            long count = (long)parsePromValue(value.getString(1));
-            String key = status + "|" + bucketSeconds;
-            counts.merge(key, count, Long::sum);
-            timestamps.putIfAbsent(key, bucketSeconds);
-        }
-    }
-
-    /**
-     * Prometheus range query: evaluates the PromQL at each step over [start, end]
-     * and returns the raw result array (one series per label combination).
-     */
-    private JSONArray queryRange(String query, long start, long end, long stepSeconds) {
-        return fetchResult(PROMETHEUS_RANGE_PATH,
-            "query=" + encodeQuery(query) + "&start=" + start + "&end=" + end + "&step=" + stepSeconds);
-    }
-
-    /** Prometheus instant query; returns the raw result vector. */
-    private JSONArray queryInstant(String query) {
-        return fetchResult(PROMETHEUS_QUERY_PATH, "query=" + encodeQuery(query));
-    }
-
-    private static String encodeQuery(String query) {
-        try {
-            return java.net.URLEncoder.encode(query, "UTF-8");
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Unable to encode PromQL: " + query, e);
-        }
-    }
-
-    /** Shared HTTP call for both query endpoints; null means Prometheus itself was unreachable. */
-    private JSONArray fetchResult(String path, String queryString) {
-        try {
-            String queryUrl = prometheusBaseUrl + path + "?" + queryString;
-            HttpURLConnection connection = (HttpURLConnection)new URL(queryUrl).openConnection();
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(5000);
-            connection.setReadTimeout(15000);
-
-            int responseCode = connection.getResponseCode();
-            if (responseCode != 200) {
-                log.warn("Prometheus {} returned non-200 status: {}", path, responseCode);
-                return null;
-            }
-
-            StringBuilder responseBody = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    responseBody.append(line);
-                }
-            }
-
-            JSONObject response = JSON.parseObject(responseBody.toString());
-            if (!"success".equals(response.getString("status"))) {
-                log.warn("Prometheus {} was not successful", path);
-                return null;
-            }
-            JSONObject data = response.getJSONObject("data");
-            return data == null ? null : data.getJSONArray("result");
-        } catch (Exception e) {
-            log.error("Error querying Prometheus {}: {}", path, queryString, e);
-            return null;
-        }
-    }
-
-    private static double parsePromValue(String raw) {
-        if (raw == null || raw.isEmpty()) {
-            return 0;
-        }
-        try {
-            return Double.parseDouble(raw);
-        } catch (NumberFormatException e) {
-            return 0;
-        }
     }
 
     /**
@@ -940,9 +812,11 @@ public class AiShadowServiceImpl implements AiShadowService {
         List<String> domains = new ArrayList<>();
         // R9: unify mode source with GET /detect-mode (WasmPlugin config is authoritative)
         String mode = getDetectMode();
+        LocalDateTime policyUpdatedAt = null;
         try {
             AiShadowDnsPolicy policy = dnsPolicyService.getPolicy();
             if (policy != null) {
+                policyUpdatedAt = policy.getUpdatedAt();
                 // domain list still comes from the DNS policy table
                 if (StringUtils.isNotBlank(policy.getAuthorizedDomains())) {
                     domains = Arrays.stream(policy.getAuthorizedDomains().split(",")).map(String::trim)
@@ -955,12 +829,59 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
         result.put("mode", mode);
         result.put("domains", domains);
+        // 元数据表只补展示字段，权威域名集合仍是 DNS policy：缺行时按「导入」呈现，
+        // 不影响授权判定，因此 collector 读的 dns-policy 契约保持不变。
+        result.put("items", buildAuthorizedDomainItems(domains, policyUpdatedAt));
         return result;
+    }
+
+    private List<Map<String, Object>> buildAuthorizedDomainItems(List<String> domains, LocalDateTime fallbackTime) {
+        List<Map<String, Object>> items = new ArrayList<>();
+        if (CollectionUtils.isEmpty(domains)) {
+            return items;
+        }
+        Map<String, AiShadowAuthorizedDomain> meta = new HashMap<>();
+        try {
+            for (AiShadowAuthorizedDomain row : authorizedDomainRepository.findAllByOrderByCreatedAtAsc()) {
+                meta.put(row.getDomain(), row);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to load authorized domain metadata", e);
+        }
+        long fallbackMillis = toEpochMillis(fallbackTime);
+        for (String domain : domains) {
+            AiShadowAuthorizedDomain row = meta.get(domain);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("domain", domain);
+            // isDomainAuthorized 采用后缀匹配，授权 example.com 会同时覆盖 api.example.com
+            item.put("matchType", MATCH_TYPE_SUFFIX);
+            item.put("note", row == null ? null : row.getNote());
+            item.put("source", row == null ? SOURCE_IMPORTED : row.getSource());
+            item.put("createdBy", row == null ? null : row.getCreatedBy());
+            item.put("createdAt", row == null ? fallbackMillis : toEpochMillis(row.getCreatedAt()));
+            items.add(item);
+        }
+        return items;
+    }
+
+    /**
+     * LocalDateTime → epoch 毫秒。用 JVM 默认时区解释，是因为 JDBC 驱动默认
+     * {@code connectionTimeZone=LOCAL}：TIMESTAMP 列读出时已被转成 JVM 时区的字面值，
+     * 这里再用同一时区解释，两次转换相互抵消。
+     * <p>
+     * 现网实测（容器 TZ=UTC、MySQL 会话时区 SYSTEM=CST）：DB 里 {@code 09:53:46} 对应
+     * 接口返回 {@code 1793066026910}，与 {@code UNIX_TIMESTAMP()} 结果一致，无偏移。
+     * <p>
+     * 风险：一旦有人把连接串固定成 {@code connectionTimeZone=Asia/Shanghai}，或给 JVM 加
+     * {@code -Duser.timezone}，这个抵消关系就断了，展示时间会整体偏 8 小时。改动此处前先复核。
+     */
+    private static long toEpochMillis(LocalDateTime time) {
+        return time == null ? 0L : time.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
     }
 
     @Override
     public Map<String, Object> updateAuthorizedDomains(String mode, List<String> addDomains,
-        List<String> removeDomains) {
+        List<String> removeDomains, String source) {
         AiShadowDnsPolicy policy = dnsPolicyService.getPolicy();
         // R9: unify mode source with GET /detect-mode (WasmPlugin config is authoritative)
         String currentMode = getDetectMode();
@@ -1008,10 +929,49 @@ public class AiShadowServiceImpl implements AiShadowService {
             writeAdminAudit("deauthorize_domain", null, domain, null);
         }
 
+        syncAuthorizedDomainMetadata(added, removed, source);
+
         Map<String, Object> result = new HashMap<>();
         result.put("mode", targetMode);
         result.put("domains", merged);
+        result.put("items", buildAuthorizedDomainItems(merged, null));
         return result;
+    }
+
+    /**
+     * 维护授权域名的展示元数据。权威域名集合写在 dns policy 里，这里只补 source / 操作人 / 时间，
+     * 因此写失败也不影响授权生效（记 warn 后继续，不回滚已生效的策略）。
+     */
+    private void syncAuthorizedDomainMetadata(List<String> added, List<String> removed, String source) {
+        String origin = StringUtils.isBlank(source) ? SOURCE_MANUAL : source.trim().toLowerCase(Locale.ROOT);
+        if (!SOURCE_DETECTED.equals(origin)) {
+            origin = SOURCE_MANUAL;
+        }
+        String operator = resolveOperator();
+        for (String domain : added) {
+            try {
+                AiShadowAuthorizedDomain row = authorizedDomainRepository.findByDomain(domain).orElse(null);
+                if (row == null) {
+                    row = new AiShadowAuthorizedDomain();
+                    row.setDomain(domain);
+                    row.setCreatedAt(LocalDateTime.now());
+                }
+                // 已存在（例如由「导入」转为显式授权）时保留首次授权时间，只刷新来源与操作人
+                row.setSource(origin);
+                row.setCreatedBy(operator);
+                authorizedDomainRepository.save(row);
+            } catch (Exception e) {
+                log.warn("Failed to persist authorized domain metadata for {}", domain, e);
+            }
+        }
+        for (String domain : removed) {
+            try {
+                authorizedDomainRepository.findByDomain(domain)
+                    .ifPresent(row -> authorizedDomainRepository.delete(row));
+            } catch (Exception e) {
+                log.warn("Failed to drop authorized domain metadata for {}", domain, e);
+            }
+        }
     }
 
     @Override

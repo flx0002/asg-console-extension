@@ -34,4 +34,7 @@ public class AiShadowDetectedAccess {
     private String status;
 
     private Long requestCount;
+
+    /** 该域名在统计窗口内最近一次出现的时刻（epoch 毫秒），用于前端「最近访问」列。 */
+    private Long lastSeen;
 }

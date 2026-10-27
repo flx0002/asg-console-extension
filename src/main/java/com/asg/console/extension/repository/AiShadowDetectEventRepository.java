@@ -15,6 +15,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import com.asg.console.extension.model.AiShadowDetectEvent;
@@ -34,4 +36,44 @@ public interface AiShadowDetectEventRepository extends JpaRepository<AiShadowDet
     Page<AiShadowDetectEvent> findBySource(String source, Pageable pageable);
 
     List<AiShadowDetectEvent> findByEventTimeBetween(LocalDateTime start, LocalDateTime end);
+
+    /**
+     * 检测趋势聚合：按「距窗口起点多少个桶」分组。桶序号只取决于两个 epoch 之差，
+     * 因此 JVM 时区（容器为 UTC）不影响分桶结果。
+     * <p>
+     * 注意：{@code UNIX_TIMESTAMP(event_time)} 的取值依赖「MySQL 会话时区」与
+     * 「event_time 写入时的时区字面值」一致（现网 MySQL 容器 TZ=Asia/Shanghai，
+     * 实测 11:40:38 存储值 ↔ 1792726838 绝对秒一致）。若将来这两者不一致，
+     * 整条曲线会整体偏移，需要改为在应用层显式按业务时区换算。
+     * 返回列：bucketIdx（相对 start 的桶序号）、status、事件数。
+     */
+    @Query(value = "SELECT FLOOR((UNIX_TIMESTAMP(event_time) - :startSec) / :stepSec) AS bucket_idx,"
+        + " status, COUNT(*) AS cnt"
+        + " FROM ai_shadow_detect_event"
+        + " WHERE event_time >= FROM_UNIXTIME(:startSec) AND event_time <= FROM_UNIXTIME(:endSec)"
+        + " GROUP BY bucket_idx, status", nativeQuery = true)
+    List<Object[]> countByBucketAndStatus(@Param("startSec") long startSec, @Param("endSec") long endSec,
+        @Param("stepSec") long stepSec);
+
+    /**
+     * 未授权访问按域名聚合。风险等级与处置状态取「最严重的一档」：FIELD 返回 1..n（1 最严重），
+     * 因此必须用 MIN(NULLIF(...,0))——用 MAX 会取到最不严重的一档，把 critical 显示成 low。
+     * NULLIF 用于剔除 FIELD 返回的 0（值不在已知枚举内），避免未知值把结果拉成 0。
+     * 这样也就不依赖 Prometheus 指标里的 risk 标签——该标签在网关侧实际并不存在。
+     * 同时带出 critical / high / blocked 的事件数，KPI 用同一份结果累加，
+     * 保证「统计卡片」与「下方列表」永远同源同口径。
+     * 返回列：domain、事件数、riskRank、statusRank、最近发生时间（epoch 秒）、category、
+     *        critical 数、high 数、blocked 数。
+     */
+    @Query(value = "SELECT domain, COUNT(*) AS cnt,"
+        + " MIN(NULLIF(FIELD(risk_level, 'critical', 'high', 'medium', 'low'), 0)) AS risk_rank,"
+        + " MIN(NULLIF(FIELD(status, 'blocked', 'alerted', 'monitored', 'masked', 'allowed'), 0)) AS status_rank,"
+        + " UNIX_TIMESTAMP(MAX(event_time)) AS last_seen, MAX(category) AS category,"
+        + " SUM(CASE WHEN risk_level = 'critical' THEN 1 ELSE 0 END) AS critical_cnt,"
+        + " SUM(CASE WHEN risk_level = 'high' THEN 1 ELSE 0 END) AS high_cnt,"
+        + " SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS blocked_cnt"
+        + " FROM ai_shadow_detect_event"
+        + " WHERE event_time >= FROM_UNIXTIME(:startSec) AND event_time <= FROM_UNIXTIME(:endSec)"
+        + " GROUP BY domain ORDER BY cnt DESC", nativeQuery = true)
+    List<Object[]> aggregateByDomain(@Param("startSec") long startSec, @Param("endSec") long endSec);
 }
