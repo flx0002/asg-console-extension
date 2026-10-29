@@ -13,6 +13,8 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -74,6 +76,37 @@ public class AiShadowDetectController {
     public static final String DEFAULT_SOURCE = "dns";
     public static final String DEFAULT_STATUS = "allowed";
 
+    /** Surface of our own channel: access control and disposition (route tab). */
+    public static final String SURFACE_ROUTE = "route";
+    /** Surface of shadow AI discovery: AI traffic outside registered channels (traffic tab). */
+    public static final String SURFACE_SHADOW = "shadow";
+    /** Only shadow verdicts are reported today; non_shadow never produces an event. */
+    public static final String DEFAULT_VERDICT = "shadow";
+
+    /**
+     * Authoritative detectType → surface mapping (整改方案 2.3).
+     *
+     * <p>It serves two purposes at once: it validates a reported surface, and it fills the surface
+     * in when the reporter does not send one. The latter is not a nicety — key-auth's
+     * {@code unauthorized_access} events do not carry the field yet, and those are the only rows
+     * the route tab has.
+     */
+    private static final Map<String, String> SURFACE_BY_DETECT_TYPE;
+
+    static {
+        Map<String, String> mapping = new HashMap<>();
+        // Shadow discovery: gateway-side channel misses, bypass guard, DNS collector.
+        mapping.put("gateway_ai_access", SURFACE_SHADOW);
+        mapping.put("gateway_unauthorized_access", SURFACE_SHADOW);
+        mapping.put("bypass_ai_shadow", SURFACE_SHADOW);
+        mapping.put(DEFAULT_DETECT_TYPE, SURFACE_SHADOW);
+        // Own-channel disposition: authentication, content inspection, quota.
+        mapping.put("unauthorized_access", SURFACE_ROUTE);
+        mapping.put("dlp_leak", SURFACE_ROUTE);
+        mapping.put("quota_reject", SURFACE_ROUTE);
+        SURFACE_BY_DETECT_TYPE = Collections.unmodifiableMap(mapping);
+    }
+
     private AiShadowDetectEventService detectEventService;
     private AiShadowDnsPolicyService dnsPolicyService;
     private WasmPluginInstanceService wasmPluginInstanceService;
@@ -122,7 +155,13 @@ public class AiShadowDetectController {
                 throw new ValidationException("domain is required for each event");
             }
             AiShadowDetectEvent event = new AiShadowDetectEvent();
-            event.setDetectType(StringUtils.defaultIfBlank(source.getDetectType(), DEFAULT_DETECT_TYPE));
+            String detectType = StringUtils.defaultIfBlank(source.getDetectType(), DEFAULT_DETECT_TYPE);
+            String surface = resolveSurface(source, detectType);
+            if (surface == null) {
+                // resolveSurface already logged why; one bad event must not take the batch down.
+                continue;
+            }
+            event.setDetectType(detectType);
             event.setDomain(source.getDomain().trim().toLowerCase());
             event.setCategory(source.getCategory());
             event.setRiskLevel(source.getRiskLevel());
@@ -131,6 +170,10 @@ public class AiShadowDetectController {
             event.setSrcIp(source.getSrcIp());
             event.setSessionId(source.getSessionId());
             event.setDetail(source.getDetail());
+            event.setSurface(surface);
+            event.setVerdict(StringUtils.defaultIfBlank(source.getVerdict(), DEFAULT_VERDICT));
+            event.setReason(reasonOf(source));
+            event.setRouteHint(StringUtils.trimToNull(source.getRouteHint()));
             if (source.getEventTime() != null) {
                 event.setEventTime(
                     LocalDateTime.ofInstant(Instant.ofEpochMilli(source.getEventTime()), ZoneId.systemDefault()));
@@ -139,6 +182,71 @@ public class AiShadowDetectController {
         }
         List<AiShadowDetectEvent> saved = detectEventService.saveEvents(events);
         return ResponseEntity.ok(Response.success(saved.size()));
+    }
+
+    /**
+     * Reason behind the verdict, taken from the top-level field or, failing that, from the JSON
+     * detail blob.
+     *
+     * <p>The fallback is not redundant: key-auth reports {@code detail={"reason":"unknown_key",...}}
+     * and sends no top-level reason. Without it, every route event would carry a null reason while
+     * the backfilled history carries one — the same column meaning different things depending on
+     * when the row was written. The gateway's detail is plain text
+     * ({@code feature=... matched=...}), so the parse must tolerate non-JSON.
+     */
+    private static String reasonOf(DetectEventReportRequest.DetectEvent source) {
+        String reason = StringUtils.trimToNull(source.getReason());
+        if (reason != null) {
+            return reason;
+        }
+        String detail = StringUtils.trimToNull(source.getDetail());
+        if (detail == null || !detail.startsWith("{")) {
+            return null;
+        }
+        try {
+            JSONObject parsed = JSON.parseObject(detail);
+            return parsed == null ? null : StringUtils.trimToNull(parsed.getString("reason"));
+        } catch (Exception e) {
+            // A detail that looks like JSON but is not: the verdict is already safe, so the reason
+            // being absent is a display gap, not a data integrity problem.
+            return null;
+        }
+    }
+
+    /**
+     * Resolves the surface of one reported event, or returns null when the event must be dropped.
+     *
+     * <p>Two different situations must not be conflated:
+     *
+     * <ul>
+     *   <li><b>Field absent</b> — not an error. The reporter may predate the field (key-auth does
+     *       not send it), so the detectType mapping fills it in. Dropping those would empty the
+     *       route tab, which is the opposite of the intent.</li>
+     *   <li><b>Field contradicts detectType</b> — an error. Persisting it would file the event
+     *       under the wrong tab, and a wrong-but-present surface is harder to notice than a
+     *       missing one.</li>
+     * </ul>
+     *
+     * <p>An unmapped detectType defaults to shadow: a new detector that nobody has classified yet
+     * should surface in the discovery view rather than vanish from every view.
+     */
+    private String resolveSurface(DetectEventReportRequest.DetectEvent source, String detectType) {
+        String expected = SURFACE_BY_DETECT_TYPE.getOrDefault(detectType, SURFACE_SHADOW);
+        String reported = StringUtils.trimToNull(source.getSurface());
+        if (reported == null) {
+            return expected;
+        }
+        if (!SURFACE_ROUTE.equals(reported) && !SURFACE_SHADOW.equals(reported)) {
+            log.warn("Dropping detect event with unknown surface={} detectType={} domain={}", reported, detectType,
+                source.getDomain());
+            return null;
+        }
+        if (!expected.equals(reported)) {
+            log.warn("Dropping detect event whose surface={} contradicts detectType={} (expected {}) domain={}",
+                reported, detectType, expected, source.getDomain());
+            return null;
+        }
+        return reported;
     }
 
     /**

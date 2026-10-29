@@ -50,6 +50,21 @@ public class DetectEventReportRequest {
         /** Extra detail (JSON text). */
         private String detail;
 
+        /**
+         * Which view the event belongs to: route / shadow. Optional — reporters that predate the
+         * field (key-auth) omit it and the server derives it from detectType.
+         */
+        private String surface;
+
+        /** Verdict: shadow / non_shadow. */
+        private String verdict;
+
+        /** Reason behind the verdict, e.g. off_channel / no_consumer / consumer_not_allowed. */
+        private String reason;
+
+        /** Channel match hint for display, e.g. model=mock-llm. */
+        private String routeHint;
+
         /** Detection time in epoch millis (optional, server time if absent). */
         private Long eventTime;
     }

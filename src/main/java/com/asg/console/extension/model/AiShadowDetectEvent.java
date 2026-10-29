@@ -64,6 +64,30 @@ public class AiShadowDetectEvent {
     @Column(name = "status", length = 16)
     private String status;
 
+    /**
+     * Which view this event belongs to: {@code route} (access control on our own channels) or
+     * {@code shadow} (shadow AI discovery). Single source of truth for tab membership — the UI must
+     * never re-derive it from detectType. Nullable only for rows written before the column existed.
+     */
+    @Column(name = "surface", length = 16)
+    private String surface;
+
+    /** Verdict, {@code shadow} or {@code non_shadow}. Only shadow verdicts are reported today. */
+    @Column(name = "verdict", length = 16)
+    private String verdict;
+
+    /**
+     * Reason behind the verdict, e.g. off_channel / no_consumer / consumer_not_allowed. key-auth
+     * appends the consumer name ({@code not_in_allow:<name>}), hence 128 rather than the 32 the
+     * bare enum would need — a shorter column makes the insert fail and loses the whole event.
+     */
+    @Column(name = "reason", length = 128)
+    private String reason;
+
+    /** Human-readable channel match hint, e.g. {@code model=mock-llm}. Display only. */
+    @Column(name = "route_hint", length = 255)
+    private String routeHint;
+
     /** Event source, e.g. dns / gateway. */
     @Column(name = "source", length = 32)
     private String source;
