@@ -27,7 +27,7 @@ public interface AiShadowDetectEventService {
      * and are both required to take effect; they bound {@code event_time} inclusively.
      */
     Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel, String source,
-        Long startTime, Long endTime, int page, int size);
+        String surface, Long startTime, Long endTime, int page, int size);
 
     /**
      * Attach weak audit-chain links to bypass/dns events (IR-025/S5):

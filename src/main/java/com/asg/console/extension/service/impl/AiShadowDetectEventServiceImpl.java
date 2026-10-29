@@ -74,15 +74,15 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
 
     @Override
     public Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel,
-        String source, Long startTime, Long endTime, int page, int size) {
+        String source, String surface, Long startTime, Long endTime, int page, int size) {
         if (page < 0) {
             page = 0;
         }
         if (size <= 0 || size > 500) {
             size = 20;
         }
-        Specification<AiShadowDetectEvent> spec =
-            buildSpec(domain, status, category, riskLevel, source, toLocalDateTime(startTime), toLocalDateTime(endTime));
+        Specification<AiShadowDetectEvent> spec = buildSpec(domain, status, category, riskLevel, source, surface,
+            toLocalDateTime(startTime), toLocalDateTime(endTime));
         return eventRepository.findAll(spec, PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "eventTime")));
     }
 
@@ -244,7 +244,7 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
     }
 
     private Specification<AiShadowDetectEvent> buildSpec(String domain, String status, String category,
-        String riskLevel, String source, LocalDateTime startTime, LocalDateTime endTime) {
+        String riskLevel, String source, String surface, LocalDateTime startTime, LocalDateTime endTime) {
         return (root, query, cb) -> {
             List<javax.persistence.criteria.Predicate> predicates = new ArrayList<>();
             if (domain != null && !StringUtils.isBlank(domain)) {
@@ -261,6 +261,9 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
             }
             if (source != null && !StringUtils.isBlank(source)) {
                 predicates.add(cb.equal(root.get("source"), source.trim()));
+            }
+            if (surface != null && !StringUtils.isBlank(surface)) {
+                predicates.add(cb.equal(root.get("surface"), surface.trim()));
             }
             if (startTime != null) {
                 predicates.add(cb.greaterThanOrEqualTo(root.get("eventTime"), startTime));

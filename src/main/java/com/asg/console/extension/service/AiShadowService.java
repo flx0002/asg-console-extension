@@ -22,7 +22,14 @@ import com.asg.console.extension.model.AiShadowStatus;
 
 public interface AiShadowService {
 
-    List<AiShadowStatus> getStatus();
+    /**
+     * 所有 AI 路由的管控状态。
+     * <p>
+     * {@code includeMetrics=false} 时跳过 Prometheus 查询：路由管控页只用模式与已授权消费者，
+     * 而那两次查询各自有 5s 连接 + 10s 读取超时，观测组件不可用时会把「只管配置」的页面一起拖住。
+     * 此时 {@code aiShadowList} 返回空列表——那是「没有查询」，不是「没有越权」。
+     */
+    List<AiShadowStatus> getStatus(boolean includeMetrics);
 
     AiShadowStatus getStatus(String routeName);
 
@@ -34,14 +41,14 @@ public interface AiShadowService {
      * Detected accesses aggregated over the requested window. Same source (detection
      * event table) as the trend and the KPI summary, so all three views agree.
      */
-    List<AiShadowDetectedAccess> getDetectedAccessesInWindow(Long startTime, Long endTime);
+    List<AiShadowDetectedAccess> getDetectedAccessesInWindow(Long startTime, Long endTime, String surface);
 
     /**
      * KPI summary over the requested window: total events, critical / high risk event
      * counts, blocked events and the number of distinct domains involved.
      * Returns {start, end, total, critical, high, blocked, domainCount, degraded}.
      */
-    Map<String, Object> getDetectedStats(Long startTime, Long endTime);
+    Map<String, Object> getDetectedStats(Long startTime, Long endTime, String surface);
 
     /**
      * Detection trend over the requested window (IR-004). The bucket granularity
@@ -49,7 +56,15 @@ public interface AiShadowService {
      * are aligned to the product time zone.
      * Returns {start, end, granularity, list=[{timestamp(ms), status, count}]}.
      */
-    Map<String, Object> getDetectedTrend(Long startTime, Long endTime);
+    Map<String, Object> getDetectedTrend(Long startTime, Long endTime, String surface);
+
+    /**
+     * 受管通道准入违规明细（surface='route'），按域名 + 原因 + 处置聚合。
+     * 「路由与消费者管控」页用它作为唯一数据源：Prometheus 只记录放行流量的 token，
+     * 被 key-auth 拦下的请求不产生指标，从计量侧永远看不到它们。
+     * Returns {start, end, total, blocked, domainCount, list=[{domain, reason, status, count, lastSeen}]}.
+     */
+    Map<String, Object> getAdmissionEvents(Long startTime, Long endTime);
 
     /**
      * Current authorized-domain view of the DNS/bypass policy (IR-003 unified

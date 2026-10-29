@@ -31,7 +31,5 @@ public class AiShadowEntry {
 
     private Long outputTokens;
 
-    private Long requestCount;
-
     private Boolean authorized;
 }

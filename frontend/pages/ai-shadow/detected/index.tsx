@@ -186,7 +186,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   // 未授权访问列表、KPI、趋势三处共用同一个时间档位窗口，口径一致才不会出现
   // 「明细有数据、上面全 0」这种自相矛盾的画面。
   const { data: detectedList, loading: detectedLoading, refresh: refreshDetected } = useRequest(
-    () => getAiShadowDetectedAccesses(currentWindow()),
+    () => getAiShadowDetectedAccesses({ ...currentWindow(), surface: 'shadow' }),
     {
       refreshDeps: [windowKey],
       pollingInterval: REFRESH_INTERVAL,
@@ -198,7 +198,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
   // 必须拿到 loading / error：直接把缺失值 ?? 0，会在请求失败时静默显示成
   // 「没有检测到」，正是本次要修掉的原始症状（KPI 全 0 但明细有数据）。
   const { data: statsData, loading: statsLoading, error: statsError } = useRequest(
-    () => getAiShadowDetectedStats(currentWindow()),
+    () => getAiShadowDetectedStats({ ...currentWindow(), surface: 'shadow' }),
     {
       refreshDeps: [windowKey],
       pollingInterval: REFRESH_INTERVAL,
@@ -218,6 +218,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
         page: eventPage,
         size: eventSize,
         ...win,
+        surface: 'shadow',
         ...(eventTimeFilter?.status ? { status: eventTimeFilter.status } : {}),
       });
     },
@@ -231,7 +232,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
 
   // 检测趋势：时间窗由视图决定，粒度由后端按跨度自适应（≤2 天小时桶，否则天桶）
   const { data: trendData, loading: trendLoading } = useRequest(
-    () => getAiShadowDetectedTrend(currentWindow()),
+    () => getAiShadowDetectedTrend({ ...currentWindow(), surface: 'shadow' }),
     {
       refreshDeps: [windowKey],
       pollingInterval: REFRESH_INTERVAL,
@@ -768,6 +769,20 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     return <Tag>{status || '-'}</Tag>;
   };
 
+  const reasonLabel = (reason?: string): string => {
+    if (!reason) return '-';
+    if (reason === 'no_key') return t('aiShadow.reasonNoKey');
+    if (reason === 'unknown_key') return t('aiShadow.reasonUnknownKey');
+    if (reason === 'off_channel') return t('aiShadow.reasonOffChannel');
+    if (reason.startsWith('not_in_allow')) {
+      const consumer = reason.split(':')[1];
+      return consumer
+        ? t('aiShadow.reasonNotInAllowNamed', { consumer })
+        : t('aiShadow.reasonNotInAllow');
+    }
+    return reason;
+  };
+
   const detailLabelMap: Record<string, string> = {
     protocol: t('aiShadow.eventProtocol'),
     method: t('aiShadow.eventMethod'),
@@ -890,6 +905,13 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
       width: 100,
       render: (status: string) => statusTag(status),
     },
+    {
+      title: t('aiShadow.eventColReason'),
+      dataIndex: 'reason',
+      key: 'reason',
+      width: 180,
+      render: (reason?: string) => <span style={{ fontFamily: 'monospace' }}>{reasonLabel(reason)}</span>,
+    },
   ];
 
   const isEnforcement = detectMode === 'enforcement';
@@ -970,6 +992,13 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
                 })}
               </div>
             ) : null}
+            {/* 准入违规同样是影子AI：本页只覆盖绕道那一面，另一面必须指路，
+                否则用户会把「检测总量」当成影子AI 的全部。 */}
+            {!statsUnavailable && (statsData?.admissionTotal ?? 0) > 0 ? (
+              <div style={{ marginTop: 4, fontSize: 12, color: '#8c8c8c' }}>
+                {t('aiShadow.shadowCrossTabHint', { count: statsData?.admissionTotal ?? 0 })}
+              </div>
+            ) : null}
           </Card>
         </Col>
         <Col span={8}>
@@ -1031,6 +1060,9 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
         title={
           <Space>
             <span>{t('aiShadow.detectedCardTitle')}</span>
+            <Tooltip title={t('aiShadow.shadowScopeHint')}>
+              <Tag>{t('aiShadow.shadowScopeTag')}</Tag>
+            </Tooltip>
             <Tag color={isEnforcement ? 'red' : 'blue'}>
               {isEnforcement ? t('aiShadow.enforcementMode') : t('aiShadow.monitoringMode')}
             </Tag>

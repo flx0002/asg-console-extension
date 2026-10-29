@@ -262,12 +262,13 @@ public class AiShadowDetectController {
         @RequestParam(value = "category", required = false) String category,
         @RequestParam(value = "riskLevel", required = false) String riskLevel,
         @RequestParam(value = "source", required = false) String source,
+        @RequestParam(value = "surface", required = false) String surface,
         @RequestParam(value = "startTime", required = false) Long startTime,
         @RequestParam(value = "endTime", required = false) Long endTime,
         @RequestParam(value = "page", defaultValue = "0") int page,
         @RequestParam(value = "size", defaultValue = "20") int size) {
-        Page<AiShadowDetectEvent> result =
-            detectEventService.query(domain, status, category, riskLevel, source, startTime, endTime, page, size);
+        Page<AiShadowDetectEvent> result = detectEventService.query(domain, status, category, riskLevel, source,
+            surface, startTime, endTime, page, size);
         // IR-025/S5: attach weak audit-chain links (domain handling audit +
         // same-source host aggregation) for bypass/dns events.
         detectEventService.attachAuditLinks(result.getContent());

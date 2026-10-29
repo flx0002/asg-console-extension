@@ -1,9 +1,11 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/no-invalid-void-type */
 import request from './request';
-import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate } from '@/interfaces/ai-shadow';
+import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate, AiShadowAdmissionResponse } from '@/interfaces/ai-shadow';
 
-export const getAiShadowStatus = (): Promise<AiShadowStatus[]> => {
-  return request.get<any, AiShadowStatus[]>('/v1/ai-shadow/status');
+// metrics=false 让后端跳过 Prometheus：路由管控页只用模式与授权列表，
+// 不该被观测组件的连接/读取超时拖住。
+export const getAiShadowStatus = (includeMetrics = true): Promise<AiShadowStatus[]> => {
+  return request.get<any, AiShadowStatus[]>("/v1/ai-shadow/status", { params: { metrics: includeMetrics } });
 };
 
 export const getAiShadowRouteStatus = (routeName: string): Promise<AiShadowStatus> => {
@@ -20,12 +22,13 @@ export const performAiShadowAction = (payload: AiShadowActionRequest): Promise<A
 
 // Window-scoped variant: the list, the KPI cards and the trend all aggregate the
 // same detection-event table, so they must be queried with the same window.
-export const getAiShadowDetectedAccesses = (params: { startTime?: number; endTime?: number } = {}):
-Promise<AiShadowDetectedAccess[]> => {
+export const getAiShadowDetectedAccesses = (
+  params: { startTime?: number; endTime?: number; surface?: string } = {},
+): Promise<AiShadowDetectedAccess[]> => {
   return request.get<any, AiShadowDetectedAccess[]>('/v1/ai-shadow/detected', { params });
 };
 
-export const getAiShadowDetectedStats = (params: { startTime: number; endTime: number }):
+export const getAiShadowDetectedStats = (params: { startTime: number; endTime: number; surface?: string }):
 Promise<AiShadowDetectedStats> => {
   return request.get<any, AiShadowDetectedStats>('/v1/ai-shadow/detected-stats', { params });
 };
@@ -52,9 +55,17 @@ export const getAiShadowDetectEvents = (params: AiShadowDetectEventQuery = {}): 
 
 // Trend over an explicit window (epoch millis). The backend picks hourly buckets for
 // spans up to two days and daily buckets beyond, and reports the choice back.
-export const getAiShadowDetectedTrend = (params: { startTime: number; endTime: number }):
+export const getAiShadowDetectedTrend = (params: { startTime: number; endTime: number; surface?: string }):
 Promise<AiShadowTrendResponse> => {
   return request.get<any, AiShadowTrendResponse>('/v1/ai-shadow/detected-trend', { params });
+};
+
+// Managed-channel admission rows (surface='route'). The route tab reads this instead of
+// Prometheus token counters: rejected requests never produce a token metric, so the
+// counter side can only ever show the violations that were allowed through.
+export const getAiShadowAdmissionEvents = (params: { startTime?: number; endTime?: number } = {}):
+Promise<AiShadowAdmissionResponse> => {
+  return request.get<any, AiShadowAdmissionResponse>('/v1/ai-shadow/admission-events', { params });
 };
 
 export const getAiShadowAuthorizedDomains = (

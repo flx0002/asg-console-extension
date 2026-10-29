@@ -24,10 +24,12 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -138,13 +140,14 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     @Override
-    public final List<AiShadowStatus> getStatus() {
+    public final List<AiShadowStatus> getStatus(boolean includeMetrics) {
         PaginatedResult<AiRoute> aiRoutes = aiRouteService.list(null);
         if (aiRoutes == null || CollectionUtils.isEmpty(aiRoutes.getData())) {
             return Collections.emptyList();
         }
 
-        Map<String, Map<String, PrometheusMetricData>> prometheusData = queryPrometheusMetrics();
+        Map<String, Map<String, PrometheusMetricData>> prometheusData =
+            includeMetrics ? queryPrometheusMetrics() : Collections.emptyMap();
 
         List<AiShadowStatus> result = new ArrayList<>();
         for (AiRoute aiRoute : aiRoutes.getData()) {
@@ -380,7 +383,6 @@ public class AiShadowServiceImpl implements AiShadowService {
                 .model(data.model)
                 .inputTokens(data.inputTokens)
                 .outputTokens(data.outputTokens)
-                .requestCount(data.requestCount)
                 .authorized(false)
                 .build());
         }
@@ -508,14 +510,14 @@ public class AiShadowServiceImpl implements AiShadowService {
                 PrometheusMetricData metricData = result.computeIfAbsent(key,
                     k -> new PrometheusMetricData(route, consumer, model));
 
+                // 同一个 (route, consumer, model) 在每个 Pod 上各有一条 series：控制台是 2 副本，
+                // 用 `=` 覆盖只会留下最后读到的那条，Token 用量恒定少算一半（实测 716 vs 1432）。
+                // requestCount 一并去掉：Prometheus 没有请求数指标，它原本只是「token>0 ? 1 : 0」，
+                // 与「请求次数」同名却不同义，留着就是个会被后人当真的假数字。
                 if (INPUT_TOKEN_METRIC.equals(metricName)) {
-                    metricData.inputTokens = tokenValue;
-                    metricData.requestCount = tokenValue > 0 ? 1L : 0L;
+                    metricData.inputTokens += tokenValue;
                 } else if (OUTPUT_TOKEN_METRIC.equals(metricName)) {
-                    metricData.outputTokens = tokenValue;
-                    if (tokenValue > 0) {
-                        metricData.requestCount = 1L;
-                    }
+                    metricData.outputTokens += tokenValue;
                 }
             }
         } catch (Exception e) {
@@ -530,7 +532,7 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     @Override
-    public List<AiShadowDetectedAccess> getDetectedAccessesInWindow(Long startTime, Long endTime) {
+    public List<AiShadowDetectedAccess> getDetectedAccessesInWindow(Long startTime, Long endTime, String surface) {
         // 数据源改为事件表：Prometheus 指标缺 risk 标签（riskLevel 恒为 null，"严重/高风险"
         // 永远算不出来），且只保留 6h。事件表由 Wasm 插件逐条上报，是流量的真相源。
         List<AiShadowDetectedAccess> result = new ArrayList<>();
@@ -544,7 +546,8 @@ public class AiShadowServiceImpl implements AiShadowService {
         long start = window[0];
         long end = window[1];
         try {
-            List<Object[]> rows = detectEventRepository.aggregateByDomain(start / 1000L, end / 1000L);
+            List<Object[]> rows =
+                detectEventRepository.aggregateByDomain(start / 1000L, end / 1000L, StringUtils.defaultString(surface));
             for (Object[] row : rows) {
                 if (row == null || row.length < 6 || row[0] == null || row[1] == null) {
                     continue;
@@ -586,7 +589,7 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     @Override
-    public Map<String, Object> getDetectedStats(Long startTime, Long endTime) {
+    public Map<String, Object> getDetectedStats(Long startTime, Long endTime, String surface) {
         long[] window = resolveWindow(startTime, endTime);
         long start = window[0];
         long end = window[1];
@@ -605,7 +608,8 @@ public class AiShadowServiceImpl implements AiShadowService {
         boolean degraded = false;
         try {
             List<String> authorizedDomains = loadAuthorizedDomains();
-            List<Object[]> rows = detectEventRepository.aggregateByDomain(start / 1000L, end / 1000L);
+            List<Object[]> rows =
+                detectEventRepository.aggregateByDomain(start / 1000L, end / 1000L, StringUtils.defaultString(surface));
             for (Object[] row : rows) {
                 if (row == null || row.length < 9 || row[0] == null || row[1] == null) {
                     continue;
@@ -633,8 +637,77 @@ public class AiShadowServiceImpl implements AiShadowService {
         stats.put("domainCount", domainCount);
         stats.put("authorizedTotal", authorizedTotal);
         stats.put("authorizedDomainCount", authorizedDomainCount);
+        // 跨页提示：本页只覆盖一面（检测页=绕道，管控页=准入违规），另一面有多少条要显式说出来。
+        // 这两个数取全量表，不受 surface 过滤影响，否则就变成了「自己跟自己比」。
+        // 口径变更点：准入违规同样是影子AI，不能因为不在本页就当作不存在。
+        long admissionTotal = 0L;
+        long shadowTotal = 0L;
+        try {
+            for (Object[] row : detectEventRepository.countBySurface(start / 1000L, end / 1000L)) {
+                if (row == null || row.length < 2 || row[0] == null) {
+                    continue;
+                }
+                long cnt = numberOrZero(row[1]);
+                if ("route".equals(String.valueOf(row[0]))) {
+                    admissionTotal = cnt;
+                } else if ("shadow".equals(String.valueOf(row[0]))) {
+                    shadowTotal = cnt;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to aggregate event count by surface", e);
+        }
+        stats.put("admissionTotal", admissionTotal);
+        stats.put("shadowTotal", shadowTotal);
         stats.put("degraded", degraded);
         return stats;
+    }
+
+    @Override
+    public Map<String, Object> getAdmissionEvents(Long startTime, Long endTime) {
+        long[] window = resolveWindow(startTime, endTime);
+        long start = window[0];
+        long end = window[1];
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("start", start);
+        result.put("end", end);
+        long total = 0L;
+        long blocked = 0L;
+        Set<String> domains = new HashSet<>();
+        List<Map<String, Object>> list = new ArrayList<>();
+        boolean degraded = false;
+        try {
+            for (Object[] row : detectEventRepository.aggregateAdmission(start / 1000L, end / 1000L)) {
+                if (row == null || row.length < 5 || row[0] == null) {
+                    continue;
+                }
+                long count = numberOrZero(row[3]);
+                String domain = String.valueOf(row[0]);
+                String status = String.valueOf(row[2]);
+                total += count;
+                domains.add(domain);
+                if ("blocked".equals(status)) {
+                    blocked += count;
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("domain", domain);
+                item.put("reason", StringUtils.trimToNull(String.valueOf(row[1])));
+                item.put("status", StringUtils.trimToNull(status));
+                item.put("count", count);
+                item.put("lastSeen", row[4] == null ? null : ((Number)row[4]).longValue() * 1000L);
+                list.add(item);
+            }
+        } catch (Exception e) {
+            // 聚合失败必须与「窗口内没有准入违规」区分开，否则页面会显示一切正常。
+            log.error("Error aggregating admission events", e);
+            degraded = true;
+        }
+        result.put("total", total);
+        result.put("blocked", blocked);
+        result.put("domainCount", domains.size());
+        result.put("list", list);
+        result.put("degraded", degraded);
+        return result;
     }
 
     private static long numberOrZero(Object value) {
@@ -665,7 +738,7 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     @Override
-    public Map<String, Object> getDetectedTrend(Long startTime, Long endTime) {
+    public Map<String, Object> getDetectedTrend(Long startTime, Long endTime, String surface) {
         // The window never runs into the future: a future end only yields empty buckets.
         long[] window = resolveWindow(startTime, endTime);
         long start = window[0];
@@ -690,7 +763,8 @@ public class AiShadowServiceImpl implements AiShadowService {
             // 事件表由 Wasm 插件（key-auth / ai-pii-guard）逐条上报，是流量的真相源，且自带
             // risk_level / status / domain；Prometheus 计数器缺 risk 标签、会随 Pod 重启归零、
             // 并受 6h retention 限制，导致 KPI / 趋势 / 明细三处口径对不上。此处统一到事件表。
-            List<Object[]> rows = detectEventRepository.countByBucketAndStatus(startSeconds, endSeconds, stepSeconds);
+            List<Object[]> rows = detectEventRepository.countByBucketAndStatus(startSeconds, endSeconds, stepSeconds,
+                StringUtils.defaultString(surface));
             for (Object[] row : rows) {
                 if (row == null || row.length < 3 || row[0] == null || row[1] == null || row[2] == null) {
                     continue;
@@ -871,7 +945,11 @@ public class AiShadowServiceImpl implements AiShadowService {
         boolean statsOk = true;
         try {
             long[] window = resolveWindow(startTime, endTime);
-            List<Object[]> rows = detectEventRepository.aggregateByDomain(window[0] / 1000L, window[1] / 1000L);
+            // 只算 shadow 面：授权域名的作用是让 ai-shadow-detect 对该域名不再上报（S1 白名单），
+            // 它不改变 key-auth 的准入判定。命中数若把准入违规算进来，用户会看到
+            // 「这条授权覆盖 12 条」但检测页只有 3 条——那是两个 tab 的口径又打架了。
+            List<Object[]> rows =
+                detectEventRepository.aggregateByDomain(window[0] / 1000L, window[1] / 1000L, "shadow");
             for (String domain : domains) {
                 long hits = 0L;
                 List<String> matched = new ArrayList<>();
@@ -1185,7 +1263,6 @@ public class AiShadowServiceImpl implements AiShadowService {
         String model;
         long inputTokens;
         long outputTokens;
-        long requestCount;
 
         PrometheusMetricData(String route, String consumer, String model) {
             this.route = route;

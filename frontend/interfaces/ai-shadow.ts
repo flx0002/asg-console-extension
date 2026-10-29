@@ -3,7 +3,6 @@ export interface AiShadowEntry {
   model: string;
   inputTokens: number;
   outputTokens: number;
-  requestCount: number;
   authorized: boolean;
 }
 
@@ -51,6 +50,11 @@ export interface AiShadowDetectedStats {
   // Subset of `total` / `domainCount` contributed by already-authorized domains.
   authorizedTotal?: number;
   authorizedDomainCount?: number;
+  // Event totals of BOTH tabs, independent of the surface filter the caller applied.
+  // The detection page uses admissionTotal to point at the other tab instead of
+  // pretending admission violations do not exist.
+  admissionTotal?: number;
+  shadowTotal?: number;
   degraded?: boolean;
 }
 
@@ -67,6 +71,13 @@ export interface AiShadowDetectEvent {
   sessionId?: string;
   detail?: string;
   createdAt?: string | number[];
+  // Surface decides tab membership: 'route' (managed-channel admission) or 'shadow'
+  // (off-channel discovery). Never re-derive it from detectType in the UI.
+  surface?: string;
+  verdict?: string;
+  // no_key / unknown_key / not_in_allow:<consumer> / off_channel.
+  reason?: string;
+  routeHint?: string;
 }
 
 export interface AiShadowDetectEventPage {
@@ -84,9 +95,35 @@ export interface AiShadowDetectEventQuery {
   category?: string;
   riskLevel?: string;
   source?: string;
+  // 'shadow' for the detection tab, 'route' for the admission view.
+  surface?: string;
   // Epoch millis; both bounds are needed to narrow the list to one trend bucket.
   startTime?: number;
   endTime?: number;
+}
+
+// One row of the managed-channel admission table: the same (domain, reason, status)
+// collapses into a single line, because what matters for handling is the reason.
+export interface AiShadowAdmissionEvent {
+  domain: string;
+  // no_key / unknown_key / not_in_allow:<consumer>; null when the reporter sent none.
+  reason?: string | null;
+  // blocked / monitored / allowed
+  status?: string | null;
+  count: number;
+  // Epoch millis of the last event in this group inside the queried window.
+  lastSeen?: number | null;
+}
+
+export interface AiShadowAdmissionResponse {
+  start: number;
+  end: number;
+  total: number;
+  blocked: number;
+  domainCount: number;
+  list: AiShadowAdmissionEvent[];
+  // true when the aggregation itself failed, which is NOT the same as an empty window.
+  degraded?: boolean;
 }
 
 // Long-format trend point for the detection trend chart (IR-004):

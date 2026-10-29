@@ -66,8 +66,9 @@ public class AiShadowController {
     @Operation(summary = "List all AI routes' shadow AI status")
     @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Shadow AI status listed successfully"),
         @ApiResponse(responseCode = "500", description = "Internal server error")})
-    public ResponseEntity<Response<List<AiShadowStatus>>> listStatus() {
-        List<AiShadowStatus> statusList = aiShadowService.getStatus();
+    public ResponseEntity<Response<List<AiShadowStatus>>> listStatus(
+        @RequestParam(value = "metrics", defaultValue = "true") boolean metrics) {
+        List<AiShadowStatus> statusList = aiShadowService.getStatus(metrics);
         return ControllerUtil.buildResponseEntity(statusList);
     }
 
@@ -108,8 +109,10 @@ public class AiShadowController {
         @ApiResponse(responseCode = "500", description = "Internal server error")})
     public ResponseEntity<Response<List<AiShadowDetectedAccess>>> listDetectedAccesses(
         @RequestParam(value = "startTime", required = false) Long startTime,
-        @RequestParam(value = "endTime", required = false) Long endTime) {
-        List<AiShadowDetectedAccess> detectedList = aiShadowService.getDetectedAccessesInWindow(startTime, endTime);
+        @RequestParam(value = "endTime", required = false) Long endTime,
+        @RequestParam(value = "surface", required = false) String surface) {
+        List<AiShadowDetectedAccess> detectedList =
+            aiShadowService.getDetectedAccessesInWindow(startTime, endTime, surface);
         return ControllerUtil.buildResponseEntity(detectedList);
     }
 
@@ -119,8 +122,9 @@ public class AiShadowController {
         @ApiResponse(responseCode = "500", description = "Internal server error")})
     public ResponseEntity<Response<Map<String, Object>>> getDetectedStats(
         @RequestParam(value = "startTime", required = false) Long startTime,
-        @RequestParam(value = "endTime", required = false) Long endTime) {
-        return ControllerUtil.buildResponseEntity(aiShadowService.getDetectedStats(startTime, endTime));
+        @RequestParam(value = "endTime", required = false) Long endTime,
+        @RequestParam(value = "surface", required = false) String surface) {
+        return ControllerUtil.buildResponseEntity(aiShadowService.getDetectedStats(startTime, endTime, surface));
     }
 
     @GetMapping("/detected-trend")
@@ -130,7 +134,8 @@ public class AiShadowController {
     public ResponseEntity<Response<Map<String, Object>>> getDetectedTrend(
         @RequestParam(value = "startTime", required = false) Long startTime,
         @RequestParam(value = "endTime", required = false) Long endTime,
-        @RequestParam(value = "hours", required = false) Integer hours) {
+        @RequestParam(value = "hours", required = false) Integer hours,
+        @RequestParam(value = "surface", required = false) String surface) {
         // `hours` stays supported for older callers; startTime/endTime take precedence.
         Long resolvedStart = startTime;
         Long resolvedEnd = endTime;
@@ -138,7 +143,18 @@ public class AiShadowController {
             long end = resolvedEnd == null ? System.currentTimeMillis() : resolvedEnd;
             resolvedStart = end - hours.longValue() * 3600L * 1000L;
         }
-        return ControllerUtil.buildResponseEntity(aiShadowService.getDetectedTrend(resolvedStart, resolvedEnd));
+        return ControllerUtil.buildResponseEntity(
+            aiShadowService.getDetectedTrend(resolvedStart, resolvedEnd, surface));
+    }
+
+    @GetMapping("/admission-events")
+    @Operation(summary = "Managed-channel admission events grouped by domain, reason and disposition")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Admission events listed"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<Map<String, Object>>> getAdmissionEvents(
+        @RequestParam(value = "startTime", required = false) Long startTime,
+        @RequestParam(value = "endTime", required = false) Long endTime) {
+        return ControllerUtil.buildResponseEntity(aiShadowService.getAdmissionEvents(startTime, endTime));
     }
 
     @GetMapping("/authorized-domains")
