@@ -15,6 +15,7 @@ package com.asg.console.extension.controller;
 import javax.annotation.Resource;
 import javax.validation.constraints.NotBlank;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.util.ControllerUtil;
+import com.asg.console.extension.model.AiChannelChangeEvent;
 import com.asg.console.extension.model.AiShadowActionRequest;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
 import com.asg.console.extension.model.AiShadowModeRequest;
@@ -48,10 +50,16 @@ import java.util.Map;
 public class AiShadowController {
 
     private AiShadowService aiShadowService;
+    private ApplicationEventPublisher eventPublisher;
 
     @Resource
     public void setAiShadowService(AiShadowService aiShadowService) {
         this.aiShadowService = aiShadowService;
+    }
+
+    @Resource
+    public void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
     }
 
     @GetMapping("/status")
@@ -159,8 +167,12 @@ public class AiShadowController {
         List<String> removeDomains = (List<String>) body.get("removeDomains");
         // manual = 控制台表单添加，detected = 从检测结果一键授权；缺省按 manual 记录。
         String source = body.get("source") != null ? String.valueOf(body.get("source")) : null;
-        return ControllerUtil.buildResponseEntity(
-            aiShadowService.updateAuthorizedDomains(mode, addDomains, removeDomains, source));
+        Map<String, Object> updated =
+            aiShadowService.updateAuthorizedDomains(mode, addDomains, removeDomains, source);
+        // 授权域名是 S1b 的唯一输入。写成功后立即通知派生，否则界面显示「已授权」而网关仍把该域名的
+        // 访问记为影子事件，要等 Console 重启才一致——那正是这次要修的时序缺口。
+        eventPublisher.publishEvent(new AiChannelChangeEvent(this, "authorized-domains"));
+        return ControllerUtil.buildResponseEntity(updated);
     }
 
     @PutMapping("/detect-mode")

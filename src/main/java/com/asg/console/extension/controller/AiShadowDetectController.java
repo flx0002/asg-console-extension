@@ -22,6 +22,7 @@ import javax.servlet.http.HttpServletRequest;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -41,6 +42,7 @@ import com.asg.console.extension.controller.dto.DnsPolicyUpdateRequest;
 import com.asg.console.extension.controller.dto.PageResult;
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.exception.AuthException;
+import com.asg.console.extension.model.AiChannelChangeEvent;
 import com.asg.console.extension.model.AiShadowDetectEvent;
 import com.asg.console.extension.model.AiShadowDnsPolicy;
 import com.asg.console.extension.service.AiShadowDetectEventService;
@@ -75,6 +77,7 @@ public class AiShadowDetectController {
     private AiShadowDetectEventService detectEventService;
     private AiShadowDnsPolicyService dnsPolicyService;
     private WasmPluginInstanceService wasmPluginInstanceService;
+    private ApplicationEventPublisher eventPublisher;
 
     @Value("${asg.collector-token:wnt-asg-collector-2026}")
     private String collectorToken;
@@ -92,6 +95,11 @@ public class AiShadowDetectController {
     @Resource
     public void setWasmPluginInstanceService(WasmPluginInstanceService wasmPluginInstanceService) {
         this.wasmPluginInstanceService = wasmPluginInstanceService;
+    }
+
+    @Resource
+    public void setEventPublisher(ApplicationEventPublisher eventPublisher) {
+        this.eventPublisher = eventPublisher;
     }
 
     /**
@@ -184,6 +192,9 @@ public class AiShadowDetectController {
             throw new ValidationException("request body is required");
         }
         AiShadowDnsPolicy policy = dnsPolicyService.updatePolicy(request.getMode(), request.getAuthorizedDomains());
+        // 这是授权域名的第二条写入口（采集器/策略同步用），与控制台那条同样要触发派生；
+        // 漏掉这里就会出现「某条路径改了授权，网关不生效」的间歇性不一致。
+        eventPublisher.publishEvent(new AiChannelChangeEvent(this, "dns-policy"));
         return ResponseEntity.ok(Response.success(toPolicyResponse(policy)));
     }
 

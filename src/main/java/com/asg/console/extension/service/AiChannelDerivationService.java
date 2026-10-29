@@ -17,7 +17,14 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
 
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -34,6 +41,7 @@ import com.alibaba.higress.sdk.model.route.RoutePredicate;
 import com.alibaba.higress.sdk.service.WasmPluginInstanceService;
 import com.alibaba.higress.sdk.service.ai.AiRouteService;
 import com.asg.console.extension.constant.AsgPluginConstants;
+import com.asg.console.extension.model.AiChannelChangeEvent;
 import com.asg.console.extension.model.AiShadowDnsPolicy;
 
 import io.kubernetes.client.openapi.ApiClient;
@@ -84,12 +92,65 @@ public class AiChannelDerivationService {
     private static final String INTERNAL_SUFFIX = ".internal";
     private static final String AI_ROUTE_PREFIX = "ai-route-";
 
+    /**
+     * Minimum gap between two derivations.
+     *
+     * <p>The first trigger runs immediately, so a domain authorization takes effect without a
+     * visible delay; this window then absorbs whatever arrives while that run is in flight — a
+     * batch approving five domains, a helm upgrade rewriting several Ingresses — into at most one
+     * follow-up run instead of one run per change.
+     */
+    private static final long DEBOUNCE_MILLIS = 1500L;
+
+    /**
+     * Ingress poll interval. AI Route CRUD happens in the upstream Console controllers, which are a
+     * read-only fork for us, so it cannot be hooked; its effect always materializes as an Ingress
+     * write in the same call, and polling the resource versions catches it.
+     *
+     * <p>Five seconds is the delay a user can perceive without watching: an Ingress write caused by
+     * kubectl shows up in the gateway within one poll plus one derivation (~5-6s). Lowering it buys
+     * nothing measurable and multiplies list calls.
+     */
+    private static final long INGRESS_POLL_SECONDS = 5L;
+
     /** Cache of cluster service names, refreshed on each derivation (derivation is low-frequency). */
     private final CoreV1Api coreV1Api;
     private final NetworkingV1Api networkingV1Api;
     private final WasmPluginInstanceService wasmPluginInstanceService;
     private final AiRouteService aiRouteService;
     private final AiShadowDnsPolicyService dnsPolicyService;
+
+    /**
+     * Two threads on purpose: the poll must keep its cadence while a derivation (which may sleep in
+     * the debounce window) occupies the other. A single thread would stretch the poll interval to
+     * derivation time + debounce.
+     */
+    private final ScheduledExecutorService executor =
+        Executors.newScheduledThreadPool(2, runnable -> {
+            Thread thread = new Thread(runnable, "ai-channel-derivation");
+            thread.setDaemon(true);
+            return thread;
+        });
+
+    /** Set by every trigger, cleared before a run. Two flags give "coalesce, never drop". */
+    private final AtomicBoolean dirty = new AtomicBoolean(false);
+    private final AtomicBoolean workerRunning = new AtomicBoolean(false);
+
+    /**
+     * Last observed Ingress fingerprint. Null until the first successful poll establishes the
+     * baseline, because startup alignment already derives once and the poll must not duplicate it.
+     */
+    private volatile String lastIngressFingerprint;
+
+    /**
+     * Set when a derivation fails to push. The next poll retries even if nothing else changed —
+     * otherwise a single write conflict would leave the gateway on stale lists until the next
+     * unrelated change, which is indistinguishable from "the feature silently stopped working".
+     */
+    private volatile boolean retryNeeded;
+
+    /** Last trigger reason, for logs only. */
+    private volatile String lastReason = "startup";
 
     public AiChannelDerivationService(WasmPluginInstanceService wasmPluginInstanceService,
             AiRouteService aiRouteService, AiShadowDnsPolicyService dnsPolicyService, ApiClient apiClient) {
@@ -133,9 +194,11 @@ public class AiChannelDerivationService {
      * Derives all lists and pushes the gateway-facing ones into the {@code ai-shadow-detect} global
      * config.
      *
-     * <p>The write is skipped when content is unchanged. Console re-derives on many triggers (route
-     * CRUD, domain change, Ingress watch, startup); writing unconditionally would bump the WasmPlugin
-     * revision and force a full xDS re-sync every time for nothing.
+     * <p>The write is skipped when content is unchanged. Console re-derives on every trigger
+     * (domain authorization, Ingress poll hit, startup); writing unconditionally would bump the
+     * WasmPlugin revision and force a full xDS re-sync every time for nothing. Both Console replicas
+     * derive the same content, so a concurrent write from the other replica converges rather than
+     * conflicts — and the SDK already retries on CONFLICT internally.
      */
     public synchronized DerivationResult deriveAndSync() {
         DerivationResult result = derive();
@@ -155,13 +218,170 @@ public class AiChannelDerivationService {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void alignOnStartup() {
-        CompletableFuture.runAsync(() -> {
+        requestDerivation("startup");
+    }
+
+    /**
+     * Reacts to a domain authorization change made through the Console.
+     *
+     * <p>Without this the only trigger is Console restart, and a user who just approved a domain
+     * sees the UI confirm it while the gateway keeps reporting that domain as shadow traffic —
+     * the feature looks broken precisely when it was just configured.
+     */
+    @EventListener(AiChannelChangeEvent.class)
+    public void onChannelChanged(AiChannelChangeEvent event) {
+        requestDerivation(event == null || event.getReason() == null ? "event" : event.getReason());
+    }
+
+    /** Starts the Ingress watcher. See {@link #pollIngressChanges()} for why polling, not watch. */
+    @PostConstruct
+    public void startIngressWatcher() {
+        executor.scheduleWithFixedDelay(this::pollIngressChanges, INGRESS_POLL_SECONDS, INGRESS_POLL_SECONDS,
+            TimeUnit.SECONDS);
+        log.info("AI channel ingress watcher started, poll interval {}s", INGRESS_POLL_SECONDS);
+    }
+
+    @PreDestroy
+    public void stopIngressWatcher() {
+        executor.shutdownNow();
+    }
+
+    /**
+     * Asks for a derivation without blocking the caller: both triggers are on request paths (domain
+     * authorization) or on a timer, and neither may wait for a Kubernetes round-trip.
+     *
+     * <p>Repeated calls coalesce. The flag pair means an event arriving while a run is in flight is
+     * not lost — it sets {@code dirty} again and the loop runs once more afterwards.
+     */
+    public void requestDerivation(String reason) {
+        lastReason = reason;
+        dirty.set(true);
+        scheduleWorkerIfIdle();
+    }
+
+    private void scheduleWorkerIfIdle() {
+        // Shutdown is a normal path here: stopIngressWatcher() interrupts the worker, whose finally
+        // block calls back into this method. Submitting to a shut-down pool would throw
+        // RejectedExecutionException from a thread that has nothing left to do.
+        if (executor.isShutdown()) {
+            return;
+        }
+        if (workerRunning.compareAndSet(false, true)) {
             try {
-                deriveAndSync();
-            } catch (Exception e) {
-                log.error("AI channel derivation on startup failed", e);
+                executor.execute(this::workerLoop);
+            } catch (RejectedExecutionException e) {
+                // Lost the race against shutdown: release the flag so a later trigger can retry.
+                workerRunning.set(false);
             }
-        });
+        }
+    }
+
+    private void workerLoop() {
+        try {
+            while (dirty.compareAndSet(true, false)) {
+                runOnce();
+                // Trailing debounce: changes that arrive during this window are merged into the
+                // next iteration instead of producing one derivation each.
+                if (!sleepQuietly()) {
+                    return;
+                }
+            }
+        } finally {
+            workerRunning.set(false);
+            // Close the race between the loop exit and the flag reset: an event that landed in
+            // between would otherwise leave dirty=true with no worker scheduled.
+            if (dirty.get()) {
+                scheduleWorkerIfIdle();
+            }
+        }
+    }
+
+    private void runOnce() {
+        try {
+            deriveAndSync();
+            retryNeeded = false;
+        } catch (Exception e) {
+            retryNeeded = true;
+            log.error("AI channel derivation failed (trigger={}), retrying on next poll", lastReason, e);
+        }
+    }
+
+    /** @return false when interrupted, so the worker stops instead of spinning on shutdown. */
+    private boolean sleepQuietly() {
+        try {
+            Thread.sleep(DEBOUNCE_MILLIS);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /**
+     * Detects Ingress changes by comparing resource versions.
+     *
+     * <p>Polling rather than a watch, deliberately:
+     *
+     * <ul>
+     *   <li>The bundled Kubernetes client has only the informer interfaces, not a working
+     *       shared-informer factory, so a watch would mean hand-writing resource-version
+     *       continuation and 410-Gone recovery — a state machine that fails silently when it is
+     *       wrong, which is the worst failure mode for a detection whitelist.</li>
+     *   <li>A watch delivered nothing useful here: the cost that matters is the derivation, and the
+     *       derivation is skipped when content is unchanged.</li>
+     *   <li>Polling has no state to corrupt: a failed list is simply skipped, and the next poll
+     *       sees the change anyway.</li>
+     * </ul>
+     *
+     * <p>A read failure keeps the previous fingerprint. Advancing it on failure would make the next
+     * successful poll look like "everything changed" or, worse, hide the change that was missed.
+     */
+    private void pollIngressChanges() {
+        if (executor.isShutdown()) {
+            return;
+        }
+        try {
+            List<V1Ingress> ingresses = listIngresses();
+            if (ingresses == null) {
+                return;
+            }
+            String fingerprint = fingerprintOf(ingresses);
+            String previous = lastIngressFingerprint;
+            lastIngressFingerprint = fingerprint;
+            if (previous == null) {
+                // Baseline only: startup alignment already derived once, so flagging a change here
+                // would produce a duplicate derivation on every restart.
+                log.debug("AI channel ingress baseline established, {} ingress(es)", ingresses.size());
+                return;
+            }
+            if (!previous.equals(fingerprint)) {
+                requestDerivation("ingress-changed");
+            } else if (retryNeeded) {
+                requestDerivation("retry");
+            }
+        } catch (Exception e) {
+            // Never let the timer die: scheduleWithFixedDelay cancels the task on a thrown
+            // exception, which would silently stop catching AI Route changes until a restart.
+            log.warn("AI channel ingress poll failed", e);
+        }
+    }
+
+    /**
+     * Fingerprint of the Ingress set: every namespace/name with its resource version, sorted so
+     * list order does not matter. The full string is compared, not a hash — a collision would skip
+     * a derivation, and the set is small enough that the comparison costs nothing.
+     */
+    private static String fingerprintOf(List<V1Ingress> ingresses) {
+        List<String> entries = new ArrayList<>(ingresses.size());
+        for (V1Ingress ingress : ingresses) {
+            if (ingress == null || ingress.getMetadata() == null) {
+                continue;
+            }
+            entries.add(ingress.getMetadata().getNamespace() + "/" + ingress.getMetadata().getName() + '@'
+                + StringUtils.trimToEmpty(ingress.getMetadata().getResourceVersion()));
+        }
+        Collections.sort(entries);
+        return String.join("\n", entries);
     }
 
     /** Computes the lists without touching the gateway. Safe for read-only paths. */
