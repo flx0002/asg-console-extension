@@ -1,7 +1,7 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/indent, react/jsx-indent */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Card, Table, Switch, Tag, Button, message, Modal, Statistic, Row, Col, Space, Spin, Empty, Tooltip, Descriptions, Input, Segmented, Alert, DatePicker } from 'antd';
-import { EyeOutlined, WarningOutlined, ReloadOutlined, LineChartOutlined, CheckOutlined, PlusOutlined, SafetyCertificateOutlined, CloseOutlined } from '@ant-design/icons';
+import { EyeOutlined, WarningOutlined, ReloadOutlined, LineChartOutlined, CheckOutlined, PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { Line } from '@ant-design/charts';
 import { useRequest } from 'ahooks';
 import { getAiShadowDetectedAccesses, getAiShadowDetectedStats, setAiShadowDetectMode, getAiShadowDetectMode, getAiShadowDetectEvents, getAiShadowDetectedTrend, getAiShadowAuthorizedDomains, updateAiShadowAuthorizedDomains } from '@/services';
@@ -421,8 +421,8 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     }
   }, [t]);
 
-  // 授权域名不再从检测列表里消失，只打标记：授权语义是「已放行并持续监控」，
-  // 不是「不再展示」。因此这里不再有「授权后条目立刻消失」的效果。
+  // 授权后该域名的访问从「检测到的AI服务访问」里消失，只在下方「授权域名管理」保留一条授权记录；
+  // 撤销授权后它会重新出现。两张表各管一件事：同一域名不会在两处各有一行、更不会两处都能「移除」。
   const handleAuthorizeDomain = useCallback(async (domain: string, source: 'manual' | 'detected' = 'manual') => {
     if (!domain) return;
     try {
@@ -632,20 +632,10 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
       title: t('aiShadow.detectedActions'),
       key: 'actions',
       width: 100,
-      // 已授权的域名给「移除授权」而不是置灰的「授权」：授权是可逆操作，
-      // 但移除会让该域名重新回到未授权状态，必须走带二次确认的 handleRemoveDomain。
-      render: (_: unknown, record: AiShadowDetectedAccess) => (record.authorized ? (
-        <Button
-          type="link"
-          size="small"
-          danger
-          icon={<CloseOutlined />}
-          disabled={!enabled}
-          onClick={() => handleRemoveDomain(record.sni)}
-        >
-          {t('aiShadow.deauthzBtn')}
-        </Button>
-      ) : (
+      // 这张表只含未授权访问（已授权的域名归下方「授权域名管理」），所以只有一个动作。
+      // 撤销授权必须留在授权表里做：同一动作两个入口会带来两套确认文案，
+      // 用户也没法判断哪一处才是授权的真实状态。
+      render: (_: unknown, record: AiShadowDetectedAccess) => (
         <Button
           type="link"
           size="small"
@@ -655,7 +645,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
         >
           {t('aiShadow.authzBtn')}
         </Button>
-      )),
+      ),
     },
   ];
 
@@ -964,8 +954,8 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
               value={totalDetected}
               prefix={<EyeOutlined />}
             />
-            {/* 全量口径下的补充说明：已授权的访问仍然计入总量，
-                这里点明其中多少来自已授权域名，避免用户以为授权后数字该下降。 */}
+            {/* 未授权口径下的补充说明：已授权的访问不计入总量，
+                这里点明排除了多少，避免用户把总量变小误读成「流量下降」。 */}
             {!statsUnavailable && (statsData?.authorizedTotal ?? 0) > 0 ? (
               <div style={{ marginTop: 4, fontSize: 12, color: '#8c8c8c' }}>
                 {t('aiShadow.kpiAuthorizedHint', {
