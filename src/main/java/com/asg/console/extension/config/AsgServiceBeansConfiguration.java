@@ -10,6 +10,7 @@ import com.asg.console.extension.service.BehaviorAnalysisServiceImpl;
 import com.asg.console.extension.service.RedisAuditSyncService;
 import com.asg.console.extension.repository.AiShadowAuthorizedDomainRepository;
 import com.asg.console.extension.repository.AiShadowDetectEventRepository;
+import com.asg.console.extension.service.AiChannelDerivationService;
 import com.asg.console.extension.service.AiShadowDnsPolicyService;
 import com.asg.console.extension.service.AiShadowService;
 import com.asg.console.extension.service.AiShadowServiceImpl;
@@ -68,6 +69,19 @@ public class AsgServiceBeansConfiguration {
     public AuditLogCollectorService auditLogCollectorService(KubernetesClientService kubernetesClientService,
             AuditChainService auditChainService) {
         return new AuditLogCollectorService(UpstreamApiClientAccessor.getApiClient(kubernetesClientService), auditChainService);
+    }
+
+    /**
+     * Derives the registered AI channel lists (AI Route models, authorized proxy hosts) and pushes
+     * them into the ai-shadow-detect global config. Replaces the hand-maintained trusted_hosts
+     * array, which had no owner and silently drifted out of date.
+     */
+    @Bean
+    public AiChannelDerivationService aiChannelDerivationService(WasmPluginInstanceService wasmPluginInstanceService,
+            AiRouteService aiRouteService, AiShadowDnsPolicyService aiShadowDnsPolicyService,
+            KubernetesClientService kubernetesClientService) {
+        return new AiChannelDerivationService(wasmPluginInstanceService, aiRouteService, aiShadowDnsPolicyService,
+            UpstreamApiClientAccessor.getApiClient(kubernetesClientService));
     }
 
     /**
