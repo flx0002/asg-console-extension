@@ -421,8 +421,10 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     }
   }, [t]);
 
-  // 授权后该域名的访问从「检测到的AI服务访问」里消失，只在下方「授权域名管理」保留一条授权记录；
-  // 撤销授权后它会重新出现。两张表各管一件事：同一域名不会在两处各有一行、更不会两处都能「移除」。
+  // 授权的作用范围是「此后」：B1 会把授权域名派生进插件的 S1b 白名单，
+  // 该域名之后的新访问直接放行、不再产生事件。
+  // 已经产生的历史记录不动 —— 它们记录的是当时确实未授权的访问，
+  // 事后授权不能追溯性地把过去的访问改判为合规。
   const handleAuthorizeDomain = useCallback(async (domain: string, source: 'manual' | 'detected' = 'manual') => {
     if (!domain) return;
     try {
@@ -435,8 +437,9 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     }
   }, [t, refreshAuthz, refreshDetected]);
 
-  // 移除授权会让该域名重新回到「未授权访问」列表，是影响安全判断的破坏性操作，
+  // 移除授权会让该域名的新访问重新作为影子事件上报，是影响安全判断的破坏性操作，
   // 单条与批量都必须先确认，避免误点即生效、且没有撤销入口。
+  // 已产生的历史事件不受影响：它们本来就在列表里，从未因授权而被隐藏。
   const handleRemoveDomain = useCallback((domain: string) => {
     Modal.confirm({
       title: t('aiShadow.deauthzConfirmSingle', { domain }),
@@ -632,10 +635,13 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
       title: t('aiShadow.detectedActions'),
       key: 'actions',
       width: 100,
-      // 这张表只含未授权访问（已授权的域名归下方「授权域名管理」），所以只有一个动作。
-      // 撤销授权必须留在授权表里做：同一动作两个入口会带来两套确认文案，
-      // 用户也没法判断哪一处才是授权的真实状态。
-      render: (_: unknown, record: AiShadowDetectedAccess) => (
+      // 已授权行不再提供动作：撤销授权统一在下方「授权域名管理」表里做。
+      // 同一动作两个入口会有两套确认文案，用户也无法判断哪一处才是授权的真实状态。
+      // 已授权行仍留在本表是刻意的：授权只让「此后」的访问不再上报，
+      // 已发生的访问是审计事实，不能因为事后授权就从视图里消失。
+      render: (_: unknown, record: AiShadowDetectedAccess) => (record.authorized ? (
+        <span style={{ color: '#bfbfbf' }}>-</span>
+      ) : (
         <Button
           type="link"
           size="small"
@@ -645,7 +651,7 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
         >
           {t('aiShadow.authzBtn')}
         </Button>
-      ),
+      )),
     },
   ];
 
@@ -954,8 +960,8 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
               value={totalDetected}
               prefix={<EyeOutlined />}
             />
-            {/* 未授权口径下的补充说明：已授权的访问不计入总量，
-                这里点明排除了多少，避免用户把总量变小误读成「流量下降」。 */}
+            {/* 全量口径下的补充说明：已授权的访问仍然计入总量，
+                这里点明其中多少来自已授权域名，避免用户以为授权后数字该下降。 */}
             {!statsUnavailable && (statsData?.authorizedTotal ?? 0) > 0 ? (
               <div style={{ marginTop: 4, fontSize: 12, color: '#8c8c8c' }}>
                 {t('aiShadow.kpiAuthorizedHint', {

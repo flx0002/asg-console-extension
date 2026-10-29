@@ -534,10 +534,11 @@ public class AiShadowServiceImpl implements AiShadowService {
         // 数据源改为事件表：Prometheus 指标缺 risk 标签（riskLevel 恒为 null，"严重/高风险"
         // 永远算不出来），且只保留 6h。事件表由 Wasm 插件逐条上报，是流量的真相源。
         List<AiShadowDetectedAccess> result = new ArrayList<>();
-        // 口径：只统计未授权访问。已授权域名的访问归「授权域名管理」，不再出现在本表——
-        // 否则同一域名在两张表里各占一行、且两行都带「移除」，用户无法判断哪条才是授权状态。
-        // 列表、KPI、趋势三处必须共用 isDomainAuthorized 这一个判断：任一处漏改就会重现
-        // 「列表为空、趋势有柱子」的自相矛盾画面（IR-003 当时正是为消除口径分裂才改成全量展示）。
+        // 口径：全量。已授权域名不再从列表里剔除，只用 authorized 标记出来。
+        // 原实现（IR-003）把授权当作「从检测视图里隐藏」，结果同一页面出现两套口径：
+        // KPI 与列表剔除授权域名、趋势与事件明细不剔除，用户一授权就看到
+        // 「趋势有数据、KPI 全 0」。授权语义应该是「已放行，但仍在监控」，
+        // 隐藏流量会让授权变成一次无法复核的操作。
         List<String> authorizedDomains = loadAuthorizedDomains();
         long[] window = resolveWindow(startTime, endTime);
         long start = window[0];
@@ -549,11 +550,6 @@ public class AiShadowServiceImpl implements AiShadowService {
                     continue;
                 }
                 String domain = String.valueOf(row[0]);
-                if (isDomainAuthorized(domain, authorizedDomains)) {
-                    // 已授权：不进未授权视图。其流量仍在事件明细里可查，KPI 也单独说明，
-                    // 授权本身仍是「可复核」的，不是把数据丢掉。
-                    continue;
-                }
                 String category = row[5] == null ? null : String.valueOf(row[5]);
                 String status = rankToValue(STATUS_BY_RANK, row[3]);
                 result.add(AiShadowDetectedAccess.builder()
@@ -602,9 +598,8 @@ public class AiShadowServiceImpl implements AiShadowService {
         long high = 0L;
         long blocked = 0L;
         long domainCount = 0L;
-        // 已授权域名的访问不计入任何未授权指标，只单独累计：前端据此提示
-        // 「另有 N 条已授权访问未计入」，用户才不会把总量变小误读成「流量下降」。
-        // 与列表、趋势同一口径：三者对同一个窗口必然得出同一个合计数。
+        // 已授权域名单独累计，供前端在「检测总量」旁注明「其中已授权 N 条」。
+        // 口径与列表、趋势统一为全量：三者对同一个窗口必然得出同一个合计数。
         long authorizedTotal = 0L;
         long authorizedDomainCount = 0L;
         boolean degraded = false;
@@ -616,16 +611,15 @@ public class AiShadowServiceImpl implements AiShadowService {
                     continue;
                 }
                 long count = ((Number)row[1]).longValue();
-                if (isDomainAuthorized(String.valueOf(row[0]), authorizedDomains)) {
-                    authorizedDomainCount++;
-                    authorizedTotal += count;
-                    continue;
-                }
                 domainCount++;
                 total += count;
                 critical += numberOrZero(row[6]);
                 high += numberOrZero(row[7]);
                 blocked += numberOrZero(row[8]);
+                if (isDomainAuthorized(String.valueOf(row[0]), authorizedDomains)) {
+                    authorizedDomainCount++;
+                    authorizedTotal += count;
+                }
             }
         } catch (Exception e) {
             // degraded=true 时前端显示告警，而不是把 0 当成"没有风险"
@@ -696,35 +690,18 @@ public class AiShadowServiceImpl implements AiShadowService {
             // 事件表由 Wasm 插件（key-auth / ai-pii-guard）逐条上报，是流量的真相源，且自带
             // risk_level / status / domain；Prometheus 计数器缺 risk 标签、会随 Pod 重启归零、
             // 并受 6h retention 限制，导致 KPI / 趋势 / 明细三处口径对不上。此处统一到事件表。
-            List<Object[]> rows =
-                detectEventRepository.countByBucketDomainAndStatus(startSeconds, endSeconds, stepSeconds);
-            // 查询已细分到域名，这里按「与列表/KPI 相同的 isDomainAuthorized」剔除已授权访问后
-            // 再折回按桶聚合。授权是后缀语义（授权 example.com 覆盖 api.example.com），
-            // SQL 无法表达，所以过滤只能放在应用层——放在这里，三处口径才真正同源。
-            List<String> authorizedDomains = loadAuthorizedDomains();
-            Map<Long, Map<String, Long>> bucketStatusCounts = new HashMap<>();
+            List<Object[]> rows = detectEventRepository.countByBucketAndStatus(startSeconds, endSeconds, stepSeconds);
             for (Object[] row : rows) {
-                if (row == null || row.length < 4 || row[0] == null || row[1] == null
-                    || row[2] == null || row[3] == null) {
-                    continue;
-                }
-                if (isDomainAuthorized(String.valueOf(row[1]), authorizedDomains)) {
+                if (row == null || row.length < 3 || row[0] == null || row[1] == null || row[2] == null) {
                     continue;
                 }
                 long bucketIdx = ((Number)row[0]).longValue();
-                bucketStatusCounts.computeIfAbsent(bucketIdx, k -> new HashMap<>())
-                    .merge(String.valueOf(row[2]), ((Number)row[3]).longValue(), Long::sum);
-            }
-            for (Map.Entry<Long, Map<String, Long>> bucket : bucketStatusCounts.entrySet()) {
-                long bucketIdx = bucket.getKey();
-                for (Map.Entry<String, Long> statusCount : bucket.getValue().entrySet()) {
-                    Map<String, Object> p = new HashMap<>();
-                    // Milliseconds: the console formats the label itself, per granularity.
-                    p.put("timestamp", (startSeconds + bucketIdx * stepSeconds) * 1000L);
-                    p.put("status", statusCount.getKey());
-                    p.put("count", statusCount.getValue());
-                    points.add(p);
-                }
+                Map<String, Object> p = new HashMap<>();
+                // Milliseconds: the console formats the label itself, per granularity.
+                p.put("timestamp", (startSeconds + bucketIdx * stepSeconds) * 1000L);
+                p.put("status", String.valueOf(row[1]));
+                p.put("count", ((Number)row[2]).longValue());
+                points.add(p);
             }
             // Stable ordering: status (blocked/allowed/monitored first), then time ascending.
             points.sort((a, b) -> {
@@ -746,10 +723,9 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     /**
-     * 从 DNS 检测策略（ai_shadow_dns_policy）读取授权域名清单。
-     * <p>
-     * 读失败时降级为空列表，即「一条都不过滤」：此时视图回退为全量展示（已授权域名会重复出现），
-     * 而不是把流量藏起来。失败方向是刻意的——宁可多显示，也不能让未授权流量被当成已授权而消失。
+     * Load the authorized domain list from the DNS detection policy
+     * (ai_shadow_dns_policy). Failures degrade to an empty list so the
+     * detected list stays complete when the policy cannot be read.
      */
     private List<String> loadAuthorizedDomains() {
         try {

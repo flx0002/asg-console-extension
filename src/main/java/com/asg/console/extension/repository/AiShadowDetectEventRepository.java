@@ -38,26 +38,21 @@ public interface AiShadowDetectEventRepository extends JpaRepository<AiShadowDet
     List<AiShadowDetectEvent> findByEventTimeBetween(LocalDateTime start, LocalDateTime end);
 
     /**
-     * 检测趋势聚合：按「距窗口起点多少个桶」分组，并细分到域名。桶序号只取决于两个 epoch 之差，
+     * 检测趋势聚合：按「距窗口起点多少个桶」分组。桶序号只取决于两个 epoch 之差，
      * 因此 JVM 时区（容器为 UTC）不影响分桶结果。
-     * <p>
-     * 为什么必须带 domain：趋势与列表、KPI 同口径，已授权域名的访问一律不计入。而授权匹配是
-     * 后缀语义（授权 example.com 覆盖 api.example.com），SQL 里无法表达，只能在应用层用与列表
-     * 相同的 {@code isDomainAuthorized} 过滤。若此处仍按 bucket+status 聚合，授权域名一旦有流量，
-     * 就会出现「列表为空、趋势有柱子」的口径分裂。
      * <p>
      * 注意：{@code UNIX_TIMESTAMP(event_time)} 的取值依赖「MySQL 会话时区」与
      * 「event_time 写入时的时区字面值」一致（现网 MySQL 容器 TZ=Asia/Shanghai，
      * 实测 11:40:38 存储值 ↔ 1792726838 绝对秒一致）。若将来这两者不一致，
      * 整条曲线会整体偏移，需要改为在应用层显式按业务时区换算。
-     * 返回列：bucketIdx（相对 start 的桶序号）、domain、status、事件数。
+     * 返回列：bucketIdx（相对 start 的桶序号）、status、事件数。
      */
     @Query(value = "SELECT FLOOR((UNIX_TIMESTAMP(event_time) - :startSec) / :stepSec) AS bucket_idx,"
-        + " domain, status, COUNT(*) AS cnt"
+        + " status, COUNT(*) AS cnt"
         + " FROM ai_shadow_detect_event"
         + " WHERE event_time >= FROM_UNIXTIME(:startSec) AND event_time <= FROM_UNIXTIME(:endSec)"
-        + " GROUP BY bucket_idx, domain, status", nativeQuery = true)
-    List<Object[]> countByBucketDomainAndStatus(@Param("startSec") long startSec, @Param("endSec") long endSec,
+        + " GROUP BY bucket_idx, status", nativeQuery = true)
+    List<Object[]> countByBucketAndStatus(@Param("startSec") long startSec, @Param("endSec") long endSec,
         @Param("stepSec") long stepSec);
 
     /**
