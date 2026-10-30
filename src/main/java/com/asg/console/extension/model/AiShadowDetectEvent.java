@@ -32,7 +32,9 @@ import lombok.Data;
     @Index(name = "idx_sade_event_time", columnList = "event_time"),
     @Index(name = "idx_sade_domain", columnList = "domain"),
     @Index(name = "idx_sade_status", columnList = "status"),
-    @Index(name = "idx_sade_session", columnList = "session_id")
+    @Index(name = "idx_sade_session", columnList = "session_id"),
+    // 准入事件查询固定带 surface + 时间窗，单列 event_time 索引会先扫两个 tab 的并集再过滤。
+    @Index(name = "idx_sade_surface_time", columnList = "surface,event_time")
 })
 public class AiShadowDetectEvent {
 

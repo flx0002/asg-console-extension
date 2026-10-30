@@ -29,4 +29,10 @@ public final class AsgPluginConstants {
      * Used in shadow AI monitoring mode so ai-statistics can record consumer identity.
      */
     public static final String IDENTIFY_ONLY = "identify_only";
+
+    /**
+     * allow 列表配置键。空列表会让 key-auth 提前 return、插件不介入该路由，
+     * 因此调用方必须保证它非空（空即写 DEFAULT_DENY_SENTINEL）。
+     */
+    public static final String ALLOW = "allow";
 }

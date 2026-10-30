@@ -15,6 +15,7 @@ package com.asg.console.extension.service;
 import java.util.List;
 import java.util.Map;
 
+import com.asg.console.extension.model.AiShadowBatchActionRequest;
 import com.asg.console.extension.model.AiShadowActionRequest;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
 import com.asg.console.extension.model.AiShadowModeRequest;
@@ -26,9 +27,8 @@ public interface AiShadowService {
     /**
      * 所有 AI 路由的管控状态。
      * <p>
-     * {@code includeMetrics=false} 时跳过 Prometheus 查询：路由管控页只用模式与已授权消费者，
-     * 而那两次查询各自有 5s 连接 + 10s 读取超时，观测组件不可用时会把「只管配置」的页面一起拖住。
-     * 此时 {@code aiShadowList} 返回空列表——那是「没有查询」，不是「没有越权」。
+     * 该方法会顺带对账：缺 key-auth 实例的路由自动纳管，名单为空则落默认拒绝，
+     * 所以返回结果里不会出现「未纳管」。对账只在状态不合规时写，重复调用是安全的。
      */
     List<AiShadowStatus> getStatus(boolean includeMetrics);
 
@@ -45,6 +45,15 @@ public interface AiShadowService {
     AiShadowStatus setMode(AiShadowModeRequest request);
 
     AiShadowStatus performAction(AiShadowActionRequest request);
+
+    /** 全部可授权的调用方名称，供授权抽屉选择；不含未认证桶。 */
+    List<String> listConsumerNames();
+
+    /**
+     * 用一份「最终名单」整体替换某条路由的授权消费者，名单为空即回落为默认拒绝。
+     * 批量场景必须一次提交，逐个 ADD/REMOVE 会在中途失败时留下半完成状态。
+     */
+    AiShadowStatus replaceAuthorizedConsumers(AiShadowBatchActionRequest request);
 
     /**
      * Detected accesses aggregated over the requested window. Same source (detection

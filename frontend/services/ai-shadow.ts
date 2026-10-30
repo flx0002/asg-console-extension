@@ -1,6 +1,6 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/no-invalid-void-type */
 import request from './request';
-import { AiConsumerUsageReport, AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate, AiShadowAdmissionResponse } from '@/interfaces/ai-shadow';
+import { AiConsumerUsageReport, AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowBatchActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate, AiShadowAdmissionResponse } from '@/interfaces/ai-shadow';
 
 // metrics=false 让后端跳过 Prometheus：路由管控页只用模式与授权列表，
 // 不该被观测组件的连接/读取超时拖住。
@@ -84,4 +84,15 @@ export const getAiShadowAuthorizedDomains = (
 
 export const updateAiShadowAuthorizedDomains = (payload: AiShadowAuthzUpdate): Promise<AiShadowDnsPolicyView> => {
   return request.put<any, AiShadowDnsPolicyView>('/v1/ai-shadow/authorized-domains', payload);
+};
+
+// All callers that can be authorized on a route (the unauthenticated bucket is excluded).
+export const getAiShadowConsumers = (): Promise<string[]> => {
+  return request.get<any, string[]>('/v1/ai-shadow/consumers');
+};
+
+// The drawer submits its final checked set; an empty array falls back to default-deny.
+// Per-consumer ADD/REMOVE would leave half-applied state when one call fails midway.
+export const replaceAiShadowConsumers = (payload: AiShadowBatchActionRequest): Promise<AiShadowStatus> => {
+  return request.put<any, AiShadowStatus>('/v1/ai-shadow/action/batch', payload);
 };

@@ -30,6 +30,7 @@ import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.util.ControllerUtil;
 import com.asg.console.extension.model.AiChannelChangeEvent;
 import com.asg.console.extension.model.AiConsumerUsageReport;
+import com.asg.console.extension.model.AiShadowBatchActionRequest;
 import com.asg.console.extension.model.AiShadowActionRequest;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
 import com.asg.console.extension.model.AiShadowModeRequest;
@@ -62,6 +63,15 @@ public class AiShadowController {
     public void setEventPublisher(ApplicationEventPublisher eventPublisher) {
         this.eventPublisher = eventPublisher;
     }
+
+    @GetMapping("/consumers")
+    @Operation(summary = "List all consumers available for authorization")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Consumers listed"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<List<String>>> listConsumers() {
+        return ControllerUtil.buildResponseEntity(aiShadowService.listConsumerNames());
+    }
+
 
     @GetMapping("/status")
     @Operation(summary = "List all AI routes' shadow AI status")
@@ -101,6 +111,17 @@ public class AiShadowController {
         @ApiResponse(responseCode = "500", description = "Internal server error")})
     public ResponseEntity<Response<AiShadowStatus>> performAction(@RequestBody AiShadowActionRequest request) {
         AiShadowStatus status = aiShadowService.performAction(request);
+        return ControllerUtil.buildResponseEntity(status);
+    }
+
+    @PutMapping("/action/batch")
+    @Operation(summary = "Replace the authorized consumer list of an AI route in one shot")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Authorized consumers replaced"),
+        @ApiResponse(responseCode = "400", description = "Invalid request parameters"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<AiShadowStatus>> replaceAuthorizedConsumers(
+        @RequestBody AiShadowBatchActionRequest request) {
+        AiShadowStatus status = aiShadowService.replaceAuthorizedConsumers(request);
         return ControllerUtil.buildResponseEntity(status);
     }
 

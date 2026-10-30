@@ -22,6 +22,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -30,6 +31,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -48,9 +50,9 @@ import com.asg.console.extension.model.AiConsumerUsage;
 import com.asg.console.extension.model.AiConsumerUsageReport;
 import com.asg.console.extension.model.AiShadowActionRequest;
 import com.asg.console.extension.model.AiShadowAuthorizedDomain;
+import com.asg.console.extension.model.AiShadowBatchActionRequest;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
 import com.asg.console.extension.model.AiShadowDnsPolicy;
-import com.asg.console.extension.model.AiShadowEntry;
 import com.asg.console.extension.model.AiShadowModeRequest;
 import com.asg.console.extension.model.AiShadowStatus;
 import com.asg.console.extension.repository.AiShadowAuthorizedDomainRepository;
@@ -82,6 +84,16 @@ public class AiShadowServiceImpl implements AiShadowService {
     private static final String ACTION_AUTHORIZE = "authorize";
     private static final String ACTION_BLOCK = "block";
     private static final String CONSUMER_NONE = "none";
+
+    /**
+     * 默认拒绝的占位项。
+     * <p>
+     * key-auth 在 allow 为空时会提前 return（main.go:311-317、:355-358），连 no_key 都不上报，
+     * 等于插件在该路由完全不介入——既无身份也不产生事件。写入这个永不匹配的名字让 allow 非空，
+     * 插件就会真正进入判定流程；由于没有真实消费者叫这个名字，效果正是「默认拒绝」。
+     * 它不是调用方，展示层必须过滤。
+     */
+    private static final String DEFAULT_DENY_SENTINEL = "__asg_default_deny__";
 
     private static final String PROMETHEUS_QUERY_PATH = "/api/v1/query";
     private static final String INPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_input_token";
@@ -160,28 +172,28 @@ public class AiShadowServiceImpl implements AiShadowService {
 
     @Override
     public final List<AiShadowStatus> getStatus(boolean includeMetrics) {
+        // includeMetrics 已无作用：aiShadowList 不再填充，用量改由 getConsumerUsage 提供。
+        // 保留参数只为不破坏既有调用方签名。
         PaginatedResult<AiRoute> aiRoutes = aiRouteService.list(null);
         if (aiRoutes == null || CollectionUtils.isEmpty(aiRoutes.getData())) {
             return Collections.emptyList();
         }
 
-        Map<String, Map<String, PrometheusMetricData>> prometheusData =
-            includeMetrics ? queryPrometheusMetrics() : Collections.emptyMap();
-
         List<AiShadowStatus> result = new ArrayList<>();
         for (AiRoute aiRoute : aiRoutes.getData()) {
             String routeResourceName = buildRouteResourceName(aiRoute.getName());
             try {
-                AiShadowStatus status = buildAiShadowStatus(aiRoute.getName(), routeResourceName, prometheusData);
-                result.add(status);
+                WasmPluginInstance guard = ensureGuard(routeResourceName);
+                result.add(buildAiShadowStatus(aiRoute.getName(), routeResourceName, guard));
             } catch (Exception e) {
                 log.error("Error building shadow AI status for route: {}", aiRoute.getName(), e);
                 result.add(AiShadowStatus.builder()
                     .routeName(aiRoute.getName())
                     .mode(MODE_MONITORING)
                     .authEnabled(false)
+                    .managed(false)
+                    .defaultDeny(true)
                     .authorizedConsumers(Collections.emptyList())
-                    .aiShadowList(Collections.emptyList())
                     .build());
             }
         }
@@ -196,9 +208,7 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
 
         String routeResourceName = buildRouteResourceName(routeName);
-        Map<String, Map<String, PrometheusMetricData>> prometheusData = queryPrometheusMetrics();
-
-        return buildAiShadowStatus(routeName, routeResourceName, prometheusData);
+        return buildAiShadowStatus(routeName, routeResourceName, ensureGuard(routeResourceName));
     }
 
     /**
@@ -536,36 +546,29 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     private AiShadowStatus buildAiShadowStatus(String routeName, String routeResourceName,
-        Map<String, Map<String, PrometheusMetricData>> prometheusData) {
-
-        WasmPluginInstance keyAuthInstance = wasmPluginInstanceService.query(
-            WasmPluginInstanceScope.ROUTE, routeResourceName, BuiltInPluginName.KEY_AUTH, true);
+        WasmPluginInstance keyAuthInstance) {
 
         boolean authEnabled = keyAuthInstance != null && Boolean.TRUE.equals(keyAuthInstance.getEnabled());
-        // Determine mode based on identify_only config:
-        // - enabled=true + identify_only=false 鈫?enforcement mode (reject unauthenticated)
-        // - enabled=true + identify_only=true  鈫?monitoring mode (identify but don't reject)
-        // - enabled=false                      鈫?monitoring mode (legacy, can't identify consumers)
+        // 模式由 identify_only 决定：false 才是真拦截，true 只记录。实例缺失或未启用时降级为检测。
         boolean identifyOnly = false;
         if (authEnabled && keyAuthInstance.getConfigurations() != null) {
-            Object identifyOnlyObj = keyAuthInstance.getConfigurations().get(
-                AsgPluginConstants.IDENTIFY_ONLY);
+            Object identifyOnlyObj = keyAuthInstance.getConfigurations().get(AsgPluginConstants.IDENTIFY_ONLY);
             if (identifyOnlyObj instanceof Boolean) {
-                identifyOnly = (Boolean) identifyOnlyObj;
+                identifyOnly = (Boolean)identifyOnlyObj;
             }
         }
         String mode = (authEnabled && !identifyOnly) ? MODE_ENFORCEMENT : MODE_MONITORING;
 
         List<String> authorizedConsumers = getAuthorizedConsumers(routeResourceName);
 
-        List<AiShadowEntry> aiShadowList = buildAiShadowEntries(routeResourceName, authorizedConsumers, authEnabled, prometheusData);
-
         return AiShadowStatus.builder()
             .routeName(routeName)
+            .resourceName(routeResourceName)
             .mode(mode)
             .authEnabled(authEnabled)
+            .managed(authEnabled)
+            .defaultDeny(authorizedConsumers.isEmpty())
             .authorizedConsumers(authorizedConsumers)
-            .aiShadowList(aiShadowList)
             .build();
     }
 
@@ -575,110 +578,160 @@ public class AiShadowServiceImpl implements AiShadowService {
         if (allowList == null || CollectionUtils.isEmpty(allowList.getConsumerNames())) {
             return Collections.emptyList();
         }
-        // Filter out "none" - it's not a real consumer, just a placeholder for unauthenticated access
+        // "none" 是未认证访问的占位，哨兵代表「默认拒绝」，两者都不是真实调用方，必须过滤掉，
+        // 否则页面会把它们当成可授权对象显示出来。
         return allowList.getConsumerNames().stream()
             .filter(name -> !CONSUMER_NONE.equals(name))
+            .filter(name -> !DEFAULT_DENY_SENTINEL.equals(name))
             .collect(Collectors.toList());
     }
 
-    private List<AiShadowEntry> buildAiShadowEntries(String routeResourceName, List<String> authorizedConsumers,
-        boolean authEnabled, Map<String, Map<String, PrometheusMetricData>> prometheusData) {
+    /**
+     * 读取路由的 key-auth 守卫，不满足「已纳管 + 默认拒绝」就就地修正。
+     * <p>
+     * 三条不变式：① 实例存在且启用；② 没有真实消费者时名单必须带占位哨兵；③ 有真实消费者时不能带哨兵。
+     * 状态已经合规时不写任何东西，因此可以放在查询路径上做对账。
+     */
+    private WasmPluginInstance ensureGuard(String routeResourceName) {
+        WasmPluginInstance instance = queryGuard(routeResourceName);
+        if (instance == null) {
+            // 新建路由自动纳管：检测模式 + 默认拒绝。复用 setMode 的同一套写入，不另开路径。
+            writeQuietly(routeResourceName, () -> {
+                consumerService.updateAllowList(AllowListOperation.REPLACE,
+                    routeAllowList(routeResourceName, Collections.singletonList(DEFAULT_DENY_SENTINEL)));
+                updateKeyAuthIdentifyOnly(routeResourceName, true);
+                // 审计跟着写入走：写失败还记一条「已纳管」，审计就和事实不符了。
+                writeAdminAudit("auto_manage", routeResourceName, null, MODE_MONITORING);
+            });
+            log.info("auto-managed route {} with default-deny allow list", routeResourceName);
+            return queryGuard(routeResourceName);
+        }
 
-        // Collect all metric data matching this route (prefix match, because the Prometheus
-        // ai_route label may include provider info, e.g. "ai-route-nex-agi-nex-n2-pro.internal"
-        // while routeResourceName is "ai-route-nex.internal")
-        Map<String, PrometheusMetricData> routeMetricData = new HashMap<>();
-        String routePrefix = CommonKey.AI_ROUTE_PREFIX;
-        for (Map.Entry<String, Map<String, PrometheusMetricData>> entry : prometheusData.entrySet()) {
-            String prometheusRoute = entry.getKey();
-            if (matchesRoute(routeResourceName, prometheusRoute)) {
-                entry.getValue().forEach(routeMetricData::putIfAbsent);
+        if (!Boolean.TRUE.equals(instance.getEnabled())) {
+            // 实例在但被禁用，等同于未纳管。只启用，不动名单与模式。
+            // 这里不能 return：TOGGLE_ONLY 只改开关、不补名单，直接返回会让页面显示
+            // 「默认拒绝」而插件仍然提前放行——那正是这次要消灭的假管控。
+            writeQuietly(routeResourceName, () -> consumerService.updateAllowList(
+                AllowListOperation.TOGGLE_ONLY, routeAllowList(routeResourceName, null)));
+            log.info("re-enabled key-auth guard for route {}", routeResourceName);
+            instance = queryGuard(routeResourceName);
+            if (instance == null) {
+                return null;
             }
         }
 
-        List<AiShadowEntry> entries = new ArrayList<>();
-        for (Map.Entry<String, PrometheusMetricData> entry : routeMetricData.entrySet()) {
-            PrometheusMetricData data = entry.getValue();
+        List<String> rawAllow = rawAllowOf(instance);
+        List<String> realConsumers = rawAllow.stream()
+            .filter(name -> !DEFAULT_DENY_SENTINEL.equals(name))
+            .filter(name -> !CONSUMER_NONE.equals(name))
+            .collect(Collectors.toList());
 
-            // All accesses through AI routes are shadow AI except authorized users.
-            // "none" consumer means unauthenticated access - always shadow AI.
-            // Specific consumers are authorized only if they're in the allow list.
-            boolean isAuthorized = !CONSUMER_NONE.equals(data.consumer)
-                && authorizedConsumers.contains(data.consumer);
-
-            // IR-003: authorized accesses are removed from the shadow AI list.
-            if (isAuthorized) {
-                continue;
-            }
-
-            entries.add(AiShadowEntry.builder()
-                .consumer(data.consumer)
-                .model(data.model)
-                .inputTokens(data.inputTokens)
-                .outputTokens(data.outputTokens)
-                .authorized(false)
-                .build());
+        if (realConsumers.isEmpty() && !rawAllow.contains(DEFAULT_DENY_SENTINEL)) {
+            writeQuietly(routeResourceName, () -> consumerService.updateAllowList(
+                AllowListOperation.REPLACE,
+                routeAllowList(routeResourceName, Collections.singletonList(DEFAULT_DENY_SENTINEL))));
+            log.info("allow list of route {} was empty, applied default-deny", routeResourceName);
+            return queryGuard(routeResourceName);
         }
-
-        return entries;
+        if (!realConsumers.isEmpty() && rawAllow.contains(DEFAULT_DENY_SENTINEL)) {
+            writeQuietly(routeResourceName, () -> consumerService.updateAllowList(
+                AllowListOperation.REPLACE, routeAllowList(routeResourceName, realConsumers)));
+            log.info("route {} now has authorized consumers, dropped default-deny placeholder",
+                routeResourceName);
+            return queryGuard(routeResourceName);
+        }
+        return instance;
     }
 
     /**
-     * Check if a Prometheus ai_route label value matches the expected route resource name.
-     * The ai_route label may include additional provider info, e.g.
-     * "ai-route-nex-agi-nex-n2-pro.internal" matches "ai-route-nex.internal".
+     * 对账写入不该让整个查询失败：K8s 写入可能因并发 resourceVersion 冲突而报错，
+     * 此时页面仍应显示可读的状态（下次轮询会再对一次），而不是把路由降级成「未纳管」。
      */
-    private static boolean matchesRoute(String routeResourceName, String prometheusRoute) {
-        if (StringUtils.isEmpty(routeResourceName) || StringUtils.isEmpty(prometheusRoute)) {
-            return false;
-        }
-        // Exact match
-        if (routeResourceName.equals(prometheusRoute)) {
-            return true;
-        }
-        // Prefix match: the Prometheus route may have extra provider suffix before ".internal"
-        // e.g. "ai-route-nex-agi-nex-n2-pro.internal" starts with "ai-route-nex-"
-        // and routeResourceName is "ai-route-nex.internal"
-        String routePrefix = routeResourceName.replace(
-            HigressConstants.INTERNAL_RESOURCE_NAME_SUFFIX, "");
-        return prometheusRoute.startsWith(routePrefix + "-")
-            || prometheusRoute.startsWith(routePrefix + ".");
-    }
-
-    private Map<String, Map<String, PrometheusMetricData>> queryPrometheusMetrics() {
-        Map<String, Map<String, PrometheusMetricData>> result = new HashMap<>();
-
+    private void writeQuietly(String routeResourceName, Runnable action) {
         try {
-            Map<String, PrometheusMetricData> inputData = queryMetric(INPUT_TOKEN_METRIC);
-            Map<String, PrometheusMetricData> outputData = queryMetric(OUTPUT_TOKEN_METRIC);
-
-            for (Map.Entry<String, PrometheusMetricData> entry : inputData.entrySet()) {
-                String key = entry.getKey();
-                PrometheusMetricData data = entry.getValue();
-
-                PrometheusMetricData outputMetric = outputData.get(key);
-                if (outputMetric != null) {
-                    data.outputTokens = outputMetric.outputTokens;
-                }
-
-                String routeKey = data.route;
-                result.computeIfAbsent(routeKey, k -> new HashMap<>()).put(key, data);
-            }
-
-            for (Map.Entry<String, PrometheusMetricData> entry : outputData.entrySet()) {
-                String key = entry.getKey();
-                PrometheusMetricData data = entry.getValue();
-                String routeKey = data.route;
-                if (!inputData.containsKey(key)) {
-                    result.computeIfAbsent(routeKey, k -> new HashMap<>()).put(key, data);
-                }
-            }
+            action.run();
         } catch (Exception e) {
-            log.error("Error querying Prometheus metrics", e);
+            log.warn("failed to reconcile key-auth guard for route {}, will retry on next query",
+                routeResourceName, e);
+        }
+    }
+
+    private WasmPluginInstance queryGuard(String routeResourceName) {
+        return wasmPluginInstanceService.query(WasmPluginInstanceScope.ROUTE, routeResourceName,
+            BuiltInPluginName.KEY_AUTH, true);
+    }
+
+    private static AllowList routeAllowList(String routeResourceName, List<String> consumerNames) {
+        return AllowList.forTarget(WasmPluginInstanceScope.ROUTE, routeResourceName)
+            .consumerNames(consumerNames)
+            .authEnabled(true)
+            .build();
+    }
+
+    private static List<String> rawAllowOf(WasmPluginInstance instance) {
+        if (instance == null || instance.getConfigurations() == null) {
+            return Collections.emptyList();
+        }
+        Object allow = instance.getConfigurations().get(AsgPluginConstants.ALLOW);
+        if (!(allow instanceof Collection)) {
+            return Collections.emptyList();
+        }
+        return ((Collection<?>)allow).stream()
+            .filter(Objects::nonNull)
+            .map(String::valueOf)
+            .collect(Collectors.toList());
+    }
+
+    @Override
+    public final List<String> listConsumerNames() {
+        PaginatedResult<Consumer> consumers = consumerService.list(new CommonPageQuery());
+        if (consumers == null || CollectionUtils.isEmpty(consumers.getData())) {
+            return Collections.emptyList();
+        }
+        // "none" 是未认证桶，不是可授权的调用方，不能出现在选择列表里。
+        return consumers.getData().stream()
+            .map(Consumer::getName)
+            .filter(StringUtils::isNotBlank)
+            .filter(name -> !CONSUMER_NONE.equals(name))
+            .distinct()
+            .sorted()
+            .collect(Collectors.toList());
+    }
+
+
+    @Override
+    public final AiShadowStatus replaceAuthorizedConsumers(AiShadowBatchActionRequest request) {
+        if (request == null) {
+            throw new IllegalArgumentException("request cannot be null.");
+        }
+        String routeName = request.getRouteName();
+        if (StringUtils.isEmpty(routeName)) {
+            throw new IllegalArgumentException("routeName cannot be empty.");
+        }
+        AiRoute aiRoute = aiRouteService.query(routeName);
+        if (aiRoute == null) {
+            throw new BusinessException("AI route not found: " + routeName);
         }
 
-        return result;
+        List<String> consumers = request.getConsumerNames() == null ? Collections.emptyList()
+            : request.getConsumerNames().stream()
+                .filter(StringUtils::isNotBlank)
+                .map(String::trim)
+                .filter(name -> !CONSUMER_NONE.equals(name) && !DEFAULT_DENY_SENTINEL.equals(name))
+                .distinct()
+                .collect(Collectors.toList());
+
+        // 一次替换成最终名单：空名单落哨兵即「默认拒绝」，非空即精确等于页面勾选结果。
+        List<String> target = consumers.isEmpty() ? Collections.singletonList(DEFAULT_DENY_SENTINEL) : consumers;
+        String routeResourceName = buildRouteResourceName(routeName);
+        consumerService.updateAllowList(AllowListOperation.REPLACE,
+            routeAllowList(routeResourceName, target));
+
+        writeAdminAudit("replace_consumers", routeName, String.join(",", consumers), null);
+
+        return getStatus(routeName);
     }
+
 
     private Map<String, PrometheusMetricData> queryMetric(String metricName) {
         Map<String, PrometheusMetricData> result = new HashMap<>();

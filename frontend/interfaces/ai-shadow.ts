@@ -1,17 +1,20 @@
-export interface AiShadowEntry {
-  consumer: string;
-  model: string;
-  inputTokens: number;
-  outputTokens: number;
-  authorized: boolean;
-}
-
 export interface AiShadowStatus {
   routeName: string;
+  // Ingress resource name; same value as the Prometheus ai_route label, used to align usage.
+  resourceName?: string;
   mode: 'monitoring' | 'enforcement';
   authEnabled: boolean;
+  // True when the key-auth instance exists and is enabled.
+  managed?: boolean;
+  // True when nobody is authorized: every identified caller is rejected.
+  defaultDeny?: boolean;
   authorizedConsumers: string[];
-  aiShadowList: AiShadowEntry[];
+}
+
+// Replace the whole authorized list in one call. An empty array means default-deny.
+export interface AiShadowBatchActionRequest {
+  routeName: string;
+  consumerNames: string[];
 }
 
 export interface AiShadowModeRequest {
