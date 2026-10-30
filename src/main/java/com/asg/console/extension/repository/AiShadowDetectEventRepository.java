@@ -115,4 +115,19 @@ public interface AiShadowDetectEventRepository extends JpaRepository<AiShadowDet
         + " WHERE event_time >= FROM_UNIXTIME(:startSec) AND event_time <= FROM_UNIXTIME(:endSec)"
         + " GROUP BY surface", nativeQuery = true)
     List<Object[]> countBySurface(@Param("startSec") long startSec, @Param("endSec") long endSec);
+
+    /**
+     * 准入事件按「原因 + 处置」分组，供消费者用量表把拦截数归属到人。
+     * <p>
+     * 不能用 {@link #aggregateAdmission} 顶替：那个按 domain 分组，而消费者只存在于
+     * reason（{@code not_in_allow:<名>}）里，域名维度上没有身份信息。
+     * 返回列：reason（NULL 转空串）、status（NULL 转空串）、事件数。
+     */
+    @Query(value = "SELECT COALESCE(reason, '') AS reason, COALESCE(status, '') AS status,"
+        + " COUNT(*) AS cnt"
+        + " FROM ai_shadow_detect_event"
+        + " WHERE surface = 'route'"
+        + " AND event_time >= FROM_UNIXTIME(:startSec) AND event_time <= FROM_UNIXTIME(:endSec)"
+        + " GROUP BY reason, status", nativeQuery = true)
+    List<Object[]> countAdmissionByReason(@Param("startSec") long startSec, @Param("endSec") long endSec);
 }

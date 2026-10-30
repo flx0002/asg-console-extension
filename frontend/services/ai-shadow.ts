@@ -1,6 +1,6 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/no-invalid-void-type */
 import request from './request';
-import { AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate, AiShadowAdmissionResponse } from '@/interfaces/ai-shadow';
+import { AiConsumerUsageReport, AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate, AiShadowAdmissionResponse } from '@/interfaces/ai-shadow';
 
 // metrics=false 让后端跳过 Prometheus：路由管控页只用模式与授权列表，
 // 不该被观测组件的连接/读取超时拖住。
@@ -66,6 +66,13 @@ Promise<AiShadowTrendResponse> => {
 export const getAiShadowAdmissionEvents = (params: { startTime?: number; endTime?: number } = {}):
 Promise<AiShadowAdmissionResponse> => {
   return request.get<any, AiShadowAdmissionResponse>('/v1/ai-shadow/admission-events', { params });
+};
+
+// Consumer usage + admission profile. Separate call from getAiShadowAdmissionEvents
+// because the two read different backends (Prometheus vs event table).
+export const getAiConsumerUsage = (params: { startTime?: number; endTime?: number } = {}):
+Promise<AiConsumerUsageReport> => {
+  return request.get<any, AiConsumerUsageReport>('/v1/ai-shadow/consumer-usage', { params });
 };
 
 export const getAiShadowAuthorizedDomains = (

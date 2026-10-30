@@ -29,6 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.util.ControllerUtil;
 import com.asg.console.extension.model.AiChannelChangeEvent;
+import com.asg.console.extension.model.AiConsumerUsageReport;
 import com.asg.console.extension.model.AiShadowActionRequest;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
 import com.asg.console.extension.model.AiShadowModeRequest;
@@ -155,6 +156,16 @@ public class AiShadowController {
         @RequestParam(value = "startTime", required = false) Long startTime,
         @RequestParam(value = "endTime", required = false) Long endTime) {
         return ControllerUtil.buildResponseEntity(aiShadowService.getAdmissionEvents(startTime, endTime));
+    }
+
+    @GetMapping("/consumer-usage")
+    @Operation(summary = "Consumer usage and admission profile: who uses the AI, how much, whether blocked")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Consumer usage listed"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")})
+    public ResponseEntity<Response<AiConsumerUsageReport>> getConsumerUsage(
+        @RequestParam(value = "startTime", required = false) Long startTime,
+        @RequestParam(value = "endTime", required = false) Long endTime) {
+        return ControllerUtil.buildResponseEntity(aiShadowService.getConsumerUsage(startTime, endTime));
     }
 
     @GetMapping("/authorized-domains")

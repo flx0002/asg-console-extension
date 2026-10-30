@@ -18,6 +18,7 @@ import java.util.Map;
 import com.asg.console.extension.model.AiShadowActionRequest;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
 import com.asg.console.extension.model.AiShadowModeRequest;
+import com.asg.console.extension.model.AiConsumerUsageReport;
 import com.asg.console.extension.model.AiShadowStatus;
 
 public interface AiShadowService {
@@ -30,6 +31,14 @@ public interface AiShadowService {
      * 此时 {@code aiShadowList} 返回空列表——那是「没有查询」，不是「没有越权」。
      */
     List<AiShadowStatus> getStatus(boolean includeMetrics);
+
+    /**
+     * 消费者用量与拦截画像：谁在用我的 AI、用了多少、有没有被拦。
+     * <p>
+     * 与 {@link #getStatus(boolean)} 分开是因为两者数据源和口径天然不同：用量只在
+     * Prometheus（被放行的请求才有计量），拦截只在事件表（被拦的请求不产生计量）。
+     */
+    AiConsumerUsageReport getConsumerUsage(Long startTime, Long endTime);
 
     AiShadowStatus getStatus(String routeName);
 

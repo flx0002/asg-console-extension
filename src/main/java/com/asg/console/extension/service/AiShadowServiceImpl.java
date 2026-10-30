@@ -26,6 +26,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -43,6 +44,8 @@ import com.alibaba.higress.sdk.exception.BusinessException;
 import com.alibaba.higress.sdk.exception.ResourceConflictException;
 import com.alibaba.higress.sdk.model.CommonPageQuery;
 import com.alibaba.higress.sdk.model.PaginatedResult;
+import com.asg.console.extension.model.AiConsumerUsage;
+import com.asg.console.extension.model.AiConsumerUsageReport;
 import com.asg.console.extension.model.AiShadowActionRequest;
 import com.asg.console.extension.model.AiShadowAuthorizedDomain;
 import com.asg.console.extension.model.AiShadowDetectedAccess;
@@ -84,6 +87,22 @@ public class AiShadowServiceImpl implements AiShadowService {
     private static final String INPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_input_token";
     private static final String OUTPUT_TOKEN_METRIC = "route_upstream_model_consumer_metric_output_token";
     private static final String AI_SHADOW_DETECT_METRIC_PREFIX = "ai_shadow_detect_category_";
+
+    /**
+     * 请求数指标。histogram 的 {@code _count} 等于被计量到的调用次数——这是 Prometheus 里
+     * 唯一能当「请求数」用的指标。曾经用「token>0 ? 1 : 0」冒充它，那是把「一次调用」
+     * 和「一次调用里有 token」混为一谈，数字恒定偏小，所以那个字段必须从真指标取，而不是删掉。
+     */
+    private static final String LLM_REQUEST_METRIC = "route_upstream_model_consumer_metric_llm_duration_count";
+
+    /** 事件表里拦截/放行的两种处置值。 */
+    private static final String STATUS_BLOCKED = "blocked";
+    private static final String STATUS_MONITORED = "monitored";
+
+    /** 准入拒绝原因的前缀，后缀是被拒的消费者名（见 key-auth/main.go 的 reason 构造）。 */
+    private static final String REASON_NOT_IN_ALLOW_PREFIX = "not_in_allow:";
+    private static final String REASON_NO_KEY = "no_key";
+    private static final String REASON_UNKNOWN_KEY = "unknown_key";
 
     /**
      * Stable legend ordering for trend series. 事件表还会带 alerted / masked，
@@ -180,6 +199,220 @@ public class AiShadowServiceImpl implements AiShadowService {
         Map<String, Map<String, PrometheusMetricData>> prometheusData = queryPrometheusMetrics();
 
         return buildAiShadowStatus(routeName, routeResourceName, prometheusData);
+    }
+
+    /**
+     * 消费者用量与拦截画像。用「消费者」作为唯一对齐键把两套数据拼起来：
+     * Prometheus 给 ai_consumer，事件表给 reason。
+     * <p>
+     * 不遍历 {@code aiRouteService.list()}：真实流量走的是普通 Ingress（实测 demo-llm-route
+     * 有 384+124 次调用），根本不在 AI Route 列表里，遍历列表会让页面只看到 AI Route 上的
+     * 测试流量——那正是「这页面只有 demo-llm 有数据」的真正原因。Prometheus 的 ai_route
+     * 标签本身就是 Ingress 资源名，直接拿它查允许名单即可。
+     */
+    @Override
+    public final AiConsumerUsageReport getConsumerUsage(Long startTime, Long endTime) {
+        // 复用既有窗口解析：null/<=0 走默认、上限 31 天、end 不越过当前时间。
+        // 自己再写一套的话，同目录两个接口对同一个 startTime=0 会给出不同答案。
+        long[] window = resolveWindow(startTime, endTime);
+        long start = window[0];
+        long end = window[1];
+
+        Map<String, ConsumerAggregate> aggregates = new LinkedHashMap<>();
+        boolean usageAvailable = pingPrometheus();
+
+        if (usageAvailable) {
+            for (PrometheusMetricData data : queryMetric(LLM_REQUEST_METRIC).values()) {
+                aggregateOf(aggregates, data).requestCount += data.requestCount;
+            }
+            for (PrometheusMetricData data : queryMetric(INPUT_TOKEN_METRIC).values()) {
+                aggregateOf(aggregates, data).inputTokens += data.inputTokens;
+            }
+            for (PrometheusMetricData data : queryMetric(OUTPUT_TOKEN_METRIC).values()) {
+                aggregateOf(aggregates, data).outputTokens += data.outputTokens;
+            }
+        } else {
+            log.warn("Prometheus unreachable at {}, consumer usage will be reported as unavailable",
+                prometheusBaseUrl);
+        }
+
+        // 被拦的请求不产生任何计量，只存在于事件表。所以这里必须能「补行」：
+        // 一个人只在事件里出现、不在 Prometheus 里出现，恰恰说明他每一次都被拦住了。
+        for (Object[] row : detectEventRepository.countAdmissionByReason(start / 1000L, end / 1000L)) {
+            String reason = row[0] == null ? null : String.valueOf(row[0]);
+            String status = row[1] == null ? null : String.valueOf(row[1]);
+            long count = row[2] == null ? 0L : ((Number)row[2]).longValue();
+            String consumer = consumerFromReason(reason);
+            if (consumer == null || count <= 0) {
+                continue;
+            }
+            ConsumerAggregate aggregate = aggregates.get(consumer);
+            if (aggregate == null) {
+                aggregate = newConsumerAggregate(consumer);
+                aggregates.put(consumer, aggregate);
+            }
+            if (STATUS_BLOCKED.equals(status)) {
+                aggregate.blockedCount += count;
+            } else if (STATUS_MONITORED.equals(status)) {
+                aggregate.monitoredCount += count;
+            }
+        }
+
+        // 授权是逐路由判定的：实测王五在 demo-llm-route 的允许名单里，却不在
+        // ai-route-demo-llm.internal 的名单里，而后者是监控模式，他照样被放行。
+        // 把「调用过但没被授权」的路由列出来，这就是可执行的越权证据。
+        Map<String, List<String>> allowListCache = new HashMap<>();
+        List<AiConsumerUsage> consumers = new ArrayList<>();
+        long requestTotal = 0L;
+        long inputTotal = 0L;
+        long outputTotal = 0L;
+        long blockedTotal = 0L;
+        long monitoredTotal = 0L;
+        long unauthenticatedRequests = 0L;
+        int identifiedCount = 0;
+        int authorizedCount = 0;
+
+        for (ConsumerAggregate aggregate : aggregates.values()) {
+            List<String> unauthorizedRoutes = new ArrayList<>();
+            for (String route : aggregate.routes) {
+                List<String> allowed = allowListCache.computeIfAbsent(route, this::authorizedConsumersOf);
+                if (!allowed.contains(aggregate.consumer)) {
+                    unauthorizedRoutes.add(route);
+                }
+            }
+            // 三个条件缺一不可：有身份、确实调用过路由（否则没有判定依据）、调用过的每条路由都授权了他。
+            // 只在事件表出现的人（每次都被拦、从未放行）routes 为空，不能因为「没查出未授权路由」
+            // 就被判成已授权——那会和同一行里 blockedCount>0 直接矛盾。
+            boolean authorized = !aggregate.unauthenticated
+                && !aggregate.routes.isEmpty()
+                && unauthorizedRoutes.isEmpty();
+
+            requestTotal += aggregate.requestCount;
+            inputTotal += aggregate.inputTokens;
+            outputTotal += aggregate.outputTokens;
+            blockedTotal += aggregate.blockedCount;
+            monitoredTotal += aggregate.monitoredCount;
+            if (aggregate.unauthenticated) {
+                unauthenticatedRequests += aggregate.requestCount;
+            } else {
+                identifiedCount++;
+                if (authorized) {
+                    authorizedCount++;
+                }
+            }
+
+            consumers.add(AiConsumerUsage.builder()
+                .consumer(aggregate.consumer)
+                .unauthenticated(aggregate.unauthenticated)
+                .requestCount(aggregate.requestCount)
+                .inputTokens(aggregate.inputTokens)
+                .outputTokens(aggregate.outputTokens)
+                .models(new ArrayList<>(aggregate.models))
+                .routes(new ArrayList<>(aggregate.routes))
+                .unauthorizedRoutes(unauthorizedRoutes)
+                .authorized(authorized)
+                .blockedCount(aggregate.blockedCount)
+                .monitoredCount(aggregate.monitoredCount)
+                .build());
+        }
+
+        consumers.sort((left, right) -> Long.compare(
+            right.getRequestCount() == null ? 0L : right.getRequestCount(),
+            left.getRequestCount() == null ? 0L : left.getRequestCount()));
+
+        return AiConsumerUsageReport.builder()
+            .requestCount(requestTotal)
+            .inputTokens(inputTotal)
+            .outputTokens(outputTotal)
+            .totalTokens(inputTotal + outputTotal)
+            .consumerCount(identifiedCount)
+            .authorizedCount(authorizedCount)
+            .unauthenticatedRequestCount(unauthenticatedRequests)
+            .blockedCount(blockedTotal)
+            .monitoredCount(monitoredTotal)
+            .consumers(consumers)
+            .usageAvailable(usageAvailable)
+            .usageScope("cumulative")
+            .eventWindowHours((int)((end - start) / 3600000L))
+            .build();
+    }
+
+    private ConsumerAggregate aggregateOf(Map<String, ConsumerAggregate> aggregates,
+        PrometheusMetricData data) {
+        String consumer = StringUtils.isEmpty(data.consumer) ? CONSUMER_NONE : data.consumer;
+        ConsumerAggregate aggregate = aggregates.get(consumer);
+        if (aggregate == null) {
+            aggregate = newConsumerAggregate(consumer);
+            aggregates.put(consumer, aggregate);
+        }
+        if (StringUtils.isNotEmpty(data.route)) {
+            aggregate.routes.add(data.route);
+        }
+        if (StringUtils.isNotEmpty(data.model)) {
+            aggregate.models.add(data.model);
+        }
+        return aggregate;
+    }
+
+    private static ConsumerAggregate newConsumerAggregate(String consumer) {
+        ConsumerAggregate aggregate = new ConsumerAggregate();
+        aggregate.consumer = consumer;
+        aggregate.unauthenticated = CONSUMER_NONE.equals(consumer);
+        return aggregate;
+    }
+
+    /**
+     * 把事件表里的 reason 还原成「是谁」。
+     * <ul>
+     *   <li>{@code not_in_allow:<名>} → 该消费者，被拒的正是他</li>
+     *   <li>{@code no_key} / {@code unknown_key} → 没有人可归属，算未认证</li>
+     *   <li>其余（如 off_channel 属于绕道面）→ 与消费者无关，返回 null 由调用方跳过</li>
+     * </ul>
+     */
+    private static String consumerFromReason(String reason) {
+        if (StringUtils.isEmpty(reason)) {
+            return null;
+        }
+        if (reason.startsWith(REASON_NOT_IN_ALLOW_PREFIX)) {
+            String name = reason.substring(REASON_NOT_IN_ALLOW_PREFIX.length());
+            return StringUtils.isEmpty(name) ? CONSUMER_NONE : name;
+        }
+        if (REASON_NO_KEY.equals(reason) || REASON_UNKNOWN_KEY.equals(reason)) {
+            return CONSUMER_NONE;
+        }
+        return null;
+    }
+
+    private List<String> authorizedConsumersOf(String route) {
+        try {
+            return getAuthorizedConsumers(route);
+        } catch (Exception e) {
+            // 读不到允许名单时退化成「按未授权展示」，不能整页 500：
+            // 页面打不开的代价比「个别行的授权状态可能标错」大得多。
+            log.warn("Failed to read consumer allow list for route {}: {}", route, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    private boolean pingPrometheus() {
+        HttpURLConnection connection = null;
+        try {
+            String queryUrl = prometheusBaseUrl + PROMETHEUS_QUERY_PATH + "?query=1";
+            connection = (HttpURLConnection)new URL(queryUrl).openConnection();
+            connection.setRequestMethod("GET");
+            connection.setConnectTimeout(3000);
+            connection.setReadTimeout(5000);
+            return connection.getResponseCode() == 200;
+        } catch (Exception e) {
+            log.warn("Prometheus probe failed: {}", e.getMessage());
+            return false;
+        } finally {
+            // 只取状态码不读流，不 disconnect 会把连接留在 keep-alive 池里；
+            // 这个接口每 30s 被轮询一次，泄漏会累积。
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
     }
 
     @Override
@@ -512,12 +745,12 @@ public class AiShadowServiceImpl implements AiShadowService {
 
                 // 同一个 (route, consumer, model) 在每个 Pod 上各有一条 series：控制台是 2 副本，
                 // 用 `=` 覆盖只会留下最后读到的那条，Token 用量恒定少算一半（实测 716 vs 1432）。
-                // requestCount 一并去掉：Prometheus 没有请求数指标，它原本只是「token>0 ? 1 : 0」，
-                // 与「请求次数」同名却不同义，留着就是个会被后人当真的假数字。
                 if (INPUT_TOKEN_METRIC.equals(metricName)) {
                     metricData.inputTokens += tokenValue;
                 } else if (OUTPUT_TOKEN_METRIC.equals(metricName)) {
                     metricData.outputTokens += tokenValue;
+                } else if (LLM_REQUEST_METRIC.equals(metricName)) {
+                    metricData.requestCount += tokenValue;
                 }
             }
         } catch (Exception e) {
@@ -1256,11 +1489,25 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
     }
 
+    private static class ConsumerAggregate {
+
+        String consumer;
+        boolean unauthenticated;
+        long requestCount;
+        long inputTokens;
+        long outputTokens;
+        long blockedCount;
+        long monitoredCount;
+        final Set<String> routes = new LinkedHashSet<>();
+        final Set<String> models = new LinkedHashSet<>();
+    }
+
     private static class PrometheusMetricData {
 
         String route;
         String consumer;
         String model;
+        long requestCount;
         long inputTokens;
         long outputTokens;
 

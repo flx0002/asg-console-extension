@@ -177,3 +177,44 @@ export interface AiShadowAuthzUpdate {
   // 'manual' when added from the form, 'detected' when authorized from a detection row.
   source?: 'manual' | 'detected';
 }
+
+// One consumer's usage and admission profile: who uses the AI, how much, and
+// whether the traffic was blocked. Usage comes from Prometheus (admitted
+// requests only); blocked/monitored counts come from the event table.
+export interface AiConsumerUsage {
+  consumer: string;
+  // True for the aggregate "none" bucket: traffic without an identity, not a person.
+  unauthenticated: boolean;
+  requestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  models: string[];
+  routes: string[];
+  // Routes this consumer called but is not authorized on. Non-empty means overreach.
+  unauthorizedRoutes: string[];
+  // True only when the consumer is authorized on every route it actually called.
+  authorized: boolean;
+  blockedCount: number;
+  monitoredCount: number;
+}
+
+export interface AiConsumerUsageReport {
+  requestCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  // Identified consumers only (the "none" bucket is excluded).
+  consumerCount: number;
+  authorizedCount: number;
+  unauthenticatedRequestCount: number;
+  blockedCount: number;
+  monitoredCount: number;
+  consumers: AiConsumerUsage[];
+  // False when Prometheus is unreachable: zeros mean "unavailable", not "nobody used it".
+  usageAvailable: boolean;
+  // 'cumulative' — the gateway's running total; Prometheus keeps only 6h of samples.
+  usageScope: string;
+  // Window (hours) the blocked/monitored counts were computed over. Different
+  // scope from usageScope on purpose; the UI labels them separately.
+  eventWindowHours: number;
+}
