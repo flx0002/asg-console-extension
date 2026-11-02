@@ -10,9 +10,8 @@ import { useTranslation } from 'react-i18next';
 import moment from 'moment';
 import {
   getAiShadowStatus, setAiShadowMode, getAiConsumerUsage, getAiShadowConsumers, replaceAiShadowConsumers,
-  getAiShadowDetectEvents,
 } from '@/services';
-import type { AiShadowStatus, AiConsumerUsage, AiShadowDetectEvent } from '@/interfaces/ai-shadow';
+import type { AiShadowStatus, AiConsumerUsage } from '@/interfaces/ai-shadow';
 
 const REFRESH_INTERVAL = 30000;
 const { RangePicker } = DatePicker;
@@ -44,20 +43,6 @@ const MAX_CUSTOM_DAYS = 31;
 const USAGE_RETENTION_HOURS = 6;
 const USAGE_RETENTION_MS = USAGE_RETENTION_HOURS * 3600 * 1000;
 
-const EVENT_PAGE_SIZE = 10;
-
-const pad2 = (n: number): string => (n < 10 ? `0${n}` : String(n));
-
-// 后端 LocalDateTime 会序列化成 [y,m,d,h,mi,s,ns]，与检测页保持同一套转换。
-const formatEventTime = (value: string | number[] | undefined): string => {
-  if (!value) return '-';
-  if (Array.isArray(value) && value.length >= 6) {
-    const [y, m, d, h = 0, mi = 0, s = 0] = value;
-    return `${y}-${pad2(m)}-${pad2(d)} ${pad2(h)}:${pad2(mi)}:${pad2(s)}`;
-  }
-  return String(value);
-};
-
 interface RouteRow extends AiShadowStatus {
   requestCount: number;
   callers: AiConsumerUsage[];
@@ -65,7 +50,15 @@ interface RouteRow extends AiShadowStatus {
   unauthorizedRequests: number;
 }
 
-const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
+interface RouteViewProps {
+  // 汇总里「已拦截 / 已放行但记录」两格的出口：跳到事件页签并预置筛选。
+  // 事件本身有常驻页面，这里只是快捷方式，不是唯一入口。
+  // 连同当前取数窗口一起带出去：只带状态的话，用户在「近30天」看到 11 条，
+  // 跳到事件页却按它自己的「今天」去查，列表与刚点的数字对不上。
+  onOpenEvents: (status: 'blocked' | 'monitored', window: { startTime: number; endTime: number }) => void;
+}
+
+const AiShadowRoutePage: React.FC<RouteViewProps> = ({ onOpenEvents }) => {
   const { t } = useTranslation();
   const [range, setRange] = useState<RangeKey>('today');
   // 自定义区间（毫秒，闭区间）。仅在 range === 'custom' 时参与取数。
@@ -76,10 +69,6 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
   const [checked, setChecked] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [switching, setSwitching] = useState<string | null>(null);
-  // 事件明细抽屉：null = 关闭，'blocked' / 'monitored' = 看哪一类。
-  const [eventDrawer, setEventDrawer] = useState<null | 'blocked' | 'monitored'>(null);
-  // 与检测页一致：这里存后端页码（0-based），展示时 +1。
-  const [eventPage, setEventPage] = useState(0);
 
   // 取数窗口的唯一来源。windowKey 是给 refreshDeps 用的稳定标量键：
   // 直接用对象会让每次渲染都触发重新请求。
@@ -133,28 +122,6 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
 
   // 用量不可用时不能显示 0：那会被读成「没人用」，与事实相反。
   const usageBroken = !!usage && usage.usageAvailable === false;
-
-  // 事件明细与汇总同窗口：汇总的「已拦截 / 已放行但记录」是事件表 surface=route 的条数，
-  // 点开必须能看到构成这两个数字的原始记录，否则那两格是只能信、不能查的。
-  const { data: eventPageData, loading: eventLoading, error: eventError } = useRequest(
-    () => {
-      const { startTime, endTime } = currentWindow();
-      return getAiShadowDetectEvents({
-        surface: 'route',
-        status: eventDrawer === 'blocked' ? 'blocked' : 'monitored',
-        startTime,
-        endTime,
-        page: eventPage,
-        size: EVENT_PAGE_SIZE,
-      });
-    },
-    { ready: !!eventDrawer, refreshDeps: [eventDrawer, eventPage, windowKey], onError: () => {} },
-  );
-
-  const openEventDrawer = useCallback((kind: 'blocked' | 'monitored') => {
-    setEventPage(0);
-    setEventDrawer(kind);
-  }, []);
 
   // 每次调用次数（消费者维度），授权抽屉里用来区分「授权了但没人用」和「没授权却一直用」。
   const callCountByConsumer = useMemo(() => {
@@ -526,11 +493,11 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
         })}
         {overviewCell(t('aiShadow.routeOverviewBlocked'), totals.blocked, {
           hint: t('aiShadow.routeOverviewBlockedHint'),
-          onClick: () => openEventDrawer('blocked'),
+          onClick: () => onOpenEvents('blocked', currentWindow()),
         })}
         {overviewCell(t('aiShadow.routeOverviewMonitored'), totals.monitored, {
           hint: t('aiShadow.routeOverviewBlockedHint'),
-          onClick: () => openEventDrawer('monitored'),
+          onClick: () => onOpenEvents('monitored', currentWindow()),
         })}
       </Row>
 
@@ -666,88 +633,6 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
         )}
       </Drawer>
 
-      <Drawer
-        open={!!eventDrawer}
-        onClose={() => setEventDrawer(null)}
-        width={760}
-        title={eventDrawer === 'blocked'
-          ? t('aiShadow.eventDrawerBlockedTitle')
-          : t('aiShadow.eventDrawerMonitoredTitle')}
-      >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message={t('aiShadow.eventDrawerHint')}
-        />
-        {eventError && (
-          <Alert
-            type="error"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={t('aiShadow.eventDrawerFailed')}
-          />
-        )}
-        <Table<AiShadowDetectEvent>
-          size="small"
-          rowKey="id"
-          loading={eventLoading}
-          dataSource={eventPageData?.items || []}
-          locale={{ emptyText: <Empty description={t('aiShadow.noData')} /> }}
-          pagination={{
-            current: eventPage + 1,
-            pageSize: EVENT_PAGE_SIZE,
-            total: eventPageData?.total || 0,
-            showSizeChanger: false,
-            onChange: (next) => setEventPage(next - 1),
-          }}
-          columns={[
-            {
-              title: t('aiShadow.eventColTime'),
-              dataIndex: 'eventTime',
-              width: 170,
-              render: (value) => formatEventTime(value),
-            },
-            {
-              title: t('aiShadow.eventColStatus'),
-              dataIndex: 'status',
-              width: 100,
-              render: (value) => (
-                <Tag color={value === 'blocked' ? 'red' : 'blue'}>
-                  {value === 'blocked' ? t('aiShadow.eventStatusBlocked') : t('aiShadow.eventStatusMonitored')}
-                </Tag>
-              ),
-            },
-            {
-              title: t('aiShadow.eventColReason'),
-              dataIndex: 'reason',
-              render: (value) => {
-                if (!value) return '-';
-                if (value === 'no_key') return t('aiShadow.eventReasonNoKey');
-                if (value === 'unknown_key') return t('aiShadow.eventReasonUnknownKey');
-                if (value.startsWith('not_in_allow:')) {
-                  return t('aiShadow.eventReasonNotInAllow', {
-                    consumer: value.slice('not_in_allow:'.length),
-                  });
-                }
-                return value;
-              },
-            },
-            {
-              title: t('aiShadow.eventColSrcIp'),
-              dataIndex: 'srcIp',
-              width: 140,
-              render: (value) => <span style={{ fontFamily: 'monospace' }}>{value || '-'}</span>,
-            },
-            {
-              title: t('aiShadow.eventColDomain'),
-              dataIndex: 'domain',
-              width: 150,
-              render: (value) => <span style={{ fontFamily: 'monospace' }}>{value || '-'}</span>,
-            },
-          ]}
-        />
-      </Drawer>
     </Card>
   );
 };

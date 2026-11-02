@@ -5,16 +5,30 @@ import { useTranslation } from 'react-i18next';
 import { getAiShadowEnabled, setAiShadowEnabled } from '@/services';
 import DetectedView from './detected';
 import RouteView from './route';
+import EventsView from './events';
 
 // 影子AI 统一入口：顶部为功能总开关（独占一行，与检测/管控模式分离），
 // 其下两个 tab 分别承载「流量检测与审计」和「路由与消费者管控」。
 const AiShadowPage: React.FC = () => {
   const { t } = useTranslation();
   const [enabled, setEnabledState] = useState<boolean>(true);
+  // 页签受控只为一件事：路由页的汇总卡片要能把人送到事件页并预置筛选。
+  // 事件页本身是常驻页签，不点任何数字也能直接打开。
+  const [activeTab, setActiveTab] = useState<string>('detected');
+  const [focusStatus, setFocusStatus] = useState<'blocked' | 'monitored' | undefined>();
+  const [focusWindow, setFocusWindow] = useState<{ startTime: number; endTime: number } | undefined>();
+  const [focusSeq, setFocusSeq] = useState(0);
   const [switching, setSwitching] = useState<boolean>(false);
 
   useEffect(() => {
     getAiShadowEnabled().then((v) => setEnabledState(v !== false)).catch(() => {});
+  }, []);
+
+  const openEvents = useCallback((status: 'blocked' | 'monitored', window: { startTime: number; endTime: number }) => {
+    setFocusStatus(status);
+    setFocusWindow(window);
+    setFocusSeq((n) => n + 1);
+    setActiveTab('events');
   }, []);
 
   const handleEnabledSwitch = useCallback(async () => {
@@ -63,7 +77,8 @@ const AiShadowPage: React.FC = () => {
       </Card>
 
       <Tabs
-        defaultActiveKey="detected"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           {
             key: 'detected',
@@ -73,7 +88,12 @@ const AiShadowPage: React.FC = () => {
           {
             key: 'route',
             label: t('aiShadow.tabRouteLabel'),
-            children: <RouteView enabled={enabled} />,
+            children: <RouteView onOpenEvents={openEvents} />,
+          },
+          {
+            key: 'events',
+            label: t('aiShadow.tabEventsLabel'),
+            children: <EventsView focusStatus={focusStatus} focusWindow={focusWindow} focusSeq={focusSeq} />,
           },
         ]}
       />

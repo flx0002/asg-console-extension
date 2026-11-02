@@ -10,6 +10,8 @@ SRC=$CON/frontend/src
 echo "=== 1. 扩展页面/services/interfaces/theme 复制 ==="
 cp -r "$EXT_DIR/pages/"* "$SRC/pages/"
 cp "$EXT_DIR/services/"*.ts "$SRC/services/"
+mkdir -p "$SRC/components"
+cp "$EXT_DIR/components/"*.tsx "$SRC/components/"
 cp -r "$EXT_DIR/interfaces" "$SRC/"
 cp "$EXT_DIR/theme.ts" "$SRC/theme.ts"
 echo "  ✓ 页面 $(find "$EXT_DIR/pages" -name '*.tsx' | wc -l) 个 / services $(ls "$EXT_DIR/services" | wc -l) 个 / interfaces / theme"

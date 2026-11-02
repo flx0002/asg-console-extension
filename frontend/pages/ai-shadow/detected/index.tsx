@@ -10,6 +10,9 @@ import { useTranslation } from 'react-i18next';
 // antd 4 的 RangePicker 受控值必须是 moment 对象（项目未迁 dayjs），
 // 只在自定义区间控件里用到，不另引日期库。
 import moment from 'moment';
+// 事件表在多个 tab 里是同一张表的不同面，时间/原因/详情的呈现统一收在上级目录，
+// 否则同一条事件在两页上会长得不一样。
+import { eventReasonLabel, formatEventTime, renderEventDetail } from '@/components/ai-shadow-events';
 
 const REFRESH_INTERVAL = 30000;
 const EVENT_PAGE_SIZE = 10;
@@ -120,26 +123,6 @@ const formatDateTime = (ms?: number): string => {
   if (isNaN(d.getTime())) return '-';
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-};
-
-// 后端 LocalDateTime 可能序列化为 [y,m,d,h,m,s,ns] 数组，统一转可读字符串
-const formatEventTime = (t: string | number[] | undefined): string => {
-  if (!t) return '-';
-  if (Array.isArray(t) && t.length >= 6) {
-    const [y, m, d, h = 0, mi = 0, s = 0] = t;
-    return `${y}-${pad2(m)}-${pad2(d)} ${pad2(h)}:${pad2(mi)}:${pad2(s)}`;
-  }
-  return String(t);
-};
-
-const parseDetail = (detail?: string): Record<string, unknown> | null => {
-  if (!detail) return null;
-  try {
-    const parsed = JSON.parse(detail);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
 };
 
 const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true }) => {
@@ -769,45 +752,9 @@ const AiShadowDetectedPage: React.FC<{ enabled?: boolean }> = ({ enabled = true 
     return <Tag>{status || '-'}</Tag>;
   };
 
-  const reasonLabel = (reason?: string): string => {
-    if (!reason) return '-';
-    if (reason === 'no_key') return t('aiShadow.reasonNoKey');
-    if (reason === 'unknown_key') return t('aiShadow.reasonUnknownKey');
-    if (reason === 'off_channel') return t('aiShadow.reasonOffChannel');
-    if (reason.startsWith('not_in_allow')) {
-      const consumer = reason.split(':')[1];
-      return consumer
-        ? t('aiShadow.reasonNotInAllowNamed', { consumer })
-        : t('aiShadow.reasonNotInAllow');
-    }
-    return reason;
-  };
+  const reasonLabel = (reason?: string): string => eventReasonLabel(t, reason);
 
-  const detailLabelMap: Record<string, string> = {
-    protocol: t('aiShadow.eventProtocol'),
-    method: t('aiShadow.eventMethod'),
-    uri: t('aiShadow.eventUri'),
-    srcPort: t('aiShadow.eventSrcPort'),
-    dstPort: t('aiShadow.eventDstPort'),
-    ja3: 'JA3',
-    ja4: 'JA4',
-  };
-
-  const renderDetail = (detail?: string) => {
-    const parsed = parseDetail(detail);
-    if (!parsed) return <span style={{ color: '#999' }}>-</span>;
-    const entries = Object.entries(parsed).filter(([, v]) => v !== '' && v !== null && v !== undefined);
-    if (!entries.length) return <span style={{ color: '#999' }}>-</span>;
-    return (
-      <Descriptions size="small" column={1} bordered style={{ maxWidth: 640 }}>
-        {entries.map(([k, v]) => (
-          <Descriptions.Item key={k} label={detailLabelMap[k] || k}>
-            <span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{String(v)}</span>
-          </Descriptions.Item>
-        ))}
-      </Descriptions>
-    );
-  };
+  const renderDetail = (detail?: string) => renderEventDetail(t, detail);
 
   // Weak audit-chain link (IR-025/S5): handling audit + same-source host info
   const renderAuditLink = (record: AiShadowDetectEvent) => {
