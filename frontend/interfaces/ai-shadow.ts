@@ -193,6 +193,11 @@ export interface AiConsumerUsage {
   outputTokens: number;
   models: string[];
   routes: string[];
+  // Route resource name -> requests this consumer made on that route.
+  // requestCount is the total across all routes, so per-route attribution must read
+  // this map instead; reusing requestCount adds the same calls to every route the
+  // consumer touched and the sum silently exceeds the total.
+  routeRequestCounts?: Record<string, number>;
   // Routes this consumer called but is not authorized on. Non-empty means overreach.
   unauthorizedRoutes: string[];
   // True only when the consumer is authorized on every route it actually called.
@@ -215,7 +220,7 @@ export interface AiConsumerUsageReport {
   consumers: AiConsumerUsage[];
   // False when Prometheus is unreachable: zeros mean "unavailable", not "nobody used it".
   usageAvailable: boolean;
-  // 'cumulative' — the gateway's running total; Prometheus keeps only 6h of samples.
+  // 'window' — the increment inside the requested window; Prometheus keeps only 6h.
   usageScope: string;
   // Window (hours) the blocked/monitored counts were computed over. Different
   // scope from usageScope on purpose; the UI labels them separately.

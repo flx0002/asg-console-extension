@@ -10,8 +10,9 @@ import { useTranslation } from 'react-i18next';
 import moment from 'moment';
 import {
   getAiShadowStatus, setAiShadowMode, getAiConsumerUsage, getAiShadowConsumers, replaceAiShadowConsumers,
+  getAiShadowDetectEvents,
 } from '@/services';
-import type { AiShadowStatus, AiConsumerUsage } from '@/interfaces/ai-shadow';
+import type { AiShadowStatus, AiConsumerUsage, AiShadowDetectEvent } from '@/interfaces/ai-shadow';
 
 const REFRESH_INTERVAL = 30000;
 const { RangePicker } = DatePicker;
@@ -43,6 +44,20 @@ const MAX_CUSTOM_DAYS = 31;
 const USAGE_RETENTION_HOURS = 6;
 const USAGE_RETENTION_MS = USAGE_RETENTION_HOURS * 3600 * 1000;
 
+const EVENT_PAGE_SIZE = 10;
+
+const pad2 = (n: number): string => (n < 10 ? `0${n}` : String(n));
+
+// 后端 LocalDateTime 会序列化成 [y,m,d,h,mi,s,ns]，与检测页保持同一套转换。
+const formatEventTime = (value: string | number[] | undefined): string => {
+  if (!value) return '-';
+  if (Array.isArray(value) && value.length >= 6) {
+    const [y, m, d, h = 0, mi = 0, s = 0] = value;
+    return `${y}-${pad2(m)}-${pad2(d)} ${pad2(h)}:${pad2(mi)}:${pad2(s)}`;
+  }
+  return String(value);
+};
+
 interface RouteRow extends AiShadowStatus {
   requestCount: number;
   callers: AiConsumerUsage[];
@@ -61,6 +76,10 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
   const [checked, setChecked] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [switching, setSwitching] = useState<string | null>(null);
+  // 事件明细抽屉：null = 关闭，'blocked' / 'monitored' = 看哪一类。
+  const [eventDrawer, setEventDrawer] = useState<null | 'blocked' | 'monitored'>(null);
+  // 与检测页一致：这里存后端页码（0-based），展示时 +1。
+  const [eventPage, setEventPage] = useState(0);
 
   // 取数窗口的唯一来源。windowKey 是给 refreshDeps 用的稳定标量键：
   // 直接用对象会让每次渲染都触发重新请求。
@@ -115,6 +134,28 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
   // 用量不可用时不能显示 0：那会被读成「没人用」，与事实相反。
   const usageBroken = !!usage && usage.usageAvailable === false;
 
+  // 事件明细与汇总同窗口：汇总的「已拦截 / 已放行但记录」是事件表 surface=route 的条数，
+  // 点开必须能看到构成这两个数字的原始记录，否则那两格是只能信、不能查的。
+  const { data: eventPageData, loading: eventLoading, error: eventError } = useRequest(
+    () => {
+      const { startTime, endTime } = currentWindow();
+      return getAiShadowDetectEvents({
+        surface: 'route',
+        status: eventDrawer === 'blocked' ? 'blocked' : 'monitored',
+        startTime,
+        endTime,
+        page: eventPage,
+        size: EVENT_PAGE_SIZE,
+      });
+    },
+    { ready: !!eventDrawer, refreshDeps: [eventDrawer, eventPage, windowKey], onError: () => {} },
+  );
+
+  const openEventDrawer = useCallback((kind: 'blocked' | 'monitored') => {
+    setEventPage(0);
+    setEventDrawer(kind);
+  }, []);
+
   // 每次调用次数（消费者维度），授权抽屉里用来区分「授权了但没人用」和「没授权却一直用」。
   const callCountByConsumer = useMemo(() => {
     const map: Record<string, number> = {};
@@ -128,16 +169,20 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
     const consumers = usage?.consumers || [];
     const list = (statusList || []).map((status) => {
       // 用量按 Ingress 资源名归属，路由名与它不同名，必须用 resourceName 对齐。
-      const callers = consumers.filter((item) => (item.routes || []).includes(status.resourceName || ''));
+      const resourceName = status.resourceName || '';
+      const callers = consumers.filter((item) => (item.routes || []).includes(resourceName));
       const unauthorizedCallers = callers.filter(
         (item) => !(status.authorizedConsumers || []).includes(item.consumer),
       );
+      // 一个消费者可能同时走过几条路由，它的 requestCount 是这几条路由的合计。
+      // 只有 routeRequestCounts 里存的才是「它在这条路由上」的次数。
+      const countOnRoute = (item: AiConsumerUsage) => item.routeRequestCounts?.[resourceName] || 0;
       return {
         ...status,
-        requestCount: callers.reduce((sum, item) => sum + (item.requestCount || 0), 0),
+        requestCount: callers.reduce((sum, item) => sum + countOnRoute(item), 0),
         callers,
         unauthorizedCallers,
-        unauthorizedRequests: unauthorizedCallers.reduce((sum, item) => sum + (item.requestCount || 0), 0),
+        unauthorizedRequests: unauthorizedCallers.reduce((sum, item) => sum + countOnRoute(item), 0),
       };
     });
     return list.sort((left, right) => right.unauthorizedRequests - left.unauthorizedRequests);
@@ -365,10 +410,18 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
   const overviewCell = (
     title: string,
     value: number,
-    options?: { danger?: boolean; suffix?: React.ReactNode; hint?: string },
+    options?: { danger?: boolean; suffix?: React.ReactNode; hint?: string; onClick?: () => void },
   ) => {
     const cell = (
-      <div style={{ padding: '12px 16px', background: '#fafafa', borderRadius: 8 }}>
+      <div
+        style={{
+          padding: '12px 16px',
+          background: '#fafafa',
+          borderRadius: 8,
+          cursor: options?.onClick ? 'pointer' : undefined,
+        }}
+        onClick={options?.onClick}
+      >
         <Statistic
           title={<span style={{ fontSize: 12, color: '#8c8c8c' }}>{title}</span>}
           // 用量不可用时统一显示 '-'：显示 0 会被读成「没人用」，与事实相反。
@@ -379,6 +432,9 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
             color: options?.danger && value > 0 ? '#c0392b' : undefined,
           }}
         />
+        {options?.onClick && (
+          <div style={{ fontSize: 11, color: '#1677ff' }}>{t('aiShadow.routeOverviewClickForEvents')}</div>
+        )}
       </div>
     );
     return (
@@ -468,8 +524,14 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
           danger: true,
           hint: t('aiShadow.routeOverviewBypassHint'),
         })}
-        {overviewCell(t('aiShadow.routeOverviewBlocked'), totals.blocked)}
-        {overviewCell(t('aiShadow.routeOverviewMonitored'), totals.monitored)}
+        {overviewCell(t('aiShadow.routeOverviewBlocked'), totals.blocked, {
+          hint: t('aiShadow.routeOverviewBlockedHint'),
+          onClick: () => openEventDrawer('blocked'),
+        })}
+        {overviewCell(t('aiShadow.routeOverviewMonitored'), totals.monitored, {
+          hint: t('aiShadow.routeOverviewBlockedHint'),
+          onClick: () => openEventDrawer('monitored'),
+        })}
       </Row>
 
       <Alert
@@ -602,6 +664,89 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
             {drawerOptions.length === 0 && <Empty description={t('aiShadow.noData')} />}
           </div>
         )}
+      </Drawer>
+
+      <Drawer
+        open={!!eventDrawer}
+        onClose={() => setEventDrawer(null)}
+        width={760}
+        title={eventDrawer === 'blocked'
+          ? t('aiShadow.eventDrawerBlockedTitle')
+          : t('aiShadow.eventDrawerMonitoredTitle')}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('aiShadow.eventDrawerHint')}
+        />
+        {eventError && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 12 }}
+            message={t('aiShadow.eventDrawerFailed')}
+          />
+        )}
+        <Table<AiShadowDetectEvent>
+          size="small"
+          rowKey="id"
+          loading={eventLoading}
+          dataSource={eventPageData?.items || []}
+          locale={{ emptyText: <Empty description={t('aiShadow.noData')} /> }}
+          pagination={{
+            current: eventPage + 1,
+            pageSize: EVENT_PAGE_SIZE,
+            total: eventPageData?.total || 0,
+            showSizeChanger: false,
+            onChange: (next) => setEventPage(next - 1),
+          }}
+          columns={[
+            {
+              title: t('aiShadow.eventColTime'),
+              dataIndex: 'eventTime',
+              width: 170,
+              render: (value) => formatEventTime(value),
+            },
+            {
+              title: t('aiShadow.eventColStatus'),
+              dataIndex: 'status',
+              width: 100,
+              render: (value) => (
+                <Tag color={value === 'blocked' ? 'red' : 'blue'}>
+                  {value === 'blocked' ? t('aiShadow.eventStatusBlocked') : t('aiShadow.eventStatusMonitored')}
+                </Tag>
+              ),
+            },
+            {
+              title: t('aiShadow.eventColReason'),
+              dataIndex: 'reason',
+              render: (value) => {
+                if (!value) return '-';
+                if (value === 'no_key') return t('aiShadow.eventReasonNoKey');
+                if (value === 'unknown_key') return t('aiShadow.eventReasonUnknownKey');
+                if (value.startsWith('not_in_allow:')) {
+                  return t('aiShadow.eventReasonNotInAllow', {
+                    consumer: value.slice('not_in_allow:'.length),
+                  });
+                }
+                return value;
+              },
+            },
+            {
+              title: t('aiShadow.eventColSrcIp'),
+              dataIndex: 'srcIp',
+              width: 140,
+              render: (value) => <span style={{ fontFamily: 'monospace' }}>{value || '-'}</span>,
+            },
+            {
+              title: t('aiShadow.eventColDomain'),
+              dataIndex: 'domain',
+              width: 150,
+              render: (value) => <span style={{ fontFamily: 'monospace' }}>{value || '-'}</span>,
+            },
+          ]}
+        />
       </Drawer>
     </Card>
   );

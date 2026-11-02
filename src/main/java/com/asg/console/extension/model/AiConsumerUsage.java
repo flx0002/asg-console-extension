@@ -9,6 +9,7 @@
 package com.asg.console.extension.model;
 
 import java.util.List;
+import java.util.Map;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -44,6 +45,15 @@ public class AiConsumerUsage {
 
     /** 该消费者实际调用过的路由资源名（即 Prometheus 的 ai_route 标签，等于 Ingress 名）。 */
     private List<String> routes;
+
+    /**
+     * 路由资源名 -> 该消费者在这条路由上的请求数（同窗口）。
+     * <p>
+     * 不能用 {@link #requestCount} 代替：那是一个消费者在<b>所有</b>路由上的合计，
+     * 把它加到它走过的每一条路由上，合计就会超过总量，差额被「非 AI 路由流量」的
+     * max(0, ...) 悄悄吃掉。
+     */
+    private Map<String, Long> routeRequestCounts;
 
     /** 调用过、但不在其允许名单里的路由。非空即代表越权。 */
     private List<String> unauthorizedRoutes;

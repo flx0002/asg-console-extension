@@ -234,7 +234,18 @@ public class AiShadowServiceImpl implements AiShadowService {
 
         if (usageAvailable) {
             for (PrometheusMetricData data : queryMetric(LLM_REQUEST_METRIC, start, end).values()) {
-                aggregateOf(aggregates, data).requestCount += data.requestCount;
+                ConsumerAggregate aggregate = aggregateOf(aggregates, data);
+                aggregate.requestCount += data.requestCount;
+                // 「窗口内调用过的路由」只收有增量的：increase 会给窗口内没流量的旧 series
+                // 返回 0，把它们也登记成「走过这条路由」，会让未授权路由列表凭空多出
+                // 一堆历史上用过、本窗口根本没人调的路由。
+                if (StringUtils.isNotEmpty(data.route) && data.requestCount > 0) {
+                    aggregate.routeRequests.merge(data.route, data.requestCount, Long::sum);
+                    aggregate.routes.add(data.route);
+                }
+                if (StringUtils.isNotEmpty(data.model) && data.requestCount > 0) {
+                    aggregate.models.add(data.model);
+                }
             }
             for (PrometheusMetricData data : queryMetric(INPUT_TOKEN_METRIC, start, end).values()) {
                 aggregateOf(aggregates, data).inputTokens += data.inputTokens;
@@ -320,6 +331,7 @@ public class AiShadowServiceImpl implements AiShadowService {
                 .outputTokens(aggregate.outputTokens)
                 .models(new ArrayList<>(aggregate.models))
                 .routes(new ArrayList<>(aggregate.routes))
+                .routeRequestCounts(new LinkedHashMap<>(aggregate.routeRequests))
                 .unauthorizedRoutes(unauthorizedRoutes)
                 .authorized(authorized)
                 .blockedCount(aggregate.blockedCount)
@@ -343,7 +355,7 @@ public class AiShadowServiceImpl implements AiShadowService {
             .monitoredCount(monitoredTotal)
             .consumers(consumers)
             .usageAvailable(usageAvailable)
-            .usageScope("cumulative")
+            .usageScope("window")
             .eventWindowHours((int)((end - start) / 3600000L))
             .build();
     }
@@ -355,12 +367,6 @@ public class AiShadowServiceImpl implements AiShadowService {
         if (aggregate == null) {
             aggregate = newConsumerAggregate(consumer);
             aggregates.put(consumer, aggregate);
-        }
-        if (StringUtils.isNotEmpty(data.route)) {
-            aggregate.routes.add(data.route);
-        }
-        if (StringUtils.isNotEmpty(data.model)) {
-            aggregate.models.add(data.model);
         }
         return aggregate;
     }
@@ -1569,6 +1575,9 @@ public class AiShadowServiceImpl implements AiShadowService {
         long outputTokens;
         long blockedCount;
         long monitoredCount;
+        /** route -> 该消费者在这条路由上的请求数。前端按路由归属时只能读这个，
+         *  用 requestCount 会把同一消费者的全部调用重复加到它走过的每条路由上。 */
+        final Map<String, Long> routeRequests = new LinkedHashMap<>();
         final Set<String> routes = new LinkedHashSet<>();
         final Set<String> models = new LinkedHashSet<>();
     }

@@ -59,7 +59,7 @@ public class AiConsumerUsageReport {
      */
     private Boolean usageAvailable;
 
-    /** 用量口径：cumulative = 网关启动以来的累计（Prometheus 只保留 6h 样本，算不出历史区间）。 */
+    /** 用量口径：window = 请求窗口内的增量；Prometheus 只保留 6h 样本，更早的区间只能覆盖最近 6h。 */
     private String usageScope;
 
     /** 拦截计数所用的事件窗口（小时）。与 usageScope 口径不同，页面需分开展示。 */
