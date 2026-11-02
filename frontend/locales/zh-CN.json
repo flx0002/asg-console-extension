@@ -246,7 +246,16 @@
     "callersUnauthorized": "未授权",
     "callerCount": "个调用方",
     "unauthorizedHint": "这条路由上未授权调用方发起的请求数：管控模式下会被拦下，检测模式下只记录",
-    "routeListHint": "一行一条 AI 路由。名单为空即默认拒绝；模式决定违规请求是被拦下还是只记录。"
+    "routeListHint": "一行一条 AI 路由。名单为空即默认拒绝；模式决定违规请求是被拦下还是只记录。",
+    "routeOverviewRoutes": "AI 路由",
+    "routeOverviewRequests": "窗口内请求",
+    "routeOverviewUnauthorized": "其中未授权",
+    "routeOverviewBlocked": "已拦截",
+    "routeOverviewMonitored": "已放行但记录",
+    "usageRetentionWarn": "请求数与 Token 来自 Prometheus，只保留最近 {{hours}} 小时：所选区间更早的部分不含用量数据，违规事件不受影响。",
+    "routeOverviewDenySuffix": "{{count}} 条默认拒绝",
+    "routeOverviewBypass": "非 AI 路由流量",
+    "routeOverviewBypassHint": "窗口内没有走 AI 路由的请求：来自手工 Ingress 或公网反代。这部分流量不受 AI 路由的授权与拦截策略约束。"
   },
   "agentGuard": {
     "pluginDesc": "智能体执行链安全防护：Session关联、风险累积、限流配额、审计日志",

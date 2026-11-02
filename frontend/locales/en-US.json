@@ -246,7 +246,16 @@
     "callersUnauthorized": "Unauthorized",
     "callerCount": "callers",
     "unauthorizedHint": "Requests from unauthorized callers on this route: rejected in enforcement, recorded in monitoring",
-    "routeListHint": "One row per AI route. An empty list means default deny; the mode decides whether violations are rejected or only recorded."
+    "routeListHint": "One row per AI route. An empty list means default deny; the mode decides whether violations are rejected or only recorded.",
+    "routeOverviewRoutes": "AI routes",
+    "routeOverviewRequests": "Requests in window",
+    "routeOverviewUnauthorized": "Unauthorized",
+    "routeOverviewBlocked": "Blocked",
+    "routeOverviewMonitored": "Logged & allowed",
+    "usageRetentionWarn": "Request and token counts come from Prometheus, which retains {{hours}} hours only: earlier parts of the selected window have no usage data. Violation events are unaffected.",
+    "routeOverviewDenySuffix": "{{count}} default deny",
+    "routeOverviewBypass": "Non-AI-route traffic",
+    "routeOverviewBypassHint": "Requests in the window that did not go through an AI route: manual Ingress or public reverse proxy. These bypass AI route authorization and blocking."
   },
   "agentGuard": {
     "pluginDesc": "Agent Execution Chain Security: Session correlation, risk accumulation, rate limiting, audit logging",

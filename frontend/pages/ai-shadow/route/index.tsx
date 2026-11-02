@@ -1,32 +1,47 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Drawer, Empty, Input, Modal, Segmented, Space,
-  Switch, Table, Tag, Tooltip, message,
+  Alert, Button, Card, Checkbox, Col, DatePicker, Drawer, Empty, Input, Modal, Row,
+  Segmented, Space, Statistic, Switch, Table, Tag, Tooltip, message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
+import moment from 'moment';
 import {
   getAiShadowStatus, setAiShadowMode, getAiConsumerUsage, getAiShadowConsumers, replaceAiShadowConsumers,
 } from '@/services';
 import type { AiShadowStatus, AiConsumerUsage } from '@/interfaces/ai-shadow';
 
 const REFRESH_INTERVAL = 30000;
+const { RangePicker } = DatePicker;
 
-type RangeKey = 'week' | 'month';
+type FixedRangeKey = 'today' | 'week' | 'month';
+type RangeKey = FixedRangeKey | 'custom';
 
-const RANGE_DAYS: Record<RangeKey, number> = { week: 7, month: 30 };
+const RANGE_DAYS: Record<FixedRangeKey, number> = { today: 1, week: 7, month: 30 };
 
 // 与「流量检测与审计」同一套窗口口径：起点对齐浏览器本地零点。
 // 两个 tab 看的是同一张事件表的两面，窗口算法各写一套会让同一个"今天"得出两个数字。
-const rangeWindow = (key: RangeKey): { startTime: number; endTime: number } => {
+const rangeWindow = (key: FixedRangeKey): { startTime: number; endTime: number } => {
   const endTime = Date.now();
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   start.setDate(start.getDate() - (RANGE_DAYS[key] - 1));
   return { startTime: start.getTime(), endTime };
 };
+
+const startOfDay = (ms: number): number => new Date(ms).setHours(0, 0, 0, 0);
+const endOfDay = (ms: number): number => new Date(ms).setHours(23, 59, 59, 999);
+
+// 后端 MAX_TREND_WINDOW_MS = 31 天，超出会被静默截断起点：界面显示的范围与实际
+// 统计范围就不再一致，所以前端先卡住。
+const MAX_CUSTOM_DAYS = 31;
+
+// Prometheus 启动参数 retention=6h。违规事件落在 MySQL（完整保留），
+// 但请求数与 Token 只能覆盖最近 6 小时，超出部分必须如实标注。
+const USAGE_RETENTION_HOURS = 6;
+const USAGE_RETENTION_MS = USAGE_RETENTION_HOURS * 3600 * 1000;
 
 interface RouteRow extends AiShadowStatus {
   requestCount: number;
@@ -37,13 +52,45 @@ interface RouteRow extends AiShadowStatus {
 
 const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
   const { t } = useTranslation();
-  const [range, setRange] = useState<RangeKey>('week');
+  const [range, setRange] = useState<RangeKey>('today');
+  // 自定义区间（毫秒，闭区间）。仅在 range === 'custom' 时参与取数。
+  const [customRange, setCustomRange] = useState<[number, number] | null>(null);
   const [keyword, setKeyword] = useState('');
   const [filter, setFilter] = useState<'all' | 'unauthorized' | 'deny'>('all');
   const [drawerRow, setDrawerRow] = useState<RouteRow | null>(null);
   const [checked, setChecked] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [switching, setSwitching] = useState<string | null>(null);
+
+  // 取数窗口的唯一来源。windowKey 是给 refreshDeps 用的稳定标量键：
+  // 直接用对象会让每次渲染都触发重新请求。
+  const currentWindow = useCallback((): { startTime: number; endTime: number } => {
+    if (range !== 'custom') {
+      return rangeWindow(range);
+    }
+    if (customRange) {
+      return { startTime: startOfDay(customRange[0]), endTime: endOfDay(customRange[1]) };
+    }
+    // 刚切到自定义还没选日期：先按近 7 天取数，避免整页空白
+    return rangeWindow('week');
+  }, [range, customRange]);
+
+  const windowKey = range === 'custom'
+    ? `custom:${customRange?.[0] ?? 0}:${customRange?.[1] ?? 0}`
+    : range;
+
+  const rangeSummary = useMemo(() => {
+    const { startTime, endTime } = currentWindow();
+    return `${moment(startTime).format('YYYY-MM-DD HH:mm')} ~ ${moment(endTime).format('YYYY-MM-DD HH:mm')}`;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowKey]);
+
+  // 窗口跨度超过指标保留期时，用量只是"最近 6 小时"的切片，页面必须提示。
+  const usageTruncated = useMemo(() => {
+    const { startTime, endTime } = currentWindow();
+    return endTime - startTime > USAGE_RETENTION_MS;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [windowKey]);
 
   // 路由清单：后端会顺带对账（缺 key-auth 实例自动纳管、空名单落默认拒绝），
   // 所以这里拿到的每一条都是「已纳管」状态，页面不需要再区分未纳管。
@@ -54,8 +101,8 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
   });
 
   // 用量：数据源只有 Prometheus。ai_route 标签与 resourceName 同值，才能把「谁用过这条路由」对上。
-  const { data: usage } = useRequest(() => getAiConsumerUsage(rangeWindow(range)), {
-    refreshDeps: [range],
+  const { data: usage } = useRequest(() => getAiConsumerUsage(currentWindow()), {
+    refreshDeps: [windowKey],
     pollingInterval: REFRESH_INTERVAL,
     pollingWhenHidden: false,
     onError: () => {},
@@ -64,6 +111,9 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
   const { data: allConsumers, refresh: refreshConsumers } = useRequest(() => getAiShadowConsumers(), {
     onError: () => {},
   });
+
+  // 用量不可用时不能显示 0：那会被读成「没人用」，与事实相反。
+  const usageBroken = !!usage && usage.usageAvailable === false;
 
   // 每次调用次数（消费者维度），授权抽屉里用来区分「授权了但没人用」和「没授权却一直用」。
   const callCountByConsumer = useMemo(() => {
@@ -111,6 +161,33 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
 
   const unauthorizedRouteCount = rows.filter((row) => row.unauthorizedCallers.length > 0).length;
   const denyRouteCount = rows.filter((row) => !!row.defaultDeny).length;
+
+  // 全路由汇总。这里有一个必须显式呈现的口径差：
+  // 表格只列 AI 路由，而 Prometheus 的 requestCount 是全部 ai_route 之和——手工 Ingress
+  // 和公网反代也在里面。直接用后者当「AI 路由请求」会让表格与汇总对不上，所以拆成两个
+  // 数字：AI 路由合计 + 不在 AI 路由上的流量（即绕过 AI 路由的量）。
+  const totals = useMemo(() => {
+    const aiRequests = rows.reduce((sum, row) => sum + row.requestCount, 0);
+    return {
+      routes: rows.length,
+      denyRoutes: denyRouteCount,
+      requests: aiRequests,
+      unauthorized: rows.reduce((sum, row) => sum + row.unauthorizedRequests, 0),
+      bypass: Math.max(0, (usage?.requestCount ?? 0) - aiRequests),
+      // 拦截/放行来自事件表（surface=route 全量），不按路由归属——事件表没有路由名字段。
+      blocked: usage?.blockedCount ?? 0,
+      monitored: usage?.monitoredCount ?? 0,
+    };
+  }, [rows, denyRouteCount, usage]);
+
+  const handleRangeChange = useCallback((next: RangeKey) => {
+    setRange(next);
+    // 首次切到自定义且还没有区间时给一个可用初值（近 7 天），避免整页空白
+    if (next === 'custom' && !customRange) {
+      const week = rangeWindow('week');
+      setCustomRange([week.startTime, week.endTime]);
+    }
+  }, [customRange]);
 
   const toggleMode = useCallback(
     (row: RouteRow) => {
@@ -245,7 +322,7 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
       align: 'right',
       width: '12%',
       sorter: (left, right) => left.requestCount - right.requestCount,
-      render: (value: number) => value.toLocaleString(),
+      render: (value: number) => (usageBroken ? <span style={{ color: '#b0b5bb' }}>-</span> : value.toLocaleString()),
     },
     {
       title: t('aiShadow.colUnauthorized'),
@@ -254,6 +331,9 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
       width: '12%',
       sorter: (left, right) => left.unauthorizedRequests - right.unauthorizedRequests,
       render: (_value, row) => {
+        if (usageBroken) {
+          return <span style={{ color: '#b0b5bb' }}>-</span>;
+        }
         if (row.unauthorizedCallers.length === 0) {
           return <span style={{ color: '#b0b5bb' }}>0</span>;
         }
@@ -282,25 +362,116 @@ const AiShadowRoutePage: React.FC<{ enabled?: boolean }> = () => {
     },
   ];
 
+  const overviewCell = (
+    title: string,
+    value: number,
+    options?: { danger?: boolean; suffix?: React.ReactNode; hint?: string },
+  ) => {
+    const cell = (
+      <div style={{ padding: '12px 16px', background: '#fafafa', borderRadius: 8 }}>
+        <Statistic
+          title={<span style={{ fontSize: 12, color: '#8c8c8c' }}>{title}</span>}
+          // 用量不可用时统一显示 '-'：显示 0 会被读成「没人用」，与事实相反。
+          value={usageBroken ? '-' : value.toLocaleString()}
+          suffix={options?.suffix}
+          valueStyle={{
+            fontSize: 20,
+            color: options?.danger && value > 0 ? '#c0392b' : undefined,
+          }}
+        />
+      </div>
+    );
+    return (
+      <Col flex="1 1 150px">
+        {options?.hint ? <Tooltip title={options.hint}>{cell}</Tooltip> : cell}
+      </Col>
+    );
+  };
+
   return (
     <Card
       title={t('aiShadow.routeControlTitle')}
       extra={(
-        <Space>
-          <Segmented
-            value={range}
-            onChange={(value) => setRange(value as RangeKey)}
-            options={[
-              { label: t('aiShadow.trendRangeWeek'), value: 'week' },
-              { label: t('aiShadow.trendRangeMonth'), value: 'month' },
-            ]}
-          />
-          <Button icon={<ReloadOutlined />} onClick={() => refresh()}>
-            {t('aiShadow.refresh')}
-          </Button>
-        </Space>
+        <Button icon={<ReloadOutlined />} onClick={() => refresh()}>
+          {t('aiShadow.refresh')}
+        </Button>
       )}
     >
+      {/* 页面级时间范围：同时决定汇总、请求数、未授权数三处口径，
+          所以放在表格上方，而不是塞进某张卡片的 extra 造成"只有那块会变"的错觉。 */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        gap: 12,
+        marginBottom: 12,
+      }}
+      >
+        <span style={{ fontSize: 13, color: '#595959' }}>{t('aiShadow.timeRangeLabel')}</span>
+        <Segmented
+          value={range}
+          onChange={(value) => handleRangeChange(value as RangeKey)}
+          options={[
+            { value: 'today', label: t('aiShadow.trendRangeToday') },
+            { value: 'week', label: t('aiShadow.trendRangeWeek') },
+            { value: 'month', label: t('aiShadow.trendRangeMonth') },
+            { value: 'custom', label: t('aiShadow.trendRangeCustom') },
+          ]}
+        />
+        {range === 'custom' ? (
+          <RangePicker
+            allowClear={false}
+            style={{ width: 260 }}
+            // antd 4 的受控值必须是 moment 对象，null 表示未选择
+            value={customRange ? ([moment(customRange[0]), moment(customRange[1])] as any) : null}
+            disabledDate={(d: any) => !!d && startOfDay(d.valueOf()) > startOfDay(Date.now())}
+            onChange={(v: any) => {
+              if (!v || !v[0] || !v[1]) {
+                return;
+              }
+              const start = startOfDay(v[0].valueOf());
+              const end = endOfDay(v[1].valueOf());
+              // 超过后端窗口上限时后端会静默截断起点，界面与实际口径就会对不上。
+              if (end - start > MAX_CUSTOM_DAYS * 86400000) {
+                message.warning(t('aiShadow.timeRangeTooLong', { days: MAX_CUSTOM_DAYS }));
+                return;
+              }
+              setCustomRange([start, end]);
+            }}
+          />
+        ) : null}
+        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#8c8c8c' }}>{rangeSummary}</span>
+      </div>
+
+      {usageTruncated && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('aiShadow.usageRetentionWarn', { hours: USAGE_RETENTION_HOURS })}
+        />
+      )}
+
+      <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+        {overviewCell(t('aiShadow.routeOverviewRoutes'), totals.routes, {
+          suffix: totals.denyRoutes > 0
+            ? (
+              <span style={{ fontSize: 12, color: '#c0392b' }}>
+                · {t('aiShadow.routeOverviewDenySuffix', { count: totals.denyRoutes })}
+              </span>
+            )
+            : undefined,
+        })}
+        {overviewCell(t('aiShadow.routeOverviewRequests'), totals.requests)}
+        {overviewCell(t('aiShadow.routeOverviewUnauthorized'), totals.unauthorized, { danger: true })}
+        {overviewCell(t('aiShadow.routeOverviewBypass'), totals.bypass, {
+          danger: true,
+          hint: t('aiShadow.routeOverviewBypassHint'),
+        })}
+        {overviewCell(t('aiShadow.routeOverviewBlocked'), totals.blocked)}
+        {overviewCell(t('aiShadow.routeOverviewMonitored'), totals.monitored)}
+      </Row>
+
       <Alert
         type="info"
         showIcon

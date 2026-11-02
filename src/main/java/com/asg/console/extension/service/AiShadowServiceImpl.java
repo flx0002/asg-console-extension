@@ -16,6 +16,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -232,13 +233,13 @@ public class AiShadowServiceImpl implements AiShadowService {
         boolean usageAvailable = pingPrometheus();
 
         if (usageAvailable) {
-            for (PrometheusMetricData data : queryMetric(LLM_REQUEST_METRIC).values()) {
+            for (PrometheusMetricData data : queryMetric(LLM_REQUEST_METRIC, start, end).values()) {
                 aggregateOf(aggregates, data).requestCount += data.requestCount;
             }
-            for (PrometheusMetricData data : queryMetric(INPUT_TOKEN_METRIC).values()) {
+            for (PrometheusMetricData data : queryMetric(INPUT_TOKEN_METRIC, start, end).values()) {
                 aggregateOf(aggregates, data).inputTokens += data.inputTokens;
             }
-            for (PrometheusMetricData data : queryMetric(OUTPUT_TOKEN_METRIC).values()) {
+            for (PrometheusMetricData data : queryMetric(OUTPUT_TOKEN_METRIC, start, end).values()) {
                 aggregateOf(aggregates, data).outputTokens += data.outputTokens;
             }
         } else {
@@ -733,11 +734,26 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
 
-    private Map<String, PrometheusMetricData> queryMetric(String metricName) {
+    /**
+     * 按时间窗取计量增量。
+     * <p>
+     * 原实现对 counter 做瞬时查询，拿到的是进程启动至今的累计值，页面的「请求数」因此
+     * 与所选时间窗无关：切「今天 / 近 7 天」数字一模一样。这里改用 increase(metric[Ns])
+     * 并显式指定评估时刻 {@code time=end}，把时间窗真正落到查询上。
+     * <p>
+     * Prometheus 只保留 6h（启动参数 retention=6h），起点早于保留期的窗口只能覆盖最近
+     * 6h，调用方必须如实标注，否则「今天」会被读成「全天」。
+     */
+    private Map<String, PrometheusMetricData> queryMetric(String metricName, long startTime, long endTime) {
         Map<String, PrometheusMetricData> result = new HashMap<>();
 
         try {
-            String queryUrl = prometheusBaseUrl + PROMETHEUS_QUERY_PATH + "?query=" + metricName;
+            // 下限 60s：scrape_interval 是 15s，窗口过短时窗口内不足两个样本点，increase 返回空序列。
+            long windowSeconds = Math.max(60L, (endTime - startTime) / 1000L);
+            String expression = "increase(" + metricName + "[" + windowSeconds + "s])";
+            String queryUrl = prometheusBaseUrl + PROMETHEUS_QUERY_PATH
+                + "?query=" + URLEncoder.encode(expression, "UTF-8")
+                + "&time=" + (endTime / 1000L);
             HttpURLConnection connection = (HttpURLConnection)new URL(queryUrl).openConnection();
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(5000);
@@ -786,7 +802,9 @@ public class AiShadowServiceImpl implements AiShadowService {
                 long tokenValue = 0;
                 if (value != null && value.size() >= 2) {
                     try {
-                        tokenValue = Long.parseLong(value.getString(1));
+                        // increase() 返回浮点数（如 1.00418410041841），用 Long.parseLong 会直接抛异常。
+                        // 这里是计数器增量，四舍五入到整数即可；NaN 落到 0。
+                        tokenValue = Math.round(Double.parseDouble(value.getString(1)));
                     } catch (NumberFormatException e) {
                         log.warn("Failed to parse token value: {}", value.getString(1));
                     }
