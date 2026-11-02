@@ -180,11 +180,15 @@ public class AiShadowServiceImpl implements AiShadowService {
             return Collections.emptyList();
         }
 
+        // 总开关只读一次：它决定查询路径往哪个方向对账——开着就保证每条路由都被纳管且启用，
+        // 关着就保证准入管控一律停着。两种方向都是幂等的，重复对账不会来回翻。
+        boolean masterEnabled = getEnabled();
+
         List<AiShadowStatus> result = new ArrayList<>();
         for (AiRoute aiRoute : aiRoutes.getData()) {
             String routeResourceName = buildRouteResourceName(aiRoute.getName());
             try {
-                WasmPluginInstance guard = ensureGuard(routeResourceName);
+                WasmPluginInstance guard = ensureGuard(routeResourceName, masterEnabled);
                 result.add(buildAiShadowStatus(aiRoute.getName(), routeResourceName, guard));
             } catch (Exception e) {
                 log.error("Error building shadow AI status for route: {}", aiRoute.getName(), e);
@@ -209,7 +213,8 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
 
         String routeResourceName = buildRouteResourceName(routeName);
-        return buildAiShadowStatus(routeName, routeResourceName, ensureGuard(routeResourceName));
+        return buildAiShadowStatus(routeName, routeResourceName,
+            ensureGuard(routeResourceName, getEnabled()));
     }
 
     /**
@@ -450,14 +455,18 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
 
         String routeResourceName = buildRouteResourceName(routeName);
-        boolean enableAuth = MODE_ENFORCEMENT.equals(mode);
 
         // Keep key-auth enabled in both monitoring and enforcement modes.
         // In monitoring mode, identify_only=true is set so valid consumers are still
         // identified (x-mse-consumer header) but unauthenticated requests are not rejected.
         // In enforcement mode, identify_only=false so unauthenticated requests are rejected.
+        //
+        // 启用状态必须跟随总开关：总开关关着的时候把路由准入打开，「已关闭」就只是页面上的一个词。
+        // 关闭期间这里仍然照常写 identify_only —— 那是「开启那一刻按什么处置」的配置，
+        // 等总开关打开时直接生效，不必用户再配一遍。
+        boolean masterEnabled = getEnabled();
         AllowList allowList = AllowList.forTarget(WasmPluginInstanceScope.ROUTE, routeResourceName)
-            .authEnabled(true)
+            .authEnabled(masterEnabled)
             .build();
 
         consumerService.updateAllowList(AllowListOperation.TOGGLE_ONLY, allowList);
@@ -540,9 +549,11 @@ public class AiShadowServiceImpl implements AiShadowService {
             consumerNames = Collections.singletonList(consumerName);
         }
 
+        // 名单改动不应该把准入管控打开：总开关关着时，这里只改配置，不改生效状态。
+        boolean masterEnabled = getEnabled();
         AllowList allowList = AllowList.forTarget(WasmPluginInstanceScope.ROUTE, routeResourceName)
             .consumerNames(consumerNames)
-            .authEnabled(currentAuthEnabled)
+            .authEnabled(masterEnabled && currentAuthEnabled)
             .build();
 
         consumerService.updateAllowList(operation, allowList);
@@ -555,16 +566,25 @@ public class AiShadowServiceImpl implements AiShadowService {
     private AiShadowStatus buildAiShadowStatus(String routeName, String routeResourceName,
         WasmPluginInstance keyAuthInstance) {
 
-        boolean authEnabled = keyAuthInstance != null && Boolean.TRUE.equals(keyAuthInstance.getEnabled());
-        // 模式由 identify_only 决定：false 才是真拦截，true 只记录。实例缺失或未启用时降级为检测。
+        // 「纳管」和「生效」是两件事，必须分开算：
+        // 纳管 = 配置了什么（实例在不在、名单是谁、处置方式是哪档）；
+        // 生效 = 现在拦不拦（看实例当前是不是启用着）。
+        // 总开关关闭时实例被停用但配置还在，把两者混为一谈，
+        // 就会把「已配置」读成「已关闭」，或者把「当前不生效」读成「仍在拦」。
+        boolean configured = keyAuthInstance != null;
+        boolean instanceEnabled = configured && Boolean.TRUE.equals(keyAuthInstance.getEnabled());
+
+        // 模式由 identify_only 决定：false 才是真拦截，true 只记录。
+        // identify_only 是配置值，即使实例当前被停用也要读出来——否则关闭期间改一次处置方式，
+        // 页面上的模式会被悄悄改回默认，用户不知道自己配的东西还在不在。
         boolean identifyOnly = false;
-        if (authEnabled && keyAuthInstance.getConfigurations() != null) {
+        if (configured && keyAuthInstance.getConfigurations() != null) {
             Object identifyOnlyObj = keyAuthInstance.getConfigurations().get(AsgPluginConstants.IDENTIFY_ONLY);
             if (identifyOnlyObj instanceof Boolean) {
                 identifyOnly = (Boolean)identifyOnlyObj;
             }
         }
-        String mode = (authEnabled && !identifyOnly) ? MODE_ENFORCEMENT : MODE_MONITORING;
+        String mode = (!configured || identifyOnly) ? MODE_MONITORING : MODE_ENFORCEMENT;
 
         List<String> authorizedConsumers = getAuthorizedConsumers(routeResourceName);
 
@@ -572,8 +592,12 @@ public class AiShadowServiceImpl implements AiShadowService {
             .routeName(routeName)
             .resourceName(routeResourceName)
             .mode(mode)
-            .authEnabled(authEnabled)
-            .managed(authEnabled)
+            // authEnabled 报的是**实测**：准入此刻拦不拦。
+            // 不按总开关的意图报——总开关说关了、实际还在拦（关闭动作失败）时，
+            // 报 false 就是把故障读成正常。这里报 true，运维才看得出「关不掉」。
+            .authEnabled(instanceEnabled)
+            // managed 说的是「纳管没纳管」，与总开关无关：关闭期间配置仍然有效留存。
+            .managed(configured)
             .defaultDeny(authorizedConsumers.isEmpty())
             .authorizedConsumers(authorizedConsumers)
             .build();
@@ -598,14 +622,30 @@ public class AiShadowServiceImpl implements AiShadowService {
      * <p>
      * 三条不变式：① 实例存在且启用；② 没有真实消费者时名单必须带占位哨兵；③ 有真实消费者时不能带哨兵。
      * 状态已经合规时不写任何东西，因此可以放在查询路径上做对账。
+     * <p>
+     * 总开关关闭时不变式反过来：准入管控必须停着。这里把还开着的实例关掉，
+     * 而不是「什么也不做」——「什么也不做」只能保证不再被打开，却修不了已经打开的：
+     * 总开关是关着的、准入仍在拦仍在记，「已关闭」就还是一句假话。
+     * 写入方向永远是「关」，所以放在查询路径上是安全的收敛，不会把管控意外打开。
      */
-    private WasmPluginInstance ensureGuard(String routeResourceName) {
+    private WasmPluginInstance ensureGuard(String routeResourceName, boolean masterEnabled) {
         WasmPluginInstance instance = queryGuard(routeResourceName);
+        if (!masterEnabled) {
+            if (instance == null || !Boolean.TRUE.equals(instance.getEnabled())) {
+                return instance;
+            }
+            // 只关开关，不动名单与模式：名单是配置，留着下次开启时直接生效。
+            writeQuietly(routeResourceName, () -> consumerService.updateAllowList(
+                AllowListOperation.TOGGLE_ONLY, routeAllowList(routeResourceName, null, false)));
+            log.info("disabled key-auth guard for route {}: shadow AI master switch is off",
+                routeResourceName);
+            return queryGuard(routeResourceName);
+        }
         if (instance == null) {
             // 新建路由自动纳管：检测模式 + 默认拒绝。复用 setMode 的同一套写入，不另开路径。
             writeQuietly(routeResourceName, () -> {
                 consumerService.updateAllowList(AllowListOperation.REPLACE,
-                    routeAllowList(routeResourceName, Collections.singletonList(DEFAULT_DENY_SENTINEL)));
+                    routeAllowList(routeResourceName, Collections.singletonList(DEFAULT_DENY_SENTINEL), masterEnabled));
                 updateKeyAuthIdentifyOnly(routeResourceName, true);
                 // 审计跟着写入走：写失败还记一条「已纳管」，审计就和事实不符了。
                 writeAdminAudit("auto_manage", routeResourceName, null, MODE_MONITORING);
@@ -619,7 +659,7 @@ public class AiShadowServiceImpl implements AiShadowService {
             // 这里不能 return：TOGGLE_ONLY 只改开关、不补名单，直接返回会让页面显示
             // 「默认拒绝」而插件仍然提前放行——那正是这次要消灭的假管控。
             writeQuietly(routeResourceName, () -> consumerService.updateAllowList(
-                AllowListOperation.TOGGLE_ONLY, routeAllowList(routeResourceName, null)));
+                AllowListOperation.TOGGLE_ONLY, routeAllowList(routeResourceName, null, masterEnabled)));
             log.info("re-enabled key-auth guard for route {}", routeResourceName);
             instance = queryGuard(routeResourceName);
             if (instance == null) {
@@ -636,13 +676,13 @@ public class AiShadowServiceImpl implements AiShadowService {
         if (realConsumers.isEmpty() && !rawAllow.contains(DEFAULT_DENY_SENTINEL)) {
             writeQuietly(routeResourceName, () -> consumerService.updateAllowList(
                 AllowListOperation.REPLACE,
-                routeAllowList(routeResourceName, Collections.singletonList(DEFAULT_DENY_SENTINEL))));
+                routeAllowList(routeResourceName, Collections.singletonList(DEFAULT_DENY_SENTINEL), masterEnabled)));
             log.info("allow list of route {} was empty, applied default-deny", routeResourceName);
             return queryGuard(routeResourceName);
         }
         if (!realConsumers.isEmpty() && rawAllow.contains(DEFAULT_DENY_SENTINEL)) {
             writeQuietly(routeResourceName, () -> consumerService.updateAllowList(
-                AllowListOperation.REPLACE, routeAllowList(routeResourceName, realConsumers)));
+                AllowListOperation.REPLACE, routeAllowList(routeResourceName, realConsumers, masterEnabled)));
             log.info("route {} now has authorized consumers, dropped default-deny placeholder",
                 routeResourceName);
             return queryGuard(routeResourceName);
@@ -668,10 +708,17 @@ public class AiShadowServiceImpl implements AiShadowService {
             BuiltInPluginName.KEY_AUTH, true);
     }
 
-    private static AllowList routeAllowList(String routeResourceName, List<String> consumerNames) {
+    /**
+     * 构造路由级 key-auth 的名单写入。
+     *
+     * @param authEnabled 准入实例要不要处于启用状态。必须跟随总开关：
+     *                    名单是配置，启用状态是生效，两者混在一起就写出了「关着却在拦」。
+     */
+    private static AllowList routeAllowList(String routeResourceName, List<String> consumerNames,
+        boolean authEnabled) {
         return AllowList.forTarget(WasmPluginInstanceScope.ROUTE, routeResourceName)
             .consumerNames(consumerNames)
-            .authEnabled(true)
+            .authEnabled(authEnabled)
             .build();
     }
 
@@ -731,8 +778,9 @@ public class AiShadowServiceImpl implements AiShadowService {
         // 一次替换成最终名单：空名单落哨兵即「默认拒绝」，非空即精确等于页面勾选结果。
         List<String> target = consumers.isEmpty() ? Collections.singletonList(DEFAULT_DENY_SENTINEL) : consumers;
         String routeResourceName = buildRouteResourceName(routeName);
+        // 名单是配置，启用状态是生效：总开关关着时改名单不应该把准入管控打开。
         consumerService.updateAllowList(AllowListOperation.REPLACE,
-            routeAllowList(routeResourceName, target));
+            routeAllowList(routeResourceName, target, getEnabled()));
 
         writeAdminAudit("replace_consumers", routeName, String.join(",", consumers), null);
 
@@ -969,6 +1017,57 @@ public class AiShadowServiceImpl implements AiShadowService {
         }
         stats.put("admissionTotal", admissionTotal);
         stats.put("shadowTotal", shadowTotal);
+        // KPI 的「已拦截」与「拦截率」讲的是全部影子AI，不是当前这一面。只读 surface 过滤后的
+        // blocked，会让「只看基础流量」时显示 0 —— 而路由准入侧明明拦下了十几条，那正好把
+        // 「九成影子AI 没拦住」这个最该被看见的事实抹掉。
+        long blockedTotal = blocked;
+        try {
+            long shadowBlocked = 0L;
+            long routeBlocked = 0L;
+            for (Object[] row : detectEventRepository.countBlockedBySurface(start / 1000L, end / 1000L)) {
+                if (row == null || row.length < 2 || row[0] == null) {
+                    continue;
+                }
+                long cnt = numberOrZero(row[1]);
+                if ("route".equals(String.valueOf(row[0]))) {
+                    routeBlocked = cnt;
+                } else {
+                    // surface 为空串的存量行属于基础流量侧：上报方补 surface 字段之前写入的就是它。
+                    shadowBlocked = cnt;
+                }
+            }
+            blockedTotal = shadowBlocked + routeBlocked;
+        } catch (Exception e) {
+            log.warn("Failed to aggregate blocked events by surface", e);
+        }
+        stats.put("blockedTotal", blockedTotal);
+        // 准入侧按原因分面：未携带凭证 / 未知凭证 / 不在白名单。这三格是「路由准入发现」
+        // 的构成，与基础流量侧的「涉及域名 / 严重 / 高风险」对称，两侧各自的构成由自己回答。
+        long noKeyCount = 0L;
+        long unknownKeyCount = 0L;
+        long notInAllowCount = 0L;
+        try {
+            for (Object[] row : detectEventRepository.countAdmissionByReason(start / 1000L, end / 1000L)) {
+                if (row == null || row.length < 3) {
+                    continue;
+                }
+                String reason = StringUtils.trimToEmpty(row[0] == null ? null : String.valueOf(row[0]));
+                long cnt = numberOrZero(row[2]);
+                if ("no_key".equals(reason)) {
+                    noKeyCount += cnt;
+                } else if ("unknown_key".equals(reason)) {
+                    unknownKeyCount += cnt;
+                } else if (reason.startsWith("not_in_allow")) {
+                    // not_in_allow:<consumer>，消费者名跟在冒号后，按前缀归并成一格。
+                    notInAllowCount += cnt;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to aggregate admission reasons", e);
+        }
+        stats.put("noKeyCount", noKeyCount);
+        stats.put("unknownKeyCount", unknownKeyCount);
+        stats.put("notInAllowCount", notInAllowCount);
         stats.put("degraded", degraded);
         return stats;
     }
@@ -1056,8 +1155,9 @@ public class AiShadowServiceImpl implements AiShadowService {
         // Granularity follows the span (same rule as the behaviour dashboard): <=2d hourly, else daily.
         boolean hourly = (end - start) <= HOURLY_MAX_SPAN_MS;
         long stepSeconds = hourly ? 3600L : 86400L;
-        // Bucket edges come from the caller. The console aligns the window to its own local
-        // midnight; re-aligning here would use the JVM zone, and the container runs in UTC.
+        // Bucket edges come from the caller: the console aligns them to the browser local
+        // midnight. Re-aligning here would use the container zone instead, which matches the
+        // browser zone only because asg-deploy sets TZ=Asia/Shanghai — never by contract.
         long windowStart = start;
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("start", windowStart);
@@ -1201,7 +1301,49 @@ public class AiShadowServiceImpl implements AiShadowService {
 
         wasmPluginInstanceService.addOrUpdate(instance);
 
-        writeAdminAudit("set_detect_mode", null, null, mode);
+        // 处置方式作用于两条通道。路由准入侧的模式存在每条路由的 key-auth 上，
+        // 只改全局插件的话，界面上「仅记录 / 拦截」只对基础流量生效，
+        // 路由准入会保持各自原来的模式——同一个开关管两套行为，是最难查的那类不一致。
+        try {
+            syncRouteModes(mode);
+        } finally {
+            // 全局模式这一步已经写进去了，审计必须落下：同步失败只说明部分路由没跟上，
+            // 不写审计就成了「改过但查不到」。
+            writeAdminAudit("set_detect_mode", null, null, mode);
+        }
+    }
+
+    /**
+     * 把处置方式推到每条纳管路由的准入策略上。
+     *
+     * <p>逐条更新而不是批量写 CR：一条失败不该带走其余路由，失败项收集起来一次性报出，
+     * 让人知道哪几条没跟上，而不是让整个开关回滚成「什么都没发生」。
+     */
+    private void syncRouteModes(String mode) {
+        List<String> failed = new ArrayList<>();
+        for (AiShadowStatus status : getStatus(false)) {
+            if (mode.equals(status.getMode()) || StringUtils.isBlank(status.getRouteName())) {
+                continue;
+            }
+            // 未纳管的路由没有 key-auth 实例可写，处置方式无处落地：对它调 setMode 只会留下一条
+            // 「已设为 enforcement」的审计，而实际什么都没改——审计与事实不符比不改更糟。
+            // 跳过它，等总开关打开后首次对账自动纳管，届时再同步。
+            if (!Boolean.TRUE.equals(status.getManaged())) {
+                continue;
+            }
+            try {
+                AiShadowModeRequest request = new AiShadowModeRequest();
+                request.setRouteName(status.getRouteName());
+                request.setMode(mode);
+                setMode(request);
+            } catch (Exception e) {
+                log.warn("Failed to sync mode {} to route {}", mode, status.getRouteName(), e);
+                failed.add(status.getRouteName());
+            }
+        }
+        if (!failed.isEmpty()) {
+            throw new BusinessException("以下 AI 路由的处置方式未同步成功：" + String.join("、", failed) + "，请重试");
+        }
     }
 
     @Override
@@ -1301,15 +1443,17 @@ public class AiShadowServiceImpl implements AiShadowService {
     }
 
     /**
-     * LocalDateTime → epoch 毫秒。用 JVM 默认时区解释，是因为 JDBC 驱动默认
-     * {@code connectionTimeZone=LOCAL}：TIMESTAMP 列读出时已被转成 JVM 时区的字面值，
-     * 这里再用同一时区解释，两次转换相互抵消。
+     * LocalDateTime → epoch 毫秒。必须用 JVM 默认时区解释：读出的 LocalDateTime 是
+     * 「同一个瞬时在 JVM 时区下的字面值」，再用同一时区解释才能还原成原始瞬时。
      * <p>
-     * 现网实测（容器 TZ=UTC、MySQL 会话时区 SYSTEM=CST）：DB 里 {@code 09:53:46} 对应
-     * 接口返回 {@code 1793066026910}，与 {@code UNIX_TIMESTAMP()} 结果一致，无偏移。
-     * <p>
-     * 风险：一旦有人把连接串固定成 {@code connectionTimeZone=Asia/Shanghai}，或给 JVM 加
-     * {@code -Duser.timezone}，这个抵消关系就断了，展示时间会整体偏 8 小时。改动此处前先复核。
+     * 这条不变式与容器时区无关，只要求「读」与「这里」用同一个时区。以 DB 存 {@code 11:26}
+     * （MySQL 会话 Asia/Shanghai）为例：
+     * <ul>
+     *   <li>容器 UTC（历史）：Hibernate 按 UTC 渲染成 {@code 03:26}，atZone(UTC) 还原出同一瞬时；</li>
+     *   <li>容器 Asia/Shanghai（现网，asg-deploy 设 {@code podEnvs.TZ}）：Hibernate 直接给出
+     *       {@code 11:26}，atZone(+08) 得到同一瞬时。</li>
+     * </ul>
+     * 两条路都对，但都不能改成「写死某个时区」——一旦与读路径不一致，展示时间就整体偏 8 小时。
      */
     private static long toEpochMillis(LocalDateTime time) {
         return time == null ? 0L : time.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
@@ -1462,7 +1606,48 @@ public class AiShadowServiceImpl implements AiShadowService {
                 }
             }
         }
-        writeAdminAudit(enabled ? "enable_shadow_ai" : "disable_shadow_ai", null, null, null);
+        // 总开关管的是整个影子AI，不是只有基础流量：只 disable ai-shadow-detect 的话，
+        // 路由准入仍在拦、仍在记，「已关闭」就成了一句假话。这里同步开关每条纳管路由上的
+        // key-auth 实例——它一关，该路由既不再识别身份，也不再产生准入事件。
+        try {
+            applyKeyAuthEnabled(enabled);
+        } finally {
+            // 全局开关这一步已经写进去了，审计必须落下：准入侧同步失败只说明部分路由没跟上，
+            // 不写审计就成了「改过但查不到」。
+            writeAdminAudit(enabled ? "enable_shadow_ai" : "disable_shadow_ai", null, null, null);
+        }
+    }
+
+    /**
+     * 让路由准入侧跟随总开关。关闭意味着这条路由的准入管控一并停止（请求直接放行、不再上报），
+     * 而不是「继续拦但不记录」——后者会让关闭后的拦截行为无法解释。
+     * <p>
+     * 这里改的是「生效状态」，与 {@link #ensureGuard} 的「纳管不变式」不冲突：
+     * 总开关关闭时 ensureGuard 一个写入都不做，所以不会把这里刚关掉的准入管控又打开。
+     */
+    private void applyKeyAuthEnabled(boolean enabled) {
+        List<String> failed = new ArrayList<>();
+        for (AiShadowStatus status : getStatus(false)) {
+            String resourceName = status.getResourceName();
+            if (StringUtils.isBlank(resourceName)) {
+                continue;
+            }
+            try {
+                WasmPluginInstance keyAuthInstance = wasmPluginInstanceService.query(
+                    WasmPluginInstanceScope.ROUTE, resourceName, BuiltInPluginName.KEY_AUTH, true);
+                if (keyAuthInstance == null || Boolean.valueOf(enabled).equals(keyAuthInstance.getEnabled())) {
+                    continue;
+                }
+                keyAuthInstance.setEnabled(enabled);
+                wasmPluginInstanceService.addOrUpdate(keyAuthInstance);
+            } catch (Exception e) {
+                log.warn("Failed to set key-auth enabled={} on route {}", enabled, resourceName, e);
+                failed.add(status.getRouteName());
+            }
+        }
+        if (!failed.isEmpty()) {
+            throw new BusinessException("以下 AI 路由的准入校验未同步：" + String.join("、", failed) + "，请重试");
+        }
     }
 
     @Override

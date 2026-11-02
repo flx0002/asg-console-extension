@@ -39,7 +39,7 @@ public interface AiShadowDetectEventRepository extends JpaRepository<AiShadowDet
 
     /**
      * 检测趋势聚合：按「距窗口起点多少个桶」分组。桶序号只取决于两个 epoch 之差，
-     * 因此 JVM 时区（容器为 UTC）不影响分桶结果。
+     * 因此 JVM 时区不影响分桶结果（容器现为 Asia/Shanghai，此前为 UTC，两种都不影响）。
      * <p>
      * 注意：{@code UNIX_TIMESTAMP(event_time)} 的取值依赖「MySQL 会话时区」与
      * 「event_time 写入时的时区字面值」一致（现网 MySQL 容器 TZ=Asia/Shanghai，
@@ -115,6 +115,19 @@ public interface AiShadowDetectEventRepository extends JpaRepository<AiShadowDet
         + " WHERE event_time >= FROM_UNIXTIME(:startSec) AND event_time <= FROM_UNIXTIME(:endSec)"
         + " GROUP BY surface", nativeQuery = true)
     List<Object[]> countBySurface(@Param("startSec") long startSec, @Param("endSec") long endSec);
+
+    /**
+     * 两条通道各自阻断了几条。KPI 的「已拦截」与「拦截率」是跨通道的合计，
+     * 不能只读调用方传进来的 surface —— 那样在只看基础流量时会显示 0，
+     * 而路由准入侧明明拦下了 11 条。
+     * 返回列：surface、blocked 事件数。
+     */
+    @Query(value = "SELECT COALESCE(surface, '') AS surface, COUNT(*) AS cnt"
+        + " FROM ai_shadow_detect_event"
+        + " WHERE status = 'blocked'"
+        + " AND event_time >= FROM_UNIXTIME(:startSec) AND event_time <= FROM_UNIXTIME(:endSec)"
+        + " GROUP BY surface", nativeQuery = true)
+    List<Object[]> countBlockedBySurface(@Param("startSec") long startSec, @Param("endSec") long endSec);
 
     /**
      * 准入事件按「原因 + 处置」分组，供消费者用量表把拦截数归属到人。

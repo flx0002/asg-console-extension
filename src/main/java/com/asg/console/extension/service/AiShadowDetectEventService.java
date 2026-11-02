@@ -25,9 +25,12 @@ public interface AiShadowDetectEventService {
     /**
      * Query detection events with optional filters. startTime/endTime are epoch millis
      * and are both required to take effect; they bound {@code event_time} inclusively.
+     * <p>
+     * {@code reason} matches by prefix so one value covers the whole family:
+     * {@code not_in_allow} selects every {@code not_in_allow:<consumer>} row.
      */
     Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel, String source,
-        String surface, Long startTime, Long endTime, int page, int size);
+        String surface, String reason, String srcIp, Long startTime, Long endTime, int page, int size);
 
     /**
      * Attach weak audit-chain links to bypass/dns events (IR-025/S5):

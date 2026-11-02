@@ -74,7 +74,8 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
 
     @Override
     public Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel,
-        String source, String surface, Long startTime, Long endTime, int page, int size) {
+        String source, String surface, String reason, String srcIp, Long startTime, Long endTime, int page,
+        int size) {
         if (page < 0) {
             page = 0;
         }
@@ -82,7 +83,7 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
             size = 20;
         }
         Specification<AiShadowDetectEvent> spec = buildSpec(domain, status, category, riskLevel, source, surface,
-            toLocalDateTime(startTime), toLocalDateTime(endTime));
+            reason, srcIp, toLocalDateTime(startTime), toLocalDateTime(endTime));
         return eventRepository.findAll(spec, PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "eventTime")));
     }
 
@@ -244,14 +245,24 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
     }
 
     private Specification<AiShadowDetectEvent> buildSpec(String domain, String status, String category,
-        String riskLevel, String source, String surface, LocalDateTime startTime, LocalDateTime endTime) {
+        String riskLevel, String source, String surface, String reason, String srcIp, LocalDateTime startTime,
+        LocalDateTime endTime) {
         return (root, query, cb) -> {
             List<javax.persistence.criteria.Predicate> predicates = new ArrayList<>();
             if (domain != null && !StringUtils.isBlank(domain)) {
                 predicates.add(cb.like(root.get("domain"), "%" + domain.trim() + "%"));
             }
             if (status != null && !StringUtils.isBlank(status)) {
-                predicates.add(cb.equal(root.get("status"), status.trim()));
+                // 支持逗号分隔的多值：界面上的「仅记录」不是一个枚举值，而是「除 blocked 以外的
+                // 所有放行状态」（基础流量侧是 allowed，准入侧是 monitored）。按单值等于筛，
+                // 无论选哪个都会漏掉另一侧的放行事件。
+                List<String> statuses = java.util.Arrays.stream(status.split(","))
+                    .map(String::trim).filter(StringUtils::isNotBlank).collect(java.util.stream.Collectors.toList());
+                if (statuses.size() == 1) {
+                    predicates.add(cb.equal(root.get("status"), statuses.get(0)));
+                } else if (!statuses.isEmpty()) {
+                    predicates.add(root.get("status").in(statuses));
+                }
             }
             if (category != null && !StringUtils.isBlank(category)) {
                 predicates.add(cb.equal(root.get("category"), category.trim()));
@@ -264,6 +275,16 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
             }
             if (surface != null && !StringUtils.isBlank(surface)) {
                 predicates.add(cb.equal(root.get("surface"), surface.trim()));
+            }
+            // 前缀匹配而不是等值：not_in_allow 的取值后面带着消费者名（not_in_allow:张三），
+            // 按等值筛「不在白名单」会一条都匹配不到。
+            if (reason != null && !StringUtils.isBlank(reason)) {
+                predicates.add(cb.like(root.get("reason"), reason.trim() + "%"));
+            }
+            // 来源 IP 同样按前缀匹配：现场多半只记得网段（10.244.0.），
+            // 等值匹配会逼着人把最后一位也打全。
+            if (srcIp != null && !StringUtils.isBlank(srcIp)) {
+                predicates.add(cb.like(root.get("srcIp"), srcIp.trim() + "%"));
             }
             if (startTime != null) {
                 predicates.add(cb.greaterThanOrEqualTo(root.get("eventTime"), startTime));

@@ -32,11 +32,18 @@ public class AiShadowStatus {
 
     private String mode;
 
+    /**
+     * 准入管控当前是否生效：总开关开着、且该路由的 key-auth 实例处于启用状态。
+     * 总开关关闭时一律为否——此时页面显示的名单与模式只是配置，当前并不拦。
+     */
     private Boolean authEnabled;
 
     private List<String> authorizedConsumers;
 
-    /** 是否已纳入 key-auth 管控（实例存在且启用）。未纳管时模式开关无意义。 */
+    /**
+     * 是否已纳入 key-auth 管控（实例存在）。与总开关无关：总开关关闭期间配置依然留存，
+     * 只是当前不生效。把「纳管」与「生效」混为一谈，页面就会把关着的管控显示成开着的。
+     */
     private Boolean managed;
 
     /**
