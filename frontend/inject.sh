@@ -8,6 +8,11 @@ EXT_DIR=$(cd "$(dirname "$0")" && pwd)
 SRC=$CON/frontend/src
 
 echo "=== 1. 扩展页面/services/interfaces/theme 复制 ==="
+# ai-shadow 目录整体以扩展仓为准：先删后拷。
+# cp -r 只覆盖、不删除；页面一旦改名或移走（例如两个页签视图从 pages/ 移到 components/），
+# console 仓里的旧文件会残留下来，umi 仍会把它注册成路由——表现为「旧 URL 还能打开一份没有页头的页面」，
+# 而这份页面和配置页里的页签是同一份组件，用户会看到两个入口。
+rm -rf "$SRC/pages/ai-shadow"
 cp -r "$EXT_DIR/pages/"* "$SRC/pages/"
 cp "$EXT_DIR/services/"*.ts "$SRC/services/"
 mkdir -p "$SRC/components"

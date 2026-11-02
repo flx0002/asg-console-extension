@@ -4,7 +4,8 @@ export interface AiShadowStatus {
   resourceName?: string;
   mode: 'monitoring' | 'enforcement';
   authEnabled: boolean;
-  // True when the key-auth instance exists and is enabled.
+  // True when the key-auth instance exists. Independent of the master switch:
+  // the configuration survives while it is off, it just does not take effect.
   managed?: boolean;
   // True when nobody is authorized: every identified caller is rejected.
   defaultDeny?: boolean;
@@ -58,6 +59,15 @@ export interface AiShadowDetectedStats {
   // pretending admission violations do not exist.
   admissionTotal?: number;
   shadowTotal?: number;
+  // Blocked events of BOTH surfaces. The KPI reads this instead of `blocked`, because
+  // `blocked` is scoped to the requested surface and would read 0 on the discovery side —
+  // which is where the "nine out of ten shadow AI never got stopped" fact lives.
+  blockedTotal?: number;
+  // Admission-side breakdown by reason. These three tiles are the route surface's own
+  // composition, the way domainCount/critical/high are the discovery surface's.
+  noKeyCount?: number;
+  unknownKeyCount?: number;
+  notInAllowCount?: number;
   degraded?: boolean;
 }
 
@@ -98,8 +108,10 @@ export interface AiShadowDetectEventQuery {
   category?: string;
   riskLevel?: string;
   source?: string;
-  // 'shadow' for the detection tab, 'route' for the admission view.
+  // 'shadow' for the discovery surface, 'route' for the admission surface.
   surface?: string;
+  // Matched by prefix, so 'not_in_allow' covers every 'not_in_allow:<consumer>' row.
+  reason?: string;
   // Epoch millis; both bounds are needed to narrow the list to one trend bucket.
   startTime?: number;
   endTime?: number;

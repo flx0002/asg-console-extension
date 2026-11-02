@@ -23,12 +23,19 @@ export const asgMenuRoutes: any[] = [
     icon: <EyeOutlined />,
     children: [
       {
-        name: 'menu.aiShadow',
-        path: '/ai-shadow',
+        // 路径必须与 /ai-shadow/events 平级（不能写成 /ai-shadow）：
+        // 侧栏高亮按 path 前缀匹配，父路径会与子路径同时命中，两个菜单项一起亮。
+        name: 'menu.aiShadowConfig',
+        path: '/ai-shadow/config',
       },
       {
         name: 'menu.aiKb',
         path: '/ai-kb',
+      },
+      {
+        // 发现出来的东西单独一页：配置页只管「怎么判定」和「发现之后怎么办」。
+        name: 'menu.aiShadowEvents',
+        path: '/ai-shadow/events',
       },
     ],
   },
