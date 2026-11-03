@@ -89,6 +89,13 @@ public class AiChannelDerivationService {
     /** Plugin config key: Host values of registered reverse-proxy channels. */
     public static final String KEY_AUTHORIZED_PROXY_HOSTS = "authorized_proxy_hosts";
 
+    /**
+     * Plugin config key: authorized domain whitelist as-is (including hosts without an Ingress,
+     * such as 127.0.0.1). {@link #KEY_AUTHORIZED_PROXY_HOSTS} is the derived intersection with
+     * Ingress hosts, so entries outside any Ingress would never reach the plugin through it.
+     */
+    public static final String KEY_AUTHORIZED_DOMAINS = "authorized_domains";
+
     private static final String INGRESS_NS = "higress-system";
     private static final String ANN_DESTINATION = "higress.io/destination";
     private static final String ANN_INTERNAL = "higress.io/internal";
@@ -176,6 +183,8 @@ public class AiChannelDerivationService {
         private final List<String> aiRouteModelPrefixes = new ArrayList<>();
         private final List<String> aiRouteModelExacts = new ArrayList<>();
         private final List<String> authorizedProxyHosts = new ArrayList<>();
+        /** Authorized domains, normalized; pushed to the plugin verbatim as the whitelist. */
+        private final List<String> authorizedDomains = new ArrayList<>();
         private final List<String> unregisteredAiEgress = new ArrayList<>();
         private final List<String> orphanAuthorizedDomains = new ArrayList<>();
 
@@ -192,7 +201,8 @@ public class AiChannelDerivationService {
         @Override
         public String toString() {
             return "DerivationResult{modelPrefixes=" + aiRouteModelPrefixes + ", modelExacts=" + aiRouteModelExacts
-                + ", proxyHosts=" + authorizedProxyHosts + ", unregisteredEgress=" + unregisteredAiEgress
+                + ", proxyHosts=" + authorizedProxyHosts + ", authorizedDomains=" + authorizedDomains
+                + ", unregisteredEgress=" + unregisteredAiEgress
                 + ", orphanDomains=" + orphanAuthorizedDomains + ", complete=" + complete + ", gatewaySynced="
                 + gatewaySynced + '}';
         }
@@ -449,6 +459,9 @@ public class AiChannelDerivationService {
         List<V1Ingress> safeIngresses = ingresses == null ? Collections.emptyList() : ingresses;
         Set<String> safeServices = clusterServices == null ? Collections.emptySet() : clusterServices;
         List<String> safeDomains = authorizedDomains == null ? Collections.emptyList() : authorizedDomains;
+        // 原始授权域名列表（含没有 Ingress 的主机/IP，如 127.0.0.1）随派生结果携带，
+        // pushToGateway 原样下发给插件做豁免判定——authorizedProxyHosts 的交集口径推不到它们。
+        result.authorizedDomains.addAll(safeDomains);
         Set<String> allHosts = collectIngressHosts(safeIngresses);
 
         if (!collectAiRouteModels(result)) {
@@ -579,6 +592,7 @@ public class AiChannelDerivationService {
         desired.put(KEY_AI_ROUTE_MODELS, new ArrayList<>(result.aiRouteModelPrefixes));
         desired.put(KEY_AI_ROUTE_MODEL_EXACTS, new ArrayList<>(result.aiRouteModelExacts));
         desired.put(KEY_AUTHORIZED_PROXY_HOSTS, new ArrayList<>(result.authorizedProxyHosts));
+        desired.put(KEY_AUTHORIZED_DOMAINS, new ArrayList<>(result.authorizedDomains));
 
         boolean changed = false;
         for (Map.Entry<String, Object> entry : desired.entrySet()) {
