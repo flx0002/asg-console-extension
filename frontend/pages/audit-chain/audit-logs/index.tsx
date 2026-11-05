@@ -13,6 +13,7 @@ import {
   getAuditStats, clearSessionAuditLogs, exportAuditLogs,
 } from '@/services';
 import { useTranslation } from 'react-i18next';
+import { formatEventTime, normalizeDisposition, renderEventDetail } from '@/components/audit-event-format';
 
 interface SessionInfo {
   sessionId: string;
@@ -23,6 +24,7 @@ interface SessionInfo {
   violationCount: number;
   lastActiveTime: string;
   createdAt: string;
+  timestamp_ms?: number;
 }
 
 interface AuditLogEntry {
@@ -314,14 +316,14 @@ const AuditLogsPage: React.FC = () => {
       dataIndex: 'lastActiveTime',
       key: 'lastActiveTime',
       width: 170,
-      render: (v: string) => v || '-',
+      render: (v: string) => formatEventTime({ lastActiveTime: v }).time,
     },
     {
       title: t('auditChain.createdAt'),
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 170,
-      render: (v: string) => v || '-',
+      render: (v: string) => formatEventTime({ lastActiveTime: v }).time,
     },
   ];
 
@@ -332,7 +334,7 @@ const AuditLogsPage: React.FC = () => {
       dataIndex: 'time',
       key: 'time',
       width: 170,
-      render: (_: any, r: AuditLogEntry) => r.time || r.timestamp || '-',
+      render: (_: any, r: AuditLogEntry) => formatEventTime(r).time,
     },
     {
       title: t('auditChain.step'),
@@ -410,9 +412,10 @@ const AuditLogsPage: React.FC = () => {
       key: 'status',
       width: 100,
       render: (_: any, r: AuditLogEntry) => {
-        const st = r.status || r.action || 'passed';
-        const isBlocked = st === 'blocked' || st === 'block';
-        return <Tag color={isBlocked ? 'red' : 'green'}>{isBlocked ? t('auditChain.blocked') : t('auditChain.passed')}</Tag>;
+        const d = normalizeDisposition(r);
+        const label = d === 'blocked' ? t('auditChain.blocked')
+          : d === 'passed' ? t('auditChain.passed') : t('auditChain.alerted', '仅告警');
+        return <Tag color={d === 'blocked' ? 'red' : d === 'passed' ? 'green' : 'orange'}>{label}</Tag>;
       },
     },
   ];
@@ -421,10 +424,9 @@ const AuditLogsPage: React.FC = () => {
   const listStats = {
     totalSessions: sessions.length,
     activeToday: sessions.filter(s => {
-      if (!s.lastActiveTime) return false;
-      const d = new Date(s.lastActiveTime);
-      const now = new Date();
-      return d.toDateString() === now.toDateString();
+      const { tsMs } = formatEventTime(s);
+      if (!tsMs) return false;
+      return new Date(tsMs).toDateString() === new Date().toDateString();
     }).length,
     blockedToday: sessions.reduce((sum, s) => sum + (s.violationCount || 0), 0),
     highRiskSessions: sessions.filter(s => (s.riskScore || 0) >= 80).length,
@@ -598,15 +600,11 @@ const AuditLogsPage: React.FC = () => {
         <Table
           dataSource={logs}
           columns={logColumns}
-          rowKey={(r: AuditLogEntry, i?: number) => r.id || String(i)}
+          rowKey={(r: AuditLogEntry, i?: number) => r.event_id || r.id || String(i)}
           size="small"
           loading={logsLoading}
           expandable={{
-            expandedRowRender: (record: AuditLogEntry) => (
-              <pre style={{ margin: 0, padding: 12, background: '#fafafa', fontSize: 12, maxHeight: 300, overflow: 'auto' }}>
-                {JSON.stringify(record, null, 2)}
-              </pre>
-            ),
+            expandedRowRender: (record: AuditLogEntry) => renderEventDetail(record),
             rowExpandable: () => true,
           }}
           pagination={{

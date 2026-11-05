@@ -21,6 +21,7 @@ import {
 import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
 import { getAuditSessions, getAuditLogs } from '@/services/audit-chain-service';
+import { formatEventTime, normalizeDisposition, renderEventDetail } from '@/components/audit-event-format';
 
 const { RangePicker } = DatePicker;
 
@@ -129,14 +130,16 @@ const SecurityEventsPage: React.FC = () => {
         const sid = validSessions[sIdx]?.sessionId || '-';
         records.forEach((r: any, rIdx: number) => {
           const events = r.events || [];
-          // 后端同时返回 timestamp（ISO 字符串，如 2026-10-15T02:53:25Z）与 timestamp_ms（epoch 毫秒）；
-          // 旧代码 Number(r.timestamp) 对 ISO 字符串求值得 NaN → 时间列全部渲染为“-”。优先取数值 timestamp_ms，回退解析 ISO。
-          const tsMs: number = Number(r.timestamp_ms) || new Date(r.timestamp).getTime() || 0;
+          // 时间统一走共用入口：后端已输出数值 timestamp_ms + 带偏移的 display_time，
+          // 兼容历史 UTC ISO 串；排序/筛选只用 tsMs，显示只用 time。
+          const { tsMs, time } = formatEventTime(r);
+          const rid = r.event_id || r.id || `${sid}-${rIdx}`;
           // 记录级方向兑底（事件未带 direction 时）：旧数据用 step_type。
           const recDir: EventRow['direction'] = r.step_type === 'user_input' ? 'request'
             : r.step_type === 'assistant_output' ? 'response' : '-';
-          const action: EventRow['action'] = r.action === 'blocked' ? 'blocked'
-            : r.action === 'alerted' ? 'alerted' : 'passed';
+          const disposition = normalizeDisposition(r);
+          const action: EventRow['action'] = disposition === 'blocked' ? 'blocked'
+            : disposition === 'passed' ? 'passed' : 'alerted';
           events.forEach((e: any, eIdx: number) => {
             const meta = EVENT_TYPE_META[e.type] || { business: 'unknown', plugin: 'unknown' };
             // 方向：优先取后端事件级 direction=request|response（围栏插件按命中阶段写入），
@@ -144,19 +147,19 @@ const SecurityEventsPage: React.FC = () => {
             const dir: EventRow['direction'] = (e.direction === 'request' || e.direction === 'response')
               ? e.direction : recDir;
             out.push({
-              key: `${sid}-${rIdx}-${eIdx}`,
+              key: `${rid}-${eIdx}`,
               tsMs,
-              time: tsMs ? new Date(tsMs).toLocaleString('zh-CN', { hour12: false }) : '-',
+              time,
               sessionId: sid,
               business: meta.business,
               plugin: meta.plugin,
               eventType: e.type || '-',
               direction: dir,
-              rule: e.rule || e.rule_id || e.name || '-',
-              snippet: (e.detail || e.snippet || '').toString().slice(0, 80),
+              rule: e.rule_name || e.rule_group || e.rule || e.rule_id || e.name || '-',
+              snippet: (e.hit_content || e.detail || e.snippet || '').toString(),
               sourceIp: r.source_ip || '-',
               action,
-              detail: e,
+              detail: { event: e, record: r },
             });
           });
         });
@@ -458,13 +461,10 @@ const SecurityEventsPage: React.FC = () => {
             <Descriptions.Item label={t('securityEvents.col.session', '会话 ID')}>
               <Typography.Text copyable>{drawer.row.sessionId}</Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label={t('securityEvents.col.rawEvent', '原始事件对象')}>
-              <pre style={{ maxHeight: 300, overflow: 'auto', margin: 0, fontSize: 12 }}>
-                {JSON.stringify(drawer.row.detail, null, 2)}
-              </pre>
-            </Descriptions.Item>
           </Descriptions>
         )}
+        {/* 命中原文、判断原因、规则名、匹配方式、检测模式与记录级请求正文 */}
+        {drawer.row && drawer.row.detail && renderEventDetail(drawer.row.detail.record, drawer.row.detail.event)}
       </Drawer>
     </div>
   );

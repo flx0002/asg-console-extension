@@ -198,12 +198,10 @@ public class AuditLogCollectorService {
             audit.put("session_id", sessionId);
         }
 
-        // Infer security events from access log response_code and response_code_details.
-        // Wasm plugins run in separate VMs, so Dynamic Metadata doesn't cross plugin boundaries.
-        // We reconstruct events here based on which plugin blocked/processed the request.
-        inferSecurityEvents(audit, accessLog);
-
-        // Update blocked flag and record_types based on inferred events and response code
+        // 安全事件只来自 ai-prompt-guard 经 ai_log 写入的真实命中，并由 ai-agent-guard
+        // 落到 agent_guard_audit.events；此处不再从 403 反推，否则影子AI / key-auth /
+        // 上游的 403 都会被硬编码误报成提示注入。blocked 同样信任审计记录自带的值。
+        // response_status 是客观事实，仍与网关 access log 对齐（不做处置推断）。
         String responseCodeStr = accessLog.getString("response_code");
         int responseCode = 0;
         try {
@@ -214,7 +212,6 @@ public class AuditLogCollectorService {
             // leave as 0
         }
         if (responseCode == 403) {
-            audit.put("blocked", true);
             audit.put("response_status", 403);
         }
 
@@ -246,82 +243,4 @@ public class AuditLogCollectorService {
         return true;
     }
 
-    /**
-     * Infer security events from access log response_code and response_code_details.
-     * <p>Since Wasm plugins run in separate VMs, Dynamic Metadata written by ai-prompt-guard
-     * / ai-pii-guard cannot be read by ai-agent-guard. We reconstruct the events here
-     * based on which plugin blocked or processed the request.</p>
-     */
-    private void inferSecurityEvents(JSONObject audit, JSONObject accessLog) {
-        String responseCodeDetails = accessLog.getString("response_code_details");
-        // response_code is a string in access log (e.g. "403"), use string comparison
-        String responseCodeStr = accessLog.getString("response_code");
-        int responseCode = 0;
-        try {
-            if (responseCodeStr != null) {
-                responseCode = Integer.parseInt(responseCodeStr.trim());
-            }
-        } catch (NumberFormatException e) {
-            // leave as 0
-        }
-        com.alibaba.fastjson.JSONArray events = audit.getJSONArray("events");
-        if (events == null) {
-            events = new com.alibaba.fastjson.JSONArray();
-        }
-
-        boolean added = false;
-
-        // ai-prompt-guard blocks with 403 and response_code_details contains "ai-prompt-guard"
-        if (responseCode == 403 && responseCodeDetails != null
-            && responseCodeDetails.contains("ai-prompt-guard")) {
-            if (!hasSecurityEvent(events, "prompt_injection", "ai-prompt-guard")) {
-                JSONObject event = new JSONObject();
-                event.put("type", "prompt_injection");
-                event.put("severity", "high");
-                event.put("source", "ai-prompt-guard");
-                event.put("score", 80);
-                event.put("detail", "Detected prompt injection / jailbreak pattern in user message");
-                events.add(event);
-                added = true;
-            }
-        }
-
-        // ai-pii-guard doesn't block (it masks), so we can't detect it from response code.
-        // PII masking is transparent — no event inferred from access log alone.
-
-        if (added) {
-            audit.put("events", events);
-            // Update record_types to include security_event
-            com.alibaba.fastjson.JSONArray recordTypes = audit.getJSONArray("record_types");
-            if (recordTypes == null) {
-                recordTypes = new com.alibaba.fastjson.JSONArray();
-                recordTypes.add("degraded");
-            }
-            boolean hasSecurityEvent = false;
-            for (Object t : recordTypes) {
-                if ("security_event".equals(t)) {
-                    hasSecurityEvent = true;
-                    break;
-                }
-            }
-            if (!hasSecurityEvent) {
-                recordTypes.add("security_event");
-            }
-            audit.put("record_types", recordTypes);
-            audit.put("high_risk", true);
-        }
-    }
-
-    private boolean hasSecurityEvent(com.alibaba.fastjson.JSONArray events, String type, String source) {
-        for (Object item : events) {
-            if (!(item instanceof JSONObject)) {
-                continue;
-            }
-            JSONObject event = (JSONObject)item;
-            if (type.equals(event.getString("type")) && source.equals(event.getString("source"))) {
-                return true;
-            }
-        }
-        return false;
-    }
 }

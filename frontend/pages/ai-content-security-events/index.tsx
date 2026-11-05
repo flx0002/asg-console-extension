@@ -19,6 +19,7 @@ import {
 import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
 import { getAuditSessions, getAuditLogs } from '@/services/audit-chain-service';
+import { formatEventTime, normalizeDisposition } from '@/components/audit-event-format';
 
 const { RangePicker } = DatePicker;
 
@@ -110,23 +111,25 @@ const AiContentSecurityEventsPage: React.FC = () => {
         const sid = validSessions[sIdx]?.sessionId || '-';
         records.forEach((r: any, rIdx: number) => {
           const events = r.events || [];
-          const tsMs: number = r.timestamp ?? 0;
+          const { tsMs, time } = formatEventTime(r);
+          const rid = r.event_id || r.id || `${sid}-${rIdx}`;
           const direction: EventRow['direction'] = r.step_type === 'user_input' ? 'request'
             : r.step_type === 'assistant_output' ? 'response' : '-';
-          const action: EventRow['action'] = r.action === 'blocked' ? 'blocked'
-            : r.action === 'alerted' ? 'alerted' : 'passed';
+          const disposition = normalizeDisposition(r);
+          const action: EventRow['action'] = disposition === 'blocked' ? 'blocked'
+            : disposition === 'passed' ? 'passed' : 'alerted';
           events.forEach((e: any, eIdx: number) => {
             const meta = EVENT_TYPE_META[e.type] || { plugin: 'unknown', color: 'default' };
             out.push({
-              key: `${sid}-${rIdx}-${eIdx}`,
+              key: `${rid}-${eIdx}`,
               tsMs,
-              time: tsMs ? new Date(tsMs).toLocaleString('zh-CN', { hour12: false }) : '-',
+              time,
               sessionId: sid,
               plugin: meta.plugin,
               eventType: e.type || '-',
               direction,
-              rule: e.rule || e.rule_id || e.name || '-',
-              snippet: (e.detail || e.snippet || '').toString().slice(0, 80),
+              rule: e.rule_name || e.rule_group || e.rule || e.rule_id || e.name || '-',
+              snippet: (e.hit_content || e.detail || e.snippet || '').toString(),
               sourceIp: r.source_ip || '-',
               action,
               detail: e,

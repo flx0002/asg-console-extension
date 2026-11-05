@@ -16,10 +16,15 @@ import java.io.OutputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -40,6 +45,7 @@ import redis.clients.jedis.Pipeline;
 import redis.clients.jedis.Response;
 import redis.clients.jedis.ScanParams;
 import redis.clients.jedis.ScanResult;
+import redis.clients.jedis.Tuple;
 import redis.clients.jedis.exceptions.JedisConnectionException;
 import redis.clients.jedis.params.SetParams;
 
@@ -63,6 +69,10 @@ public class AuditChainServiceImpl implements AuditChainService {
     private static final int STATS_SAMPLE_SIZE = 1000;
     /** Batch size for streaming export to bound memory per batch. */
     private static final int EXPORT_BATCH_SIZE = 100;
+    /** 展示时区：与 console pod TZ / JDBC serverTimezone 一致，不再输出 UTC 串。 */
+    private static final ZoneId DISPLAY_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter DISPLAY_FORMAT =
+        DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private static final Pattern SESSION_ID_PATTERN = Pattern.compile("^[\\w-]{1,128}$");
 
@@ -261,8 +271,17 @@ public class AuditChainServiceImpl implements AuditChainService {
                         meta.put("sessionId", sessionId);
                         meta.put("mode", sessionId.startsWith("degraded_") ? "degraded" : "normal");
                         meta.put("stepCount", count);
-                        meta.put("lastActiveTime", formatTimestamp(String.valueOf(System.currentTimeMillis())));
-                        meta.put("createdAt", formatTimestamp(String.valueOf(System.currentTimeMillis())));
+                        // 虚拟会话时间取 ZSET 首/末 score（score = timestampMs*1000），
+                        // 不用 System.currentTimeMillis()：后者每次查询都变，30s 轮询会看到时间跳变。
+                        Set<Tuple> firstScore = jedis.zrangeWithScores(zsetKey, 0, 0);
+                        Set<Tuple> lastScore = jedis.zrevrangeWithScores(zsetKey, 0, 0);
+                        long createdMs = firstScore.isEmpty() ? 0
+                            : (long)(firstScore.iterator().next().getScore() / 1000.0);
+                        long lastMs = lastScore.isEmpty() ? 0
+                            : (long)(lastScore.iterator().next().getScore() / 1000.0);
+                        meta.put("lastActiveTime", formatTimestamp(lastMs));
+                        meta.put("createdAt", formatTimestamp(createdMs));
+                        meta.put("timestamp_ms", lastMs);
                         sessions.add(meta);
                     } catch (Exception e) {
                         log.warn("Failed to parse degraded session key: {}", zsetKey, e);
@@ -295,6 +314,7 @@ public class AuditChainServiceImpl implements AuditChainService {
         result.put("violationCount", parseLong(data.getOrDefault("violation_count", "0")));
         result.put("lastActiveTime", formatTimestamp(data.get("last_active_time")));
         result.put("createdAt", formatTimestamp(data.get("created_at")));
+        result.put("timestamp_ms", toTimestampMs(data.get("last_active_time")));
         result.put("ttl", ttl);
         return result;
     }
@@ -405,6 +425,7 @@ public class AuditChainServiceImpl implements AuditChainService {
                 try {
                     JSONObject obj = JSON.parseObject(json);
                     Map<String, Object> log = new LinkedHashMap<>(obj);
+                    long tsMs = toTimestampMs(obj);
                     // Format timestamp for display
                     String ts = obj.getString("timestamp");
                     if (ts != null) {
@@ -414,6 +435,12 @@ public class AuditChainServiceImpl implements AuditChainService {
                     if (time != null) {
                         log.put("time", formatTimestamp(time));
                     }
+                    // 归一输出：排序/筛选/activeToday 只用 timestamp_ms，显示用 display_time，
+                    // 处置用 disposition + 归一后的 blocked(bool)，不再让前端挑 action 字符串。
+                    log.put("timestamp_ms", tsMs);
+                    log.put("display_time", displayTime(tsMs));
+                    log.put("blocked", isBlocked(obj));
+                    log.put("disposition", normalizeDisposition(obj));
                     log.put("sessionId", sessionId);
                     logs.add(log);
                 } catch (Exception e) {
@@ -497,14 +524,14 @@ public class AuditChainServiceImpl implements AuditChainService {
                 String json = jedis.get(AUDIT_LOG_PREFIX + first.iterator().next());
                 if (json != null) {
                     JSONObject obj = JSON.parseObject(json);
-                    startTime = formatTimestamp(obj.getString("timestamp"));
+                    startTime = formatTimestamp(toTimestampMs(obj));
                 }
             }
             if (!last.isEmpty()) {
                 String json = jedis.get(AUDIT_LOG_PREFIX + last.iterator().next());
                 if (json != null) {
                     JSONObject obj = JSON.parseObject(json);
-                    endTime = formatTimestamp(obj.getString("timestamp"));
+                    endTime = formatTimestamp(toTimestampMs(obj));
                 }
             }
             Map<String, String> timeRange = new LinkedHashMap<>();
@@ -525,8 +552,7 @@ public class AuditChainServiceImpl implements AuditChainService {
                 if (json != null) {
                     try {
                         JSONObject obj = JSON.parseObject(json);
-                        String action = obj.getString("action");
-                        if ("block".equals(action)) {
+                        if ("blocked".equals(normalizeDisposition(obj))) {
                             blockedCount++;
                         }
                         Object eventsObj = obj.get("events");
@@ -859,24 +885,136 @@ public class AuditChainServiceImpl implements AuditChainService {
         }
     }
 
-    private String formatTimestamp(String unixTimestamp) {
-        if (unixTimestamp == null || unixTimestamp.isEmpty()) {
+    private String formatTimestamp(String raw) {
+        long ms = toTimestampMs(raw);
+        if (ms > 0) {
+            return formatTimestamp(ms);
+        }
+        return raw == null || raw.trim().isEmpty() ? "-" : raw;
+    }
+
+    private String formatTimestamp(long tsMs) {
+        if (tsMs <= 0) {
             return "-";
         }
-        try {
-            long ts = (long)Double.parseDouble(unixTimestamp);
-            if (ts <= 0) {
-                return "-";
-            }
-            // Detect millisecond timestamps (13+ digits, > 10^12)
-            if (ts > 1000000000000L) {
-                ts = ts / 1000;
-            }
-            return Instant.ofEpochSecond(ts).toString();
-        } catch (NumberFormatException e) {
-            // Not a numeric timestamp, return as-is (could be ISO format)
-            return unixTimestamp;
+        return Instant.ofEpochMilli(tsMs).atZone(DISPLAY_ZONE).format(DISPLAY_FORMAT);
+    }
+
+    /** 兼容 Redis 里 epoch 秒/毫秒数值与历史 UTC ISO 串混存。 */
+    private long toTimestampMs(String raw) {
+        if (raw == null) {
+            return 0;
         }
+        String s = raw.trim();
+        if (s.isEmpty() || "-".equals(s)) {
+            return 0;
+        }
+        try {
+            long ts = (long)Double.parseDouble(s);
+            if (ts <= 0) {
+                return 0;
+            }
+            return ts > 1000000000000L ? ts : ts * 1000L;
+        } catch (NumberFormatException ignored) {
+            // fall through to ISO parsing
+        }
+        try {
+            return OffsetDateTime.parse(s).toInstant().toEpochMilli();
+        } catch (Exception ignored) {
+            // fall through to local datetime parsing
+        }
+        try {
+            return LocalDateTime.parse(s.replace(' ', 'T')).atZone(DISPLAY_ZONE)
+                .toInstant().toEpochMilli();
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private long toTimestampMs(JSONObject obj) {
+        if (obj == null) {
+            return 0;
+        }
+        Object tsMs = obj.get("timestamp_ms");
+        long ms = 0;
+        if (tsMs instanceof Number) {
+            ms = ((Number)tsMs).longValue();
+        } else if (tsMs != null) {
+            ms = toTimestampMs(String.valueOf(tsMs));
+        }
+        if (ms > 0) {
+            return ms;
+        }
+        Object ts = obj.get("timestamp");
+        return ts == null ? 0 : toTimestampMs(String.valueOf(ts));
+    }
+
+    private String displayTime(long tsMs) {
+        if (tsMs <= 0) {
+            return "-";
+        }
+        return Instant.ofEpochMilli(tsMs).atZone(DISPLAY_ZONE)
+            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+    }
+
+    /**
+     * 处置归一：闭环枚举 blocked/alerted/masked/passed。不改 action 的生成语义，
+     * 只在输出层给前端唯一可信的处置字段，兼容历史数据里的多种叫法。
+     */
+    private String normalizeDisposition(JSONObject obj) {
+        if (isBlocked(obj)) {
+            return "blocked";
+        }
+        String status = str(obj, "status");
+        String action = str(obj, "action");
+        if ("masked".equals(status)) {
+            return "masked";
+        }
+        if ("alerted".equals(status) || "monitored".equals(status) || "detected".equals(status)
+            || "alert".equals(action) || "alerted".equals(action) || "enhance".equals(action)
+            || hasRecordType(obj, "security_event")) {
+            return "alerted";
+        }
+        return "passed";
+    }
+
+    private boolean isBlocked(JSONObject obj) {
+        if (obj == null) {
+            return false;
+        }
+        if (obj.getBooleanValue("blocked") || hasRecordType(obj, "blocked")) {
+            return true;
+        }
+        String status = str(obj, "status");
+        String action = str(obj, "action");
+        if ("blocked".equals(status) || "block".equals(status)
+            || "block".equals(action) || "blocked".equals(action)) {
+            return true;
+        }
+        // 仅历史旧记录（完全缺 blocked/status/record_types/action）才用 403 辅助判处置；
+        // 绝不用于生成事件，与已删除的「403 反推 prompt_injection」是两回事。
+        boolean noSignals = obj.get("blocked") == null && obj.get("status") == null
+            && obj.get("record_types") == null && obj.get("action") == null;
+        return noSignals && obj.getIntValue("response_status") == 403;
+    }
+
+    private String str(JSONObject obj, String key) {
+        Object v = obj == null ? null : obj.get(key);
+        return v == null ? "" : String.valueOf(v).trim().toLowerCase(Locale.ROOT);
+    }
+
+    private boolean hasRecordType(JSONObject obj, String type) {
+        Object rt = obj == null ? null : obj.get("record_types");
+        if (rt instanceof List) {
+            for (Object o : (List<?>)rt) {
+                if (type.equals(String.valueOf(o))) {
+                    return true;
+                }
+            }
+        } else if (rt instanceof String) {
+            return ((String)rt).contains(type);
+        }
+        return false;
     }
 
     /**
