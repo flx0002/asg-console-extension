@@ -14,7 +14,7 @@ import {
   getAiConsumerUsage, getAiShadowDetectEvents, getAiShadowDetectedStats, getAiShadowDetectedTrend,
   getAiShadowStatus,
 } from '@/services';
-import type { AiShadowDetectEvent, AiShadowTrendResponse } from '@/interfaces/ai-shadow';
+import type { AiConsumerUsage, AiShadowDetectEvent, AiShadowTrendResponse } from '@/interfaces/ai-shadow';
 import { eventReasonLabel, formatEventTime, renderEventDetail } from '@/components/ai-shadow-events';
 
 const REFRESH_INTERVAL = 30000;
@@ -245,7 +245,13 @@ const AiShadowEventsPage: React.FC = () => {
 
     const toMap = (resp?: AiShadowTrendResponse) => {
       const map = new Map<string, number>();
-      (resp?.list || []).forEach((p) => map.set(`${p.timestamp}`, p.count));
+      // 后端按「时间桶 × status」返回多行，同一 timestamp 会有 blocked/allowed/monitored 各一行。
+      // 这里必须累加：用 set 覆盖会让该桶只剩排序最后那个 status 的计数，
+      // 影子 AI 通道的旁路事件（含几百条 blocked）会整批从趋势里消失，而 KPI 仍显示全量。
+      (resp?.list || []).forEach((p) => {
+        const key = `${p.timestamp}`;
+        map.set(key, (map.get(key) ?? 0) + p.count);
+      });
       return map;
     };
     const shadowHit = toMap(shadowTrend);
@@ -321,6 +327,99 @@ const AiShadowEventsPage: React.FC = () => {
       </div>
     </div>
   );
+
+  // 消费者用量 KPI：请求/Token/消费者是「累计」口径，被拦/被监控是「所选范围」口径，
+  // 两种口径必须标出来，否则同一行里的数字会被读成同一时间窗（usageScopeHint 有完整解释）。
+  // Prometheus 保留窗口：超过该小时数的区间里，用量侧只剩最近这段（usageRetentionWarn 有完整解释）。
+  const PROM_RETENTION_HOURS = 6;
+  const usageKpiCell = (title: string, scope: string, value: React.ReactNode, danger?: boolean) => (
+    <div style={{ flex: '1 1 0', minWidth: 0 }}>
+      <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+        {title}
+        <Tag style={{ marginInlineStart: 6, marginInlineEnd: 0, fontSize: 11, lineHeight: '16px' }}>{scope}</Tag>
+      </div>
+      <div style={{ fontSize: 22, fontWeight: 600, marginTop: 4, color: danger ? '#cf1322' : undefined }}>{value}</div>
+    </div>
+  );
+
+  const usageColumns: ColumnsType<AiConsumerUsage> = [
+    {
+      title: t('aiShadow.usageColConsumer'),
+      dataIndex: 'consumer',
+      render: (value: string, row) => (row.unauthenticated ? (
+        <Space size={4}>
+          <span>{t('aiShadow.usageNoIdentity')}</span>
+          <Tooltip title={t('aiShadow.usageUnauthenticatedHint')}>
+            <Tag style={{ marginInlineEnd: 0 }}>{t('aiShadow.usageUnauthenticated')}</Tag>
+          </Tooltip>
+        </Space>
+      ) : value),
+    },
+    {
+      title: t('aiShadow.usageColRequests'),
+      dataIndex: 'requestCount',
+      align: 'right',
+      render: (value: number) => Number(value || 0).toLocaleString(),
+    },
+    {
+      title: t('aiShadow.usageColTokens'),
+      key: 'tokens',
+      align: 'right',
+      render: (_: unknown, row) => (
+        <Tooltip title={`${t('aiShadow.inputTokens')} ${row.inputTokens || 0} · ${t('aiShadow.outputTokens')} ${row.outputTokens || 0}`}>
+          <span>{Number(row.inputTokens || 0).toLocaleString()} / {Number(row.outputTokens || 0).toLocaleString()}</span>
+        </Tooltip>
+      ),
+    },
+    {
+      title: t('aiShadow.usageColModels'),
+      dataIndex: 'models',
+      render: (models: string[]) => (models || []).map((m) => <Tag key={m}>{m}</Tag>),
+    },
+    {
+      title: t('aiShadow.usageColRoutes'),
+      key: 'routes',
+      render: (_: unknown, row) => {
+        const per = row.routeRequestCounts || {};
+        const names = Object.keys(per);
+        if (names.length === 0) return '-';
+        return names.map((name) => {
+          const overreach = (row.unauthorizedRoutes || []).includes(name);
+          return (
+            <Tooltip key={name} title={overreach ? t('aiShadow.usageUnauthorized') : undefined}>
+              <Tag color={overreach ? 'red' : undefined}>{name} ({per[name]})</Tag>
+            </Tooltip>
+          );
+        });
+      },
+    },
+    {
+      title: t('aiShadow.usageColDisposition'),
+      key: 'disposition',
+      align: 'right',
+      render: (_: unknown, row) => (
+        <span>
+          <Tooltip title={t('aiShadow.usageBlockedHint')}>
+            <span style={{ color: (row.blockedCount || 0) > 0 ? '#cf1322' : undefined }}>{Number(row.blockedCount || 0).toLocaleString()}</span>
+          </Tooltip>
+          {' / '}
+          <Tooltip title={t('aiShadow.usageMonitoredHint')}>
+            <span>{Number(row.monitoredCount || 0).toLocaleString()}</span>
+          </Tooltip>
+        </span>
+      ),
+    },
+    {
+      title: t('aiShadow.usageColAuth'),
+      key: 'auth',
+      render: (_: unknown, row) => {
+        if (row.unauthenticated) return <Tag style={{ marginInlineEnd: 0 }}>{t('aiShadow.usageUnauthenticated')}</Tag>;
+        return row.authorized
+          ? <Tag color="green" style={{ marginInlineEnd: 0 }}>{t('aiShadow.usageAuthorized')}</Tag>
+          : <Tag color="red" style={{ marginInlineEnd: 0 }}>{t('aiShadow.usageUnauthorized')}</Tag>;
+      },
+    },
+  ];
 
   const columns: ColumnsType<AiShadowDetectEvent> = [
     {
@@ -576,6 +675,57 @@ const AiShadowEventsPage: React.FC = () => {
         {!traffic.available ? (
           <Alert type="warning" showIcon style={{ marginTop: 10 }} message={t('aiShadow.trafficUnavailable')} />
         ) : null}
+      </Card>
+
+      <Card
+        size="small"
+        style={{ marginBottom: 12 }}
+        title={(
+          <Space size={8}>
+            <span>{t('aiShadow.usageCardTitle')}</span>
+            <Tooltip title={t('aiShadow.usageScopeHint')}>
+              <Tag style={{ marginInlineEnd: 0 }}>{t('aiShadow.usageScopeTag')}</Tag>
+            </Tooltip>
+          </Space>
+        )}
+      >
+        {!traffic.available ? (
+          <Alert type="warning" showIcon style={{ marginBottom: 10 }} message={t('aiShadow.usageUnavailable')} />
+        ) : null}
+        {usage && usage.eventWindowHours > PROM_RETENTION_HOURS ? (
+          <Alert type="warning" showIcon style={{ marginBottom: 10 }} message={t('aiShadow.usageRetentionWarn', { hours: PROM_RETENTION_HOURS })} />
+        ) : null}
+        <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
+          {usageKpiCell(
+            t('aiShadow.usageKpiRequests'),
+            t('aiShadow.usageScopeCumulative'),
+            traffic.available ? Number(usage?.requestCount || 0).toLocaleString() : '-',
+          )}
+          {usageKpiCell(
+            t('aiShadow.usageKpiTokens'),
+            t('aiShadow.usageScopeCumulative'),
+            traffic.available ? Number(usage?.totalTokens || 0).toLocaleString() : '-',
+          )}
+          {usageKpiCell(
+            t('aiShadow.usageKpiConsumers'),
+            t('aiShadow.usageScopeCumulative'),
+            traffic.available ? `${usage?.consumerCount ?? 0} / ${usage?.authorizedCount ?? 0}` : '- / -',
+          )}
+          {usageKpiCell(
+            t('aiShadow.usageKpiDisposition'),
+            t('aiShadow.usageScopeWindow'),
+            traffic.available ? `${usage?.blockedCount ?? 0} / ${usage?.monitoredCount ?? 0}` : '- / -',
+            traffic.available && (usage?.blockedCount ?? 0) > 0,
+          )}
+        </div>
+        <Table<AiConsumerUsage>
+          dataSource={usage?.consumers || []}
+          columns={usageColumns}
+          rowKey={(record) => record.consumer}
+          size="small"
+          pagination={false}
+          locale={{ emptyText: t('aiShadow.usageNoData') }}
+        />
       </Card>
 
       <Card

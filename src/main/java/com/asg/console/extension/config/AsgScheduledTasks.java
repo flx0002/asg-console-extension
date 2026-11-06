@@ -1,5 +1,6 @@
 package com.asg.console.extension.config;
 
+import com.asg.console.extension.service.AiShadowService;
 import com.asg.console.extension.service.AuditChainService;
 import com.asg.console.extension.service.AuditLogCollectorService;
 import com.asg.console.extension.service.BehaviorAnalysisService;
@@ -25,13 +26,16 @@ public class AsgScheduledTasks {
     private final AuditChainService auditChainService;
     private final BehaviorAnalysisService behaviorAnalysisService;
     private final AuditLogCollectorService auditLogCollectorService;
+    private final AiShadowService aiShadowService;
 
     public AsgScheduledTasks(AuditChainService auditChainService,
             BehaviorAnalysisService behaviorAnalysisService,
-            AuditLogCollectorService auditLogCollectorService) {
+            AuditLogCollectorService auditLogCollectorService,
+            AiShadowService aiShadowService) {
         this.auditChainService = auditChainService;
         this.behaviorAnalysisService = behaviorAnalysisService;
         this.auditLogCollectorService = auditLogCollectorService;
+        this.aiShadowService = aiShadowService;
     }
 
     /**
@@ -92,6 +96,22 @@ public class AsgScheduledTasks {
             behaviorAnalysisService.cleanupStaleAlertIndexes();
         } catch (Exception e) {
             log.warn("scheduled alert index cleanup failed", e);
+        }
+    }
+
+    /**
+     * identify_only 档位收敛，每 30 秒兜底一次：把 AI 路由 key-auth 实例的 identify_only
+     * 持续收敛到全局处置方式（检测模式→只记录，管控模式→拦截），不动名单/开关/模式。
+     * 覆盖「授权写入直接建实例」与开关切换前存量偏差留下的缺口——控制台没开时，
+     * 档位与全局脱节（如管控模式下非法 key 仍放行）会一直存在。
+     * 单次成本 = 每条 AI 路由一次读，值不一致才写；与检测任务共享默认调度线程，排队只增时延。
+     */
+    @Scheduled(fixedDelay = 30000)
+    public void scheduledIdentifyOnlyReconcile() {
+        try {
+            aiShadowService.reconcileIdentifyOnlyFlags();
+        } catch (Exception e) {
+            log.warn("scheduled identify_only reconcile failed", e);
         }
     }
 }

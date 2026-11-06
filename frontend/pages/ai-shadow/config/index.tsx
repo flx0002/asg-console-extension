@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { getAiShadowDetectMode, getAiShadowEnabled, setAiShadowDetectMode, setAiShadowEnabled } from '@/services';
 import DetectedView from '@/components/ai-shadow-detected-view';
 import RouteView from '@/components/ai-shadow-route-view';
+import CaptureView from '@/components/ai-shadow-capture-view';
 
 type Disposition = 'monitoring' | 'enforcement';
 
@@ -181,6 +182,11 @@ const AiShadowConfigPage: React.FC = () => {
             key: 'route',
             label: t('aiShadow.tabRouteAdmission'),
             children: <RouteView enabled={enabled} />,
+          },
+          {
+            key: 'capture',
+            label: t('aiShadow.tabCapture'),
+            children: <CaptureView mode={mode} />,
           },
         ]}
       />

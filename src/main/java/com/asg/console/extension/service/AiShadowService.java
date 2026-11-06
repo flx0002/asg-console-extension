@@ -102,6 +102,14 @@ public interface AiShadowService {
     Map<String, Object> updateAuthorizedDomains(String mode, List<String> addDomains, List<String> removeDomains,
         String source);
 
+    /**
+     * Full-replacement update of the DNS policy (PUT /dns-policy). Computes the
+     * domain diff against the current state and audits each effective change
+     * (authorize_domain / deauthorize_domain), same as the console path.
+     * Returns the updated policy for response mapping.
+     */
+    com.asg.console.extension.model.AiShadowDnsPolicy updateDnsPolicy(String mode, List<String> authorizedDomains);
+
     void setDetectMode(String mode);
 
     String getDetectMode();
@@ -115,4 +123,16 @@ public interface AiShadowService {
 
     /** Current enable state; true when no global instance exists yet (default enabled). */
     boolean getEnabled();
+
+    /**
+     * 定时对账入口：把 AI 路由 key-auth 的 identify_only 持续收敛到全局处置方式
+     * （检测模式→true 只记录，管控模式→false 拦截），值已一致时零写入；
+     * 不建实例、不动名单与开关。
+     * <p>
+     * 覆盖状态查询对账不到的时序缺口：实例可由「授权写入直接建实例」等路径产生，
+     * 且开关切换前的存量偏差不会自行修正——档位与全局开关脱节时，「管控模式」下
+     * 非法 key 仍会放行。拦截语义必须是持续不变式，不能只在切换瞬间同步一次。
+     * 范围仅 AI 路由（ai-route-*.internal），业务路由的 key-auth 不归此管。
+     */
+    void reconcileIdentifyOnlyFlags();
 }

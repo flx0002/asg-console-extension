@@ -1,6 +1,6 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/no-invalid-void-type */
 import request from './request';
-import { AiConsumerUsageReport, AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowBatchActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate, AiShadowAdmissionResponse } from '@/interfaces/ai-shadow';
+import { AiConsumerUsageReport, AiShadowStatus, AiShadowModeRequest, AiShadowActionRequest, AiShadowBatchActionRequest, AiShadowDetectedAccess, AiShadowDetectedStats, AiShadowDetectEventPage, AiShadowDetectEventQuery, AiShadowTrendResponse, AiShadowDnsPolicyView, AiShadowAuthzUpdate, AiShadowAdmissionResponse, AiShadowCaptureConfig, AiShadowCaptureConfigUpdate, AiShadowCaptureNics } from '@/interfaces/ai-shadow';
 
 // metrics=false 让后端跳过 Prometheus：路由管控页只用模式与授权列表，
 // 不该被观测组件的连接/读取超时拖住。
@@ -95,4 +95,18 @@ export const getAiShadowConsumers = (): Promise<string[]> => {
 // Per-consumer ADD/REMOVE would leave half-applied state when one call fails midway.
 export const replaceAiShadowConsumers = (payload: AiShadowBatchActionRequest): Promise<AiShadowStatus> => {
   return request.put<any, AiShadowStatus>('/v1/ai-shadow/action/batch', payload);
+};
+
+// ---- 旁路采集（asg-bypass-guard 镜像口/回注口配置）----
+
+export const getAiShadowCaptureConfig = (): Promise<AiShadowCaptureConfig> => {
+  return request.get<any, AiShadowCaptureConfig>('/v1/ai-shadow/capture/config');
+};
+
+export const updateAiShadowCaptureConfig = (payload: AiShadowCaptureConfigUpdate): Promise<AiShadowCaptureConfig> => {
+  return request.put<any, AiShadowCaptureConfig>('/v1/ai-shadow/capture/config', payload);
+};
+
+export const getAiShadowCaptureNics = (): Promise<AiShadowCaptureNics> => {
+  return request.get<any, AiShadowCaptureNics>('/v1/ai-shadow/capture/nics');
 };

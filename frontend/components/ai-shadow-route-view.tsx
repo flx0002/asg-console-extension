@@ -9,7 +9,7 @@ import { getAiShadowConsumers, getAiShadowStatus, replaceAiShadowConsumers } fro
 import type { AiShadowStatus } from '@/interfaces/ai-shadow';
 
 interface AiShadowRouteAdmissionProps {
-  /** 影子AI总开关。关闭时准入校验在网关上已停用，名单不生效，但仍允许提前配置。 */
+  /** 影子AI总开关。关闭时授权按钮不可点，避免在功能停用期间改动准入名单。 */
   enabled?: boolean;
 }
 
@@ -119,7 +119,7 @@ const AiShadowRouteAdmissionPage: React.FC<AiShadowRouteAdmissionProps> = ({ ena
       align: 'right',
       width: 110,
       render: (_value, row) => (
-        <Button size="small" onClick={() => openDrawer(row)}>
+        <Button size="small" disabled={!enabled} onClick={() => openDrawer(row)}>
           {t('aiShadow.authorize')}
         </Button>
       ),
@@ -154,12 +154,6 @@ const AiShadowRouteAdmissionPage: React.FC<AiShadowRouteAdmissionProps> = ({ ena
       {error ? (
         <Alert type="error" showIcon style={{ marginBottom: 12 }} message={t('aiShadow.routeLoadFailed')} />
       ) : null}
-
-      {/* 关闭时不禁用编辑：名单是「开启那一刻」立即生效的策略，若必须先开启才能配，
-          中间那段窗口里所有未授权调用都会被放行或误拦。所以允许先配好，只说清楚现在不生效。 */}
-      {enabled ? null : (
-        <Alert type="info" showIcon style={{ marginBottom: 12 }} message={t('aiShadow.routeDisabledHint')} />
-      )}
 
       <Table<AiShadowStatus>
         rowKey="routeName"

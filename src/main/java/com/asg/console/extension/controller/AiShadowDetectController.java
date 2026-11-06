@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -38,6 +39,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.asg.console.extension.aop.AllowAnonymous;
 import com.asg.console.extension.constant.AsgPluginConstants;
+import com.asg.console.extension.controller.dto.CaptureConfigResponse;
+import com.asg.console.extension.controller.dto.CaptureConfigUpdateRequest;
+import com.asg.console.extension.controller.dto.CaptureNic;
+import com.asg.console.extension.controller.dto.CaptureNicsResponse;
 import com.asg.console.extension.controller.dto.DetectEventReportRequest;
 import com.asg.console.extension.controller.dto.DnsPolicyResponse;
 import com.asg.console.extension.controller.dto.DnsPolicyUpdateRequest;
@@ -45,10 +50,13 @@ import com.asg.console.extension.controller.dto.PageResult;
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.exception.AuthException;
 import com.asg.console.extension.model.AiChannelChangeEvent;
+import com.asg.console.extension.model.AiShadowCaptureConfig;
 import com.asg.console.extension.model.AiShadowDetectEvent;
 import com.asg.console.extension.model.AiShadowDnsPolicy;
+import com.asg.console.extension.service.AiShadowCaptureConfigService;
 import com.asg.console.extension.service.AiShadowDetectEventService;
 import com.asg.console.extension.service.AiShadowDnsPolicyService;
+import com.asg.console.extension.service.AiShadowService;
 import com.alibaba.higress.sdk.exception.ValidationException;
 import com.alibaba.higress.sdk.model.WasmPluginInstance;
 import com.alibaba.higress.sdk.model.WasmPluginInstanceScope;
@@ -109,6 +117,8 @@ public class AiShadowDetectController {
 
     private AiShadowDetectEventService detectEventService;
     private AiShadowDnsPolicyService dnsPolicyService;
+    private AiShadowCaptureConfigService captureConfigService;
+    private AiShadowService aiShadowService;
     private WasmPluginInstanceService wasmPluginInstanceService;
     private ApplicationEventPublisher eventPublisher;
 
@@ -123,6 +133,16 @@ public class AiShadowDetectController {
     @Resource
     public void setDnsPolicyService(AiShadowDnsPolicyService dnsPolicyService) {
         this.dnsPolicyService = dnsPolicyService;
+    }
+
+    @Resource
+    public void setCaptureConfigService(AiShadowCaptureConfigService captureConfigService) {
+        this.captureConfigService = captureConfigService;
+    }
+
+    @Resource
+    public void setAiShadowService(AiShadowService aiShadowService) {
+        this.aiShadowService = aiShadowService;
     }
 
     @Resource
@@ -302,11 +322,89 @@ public class AiShadowDetectController {
         if (request == null) {
             throw new ValidationException("request body is required");
         }
-        AiShadowDnsPolicy policy = dnsPolicyService.updatePolicy(request.getMode(), request.getAuthorizedDomains());
+        // 走 AiShadowService 而不是 dnsPolicyService 直写：前者会对 diff 写管理审计
+        // （authorize_domain / deauthorize_domain），后者只落库不留痕。
+        AiShadowDnsPolicy policy = aiShadowService.updateDnsPolicy(request.getMode(), request.getAuthorizedDomains());
         // 这是授权域名的第二条写入口（采集器/策略同步用），与控制台那条同样要触发派生；
         // 漏掉这里就会出现「某条路径改了授权，网关不生效」的间歇性不一致。
         eventPublisher.publishEvent(new AiChannelChangeEvent(this, "dns-policy"));
         return ResponseEntity.ok(Response.success(toPolicyResponse(policy)));
+    }
+
+    /**
+     * Get the bypass capture configuration. Read by both the management UI and
+     * the bypass collector's policy poll. {@code interfaces == null} means
+     * never configured — the collector keeps its local yaml; an empty list
+     * means capture is explicitly off.
+     */
+    @GetMapping("/capture/config")
+    @AllowAnonymous
+    @Operation(summary = "Get bypass capture configuration")
+    public ResponseEntity<Response<CaptureConfigResponse>> getCaptureConfig() {
+        return ResponseEntity.ok(Response.success(toCaptureConfigResponse(captureConfigService.getConfig())));
+    }
+
+    /**
+     * Update the bypass capture configuration (capture interfaces and
+     * per-interface reinjection control ports). The collector hot-reloads the
+     * new selection in its next policy poll cycle (≤30s).
+     */
+    @PutMapping("/capture/config")
+    @Operation(summary = "Update bypass capture configuration")
+    public ResponseEntity<Response<CaptureConfigResponse>> updateCaptureConfig(
+        @RequestBody CaptureConfigUpdateRequest request) {
+        if (request == null) {
+            throw new ValidationException("request body is required");
+        }
+        AiShadowCaptureConfig config =
+            captureConfigService.updateConfig(request.getInterfaces(), request.getControlInterfaces());
+        return ResponseEntity.ok(Response.success(toCaptureConfigResponse(config)));
+    }
+
+    /**
+     * Probe the bypass collector for its physical NIC inventory (link state and
+     * speed). Returns agentOnline=false instead of an error when the collector
+     * is unreachable so the capture page degrades to a clear offline state.
+     */
+    @GetMapping("/capture/nics")
+    @Operation(summary = "Probe bypass collector NIC inventory")
+    public ResponseEntity<Response<CaptureNicsResponse>> getCaptureNics() {
+        List<CaptureNic> nics = captureConfigService.probeNics();
+        CaptureNicsResponse body = new CaptureNicsResponse();
+        body.setAgentOnline(nics != null);
+        body.setNics(nics == null ? Collections.emptyList() : nics);
+        return ResponseEntity.ok(Response.success(body));
+    }
+
+    private CaptureConfigResponse toCaptureConfigResponse(AiShadowCaptureConfig config) {
+        CaptureConfigResponse response = new CaptureConfigResponse();
+        response.setInterfaces(parseCaptureInterfaces(config.getCaptureInterfaces()));
+        response.setControlInterfaces(parseControlInterfaces(config.getControlInterfaces()));
+        response.setUpdatedAt(config.getUpdatedAt());
+        return response;
+    }
+
+    /** null stays null (unconfigured) so the collector can tell it apart from []. */
+    private List<String> parseCaptureInterfaces(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return Arrays.stream(raw.split(",")).filter(StringUtils::isNotBlank).collect(Collectors.toList());
+    }
+
+    private Map<String, String> parseControlInterfaces(String raw) {
+        if (StringUtils.isBlank(raw)) {
+            return Collections.emptyMap();
+        }
+        JSONObject json = JSON.parseObject(raw);
+        Map<String, String> controls = new LinkedHashMap<>();
+        for (String key : json.keySet()) {
+            controls.put(key, StringUtils.defaultString(json.getString(key)));
+        }
+        return controls;
     }
 
     private void checkCollectorToken(String token) {

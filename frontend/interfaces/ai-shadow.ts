@@ -4,8 +4,7 @@ export interface AiShadowStatus {
   resourceName?: string;
   mode: 'monitoring' | 'enforcement';
   authEnabled: boolean;
-  // True when the key-auth instance exists. Independent of the master switch:
-  // the configuration survives while it is off, it just does not take effect.
+  // True when the key-auth instance exists and is enabled.
   managed?: boolean;
   // True when nobody is authorized: every identified caller is rejected.
   defaultDeny?: boolean;
@@ -237,4 +236,33 @@ export interface AiConsumerUsageReport {
   // Window (hours) the blocked/monitored counts were computed over. Different
   // scope from usageScope on purpose; the UI labels them separately.
   eventWindowHours: number;
+}
+
+// ---- 旁路采集（asg-bypass-guard 镜像口/回注口配置）----
+
+export interface AiShadowCaptureNic {
+  name: string;
+  // up / down (operstate)
+  oper: string;
+  // Link speed such as "1000Mb/s"; empty when the link is down.
+  speed: string;
+}
+
+export interface AiShadowCaptureNics {
+  // False when the bypass collector could not be probed; nics is then empty.
+  agentOnline: boolean;
+  nics: AiShadowCaptureNic[];
+}
+
+export interface AiShadowCaptureConfig {
+  // null = never configured (collector keeps its local yaml); [] = capture off.
+  interfaces: string[] | null;
+  // Capture port -> reinject control port; "" means no injection, missing key means same port.
+  controlInterfaces: Record<string, string>;
+  updatedAt?: string;
+}
+
+export interface AiShadowCaptureConfigUpdate {
+  interfaces: string[];
+  controlInterfaces: Record<string, string>;
 }
