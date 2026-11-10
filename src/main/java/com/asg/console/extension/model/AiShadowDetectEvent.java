@@ -118,4 +118,29 @@ public class AiShadowDetectEvent {
      */
     @Transient
     private Map<String, Object> auditLink;
+
+    /**
+     * 会话折叠展示字段（IR-告警去重，非持久化）：事件明细列表一行 = 一个会话，
+     * 列表剩下的流水条数用 hitCount 补偿，流水表本身逐条全量保留。
+     * 只写这些字段而不是改 eventTime/status/riskLevel，避免把折叠结果 flush 回事件表。
+     * firstSeen/lastSeen/sessionStatus/sessionRiskLevel 都是会话内聚合值（epoch millis）。
+     */
+    @Transient
+    private Long hitCount;
+
+    @Transient
+    private Long firstSeen;
+
+    @Transient
+    private Long lastSeen;
+
+    @Transient
+    private String sessionStatus;
+
+    @Transient
+    private String sessionRiskLevel;
+
+    /** 会话内最近一条非空 reason（折叠后展示，与筛选同口径；非持久化）。 */
+    @Transient
+    private String sessionReason;
 }

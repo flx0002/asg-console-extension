@@ -12,12 +12,14 @@
  */
 package com.asg.console.extension.controller;
 
+import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletResponse;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -30,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.alibaba.fastjson.JSON;
 import com.asg.console.extension.controller.dto.Response;
 import com.asg.console.extension.controller.util.ControllerUtil;
 import com.asg.console.extension.service.impl.AgentAuditPersistenceService;
@@ -109,6 +112,10 @@ public class AuditChainController {
     @Operation(summary = "Clear all audit logs for a specific session")
     @ApiResponses({@ApiResponse(responseCode = "200", description = "Success")})
     public ResponseEntity<Void> clearSessionAuditLogs(@PathVariable("sessionId") String sessionId) {
+        // Console actions must stay auditable; refuse the clear endpoint for the admin session.
+        if ("admin_ops".equals(sessionId)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
         auditChainService.clearSessionAuditLogs(sessionId);
         return ResponseEntity.ok().build();
     }
@@ -153,5 +160,34 @@ public class AuditChainController {
         @RequestParam(value = "format", defaultValue = "json") String format,
         HttpServletResponse response) {
         auditChainService.exportAuditLogs(sessionId, format, response);
+    }
+
+    @GetMapping("/admin-operations")
+    @Operation(summary = "List console admin-operation audit entries")
+    public ResponseEntity<Response<Map<String, Object>>> getAdminOperations(
+        @RequestParam(value = "page", defaultValue = "1") int page,
+        @RequestParam(value = "pageSize", defaultValue = "20") int pageSize,
+        @RequestParam(value = "startMs", required = false) Long startMs,
+        @RequestParam(value = "endMs", required = false) Long endMs,
+        @RequestParam(value = "action", defaultValue = "") String action,
+        @RequestParam(value = "keyword", defaultValue = "") String keyword) {
+        return ControllerUtil.buildResponseEntity(
+            auditPersistenceService.queryAdminOperations(startMs, endMs, action, keyword, page, pageSize));
+    }
+
+    /** GET + /export is itself recorded by AdminOperationAuditInterceptor. */
+    @GetMapping("/admin-operations/export")
+    @Operation(summary = "Export console admin-operation audit entries as JSON")
+    public void exportAdminOperations(
+        @RequestParam(value = "startMs", required = false) Long startMs,
+        @RequestParam(value = "endMs", required = false) Long endMs,
+        @RequestParam(value = "action", defaultValue = "") String action,
+        @RequestParam(value = "keyword", defaultValue = "") String keyword,
+        HttpServletResponse response) throws IOException {
+        Map<String, Object> data = auditPersistenceService.queryAdminOperations(
+            startMs, endMs, action, keyword, 1, 10000);
+        response.setContentType("application/json;charset=UTF-8");
+        response.setHeader("Content-Disposition", "attachment; filename=admin-operations.json");
+        response.getWriter().write(JSON.toJSONString(data));
     }
 }

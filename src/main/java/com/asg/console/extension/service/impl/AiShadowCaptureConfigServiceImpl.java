@@ -164,6 +164,7 @@ public class AiShadowCaptureConfigServiceImpl implements AiShadowCaptureConfigSe
             entry.put("detail", "controls=" + (controls == null ? "" : controls));
             auditChainService.writeAuditLog(entry.toJSONString(), eventId, "admin_ops", timestampMs, "console", true,
                 null);
+            com.asg.console.extension.config.AdminOperationAuditInterceptor.markWritten();
         } catch (Exception e) {
             log.error("Failed to write admin audit log for action: set_capture_config", e);
         }

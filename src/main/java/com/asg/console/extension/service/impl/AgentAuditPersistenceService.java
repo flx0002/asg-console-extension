@@ -12,7 +12,9 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -83,6 +85,8 @@ public class AgentAuditPersistenceService implements AuditLogSink {
     private static final int DELETE_BATCH_SIZE = 500;
     private static final long CLEANUP_INTERVAL_MS = 3600000;
     private static final int DEFAULT_MAX_DAYS = 7;
+    /** Admin-operation audit retention, independent of data-plane max_days. */
+    private static final int DEFAULT_ADMIN_MAX_DAYS = 180;
 
     private AgentAuditLogRepository repository;
 
@@ -235,25 +239,113 @@ public class AgentAuditPersistenceService implements AuditLogSink {
      */
     public long cleanupExpiredLogs() {
         int maxDays = readMaxDaysFromRedis();
-        if (maxDays <= 0) {
-            return 0;
+        long now = System.currentTimeMillis();
+        long total = 0;
+        if (maxDays > 0) {
+            total += deleteInBatches(now - maxDays * 86400_000L, false);
         }
-        long cutoff = System.currentTimeMillis() - maxDays * 86400_000L;
+        // admin_operation rows are excluded from the statement above and expire on their own
+        // (longer) window, so console actions stay auditable after the data-plane retention.
+        int adminMaxDays = readAdminMaxDaysFromRedis();
+        if (adminMaxDays > 0) {
+            total += deleteInBatches(now - adminMaxDays * 86400_000L, true);
+        }
+        return total;
+    }
+
+    private long deleteInBatches(long cutoff, boolean adminOnly) {
         long total = 0;
         try {
             int batch;
             do {
-                batch = repository.deleteExpiredBatch(cutoff, DELETE_BATCH_SIZE);
+                batch = adminOnly
+                    ? repository.deleteExpiredAdminBatch(cutoff, DELETE_BATCH_SIZE)
+                    : repository.deleteExpiredBatch(cutoff, DELETE_BATCH_SIZE);
                 total += batch;
             } while (batch >= DELETE_BATCH_SIZE);
             if (total > 0) {
-                log.info("MySQL audit retention cleanup removed {} expired entries (max_days={})", total, maxDays);
+                log.info("MySQL audit retention cleanup removed {} entries (admin_only={})", total, adminOnly);
             }
         } catch (Exception e) {
             // Cleanup must never take the service down; the next cycle retries.
-            log.error("MySQL audit retention cleanup failed (max_days={})", maxDays, e);
+            log.error("MySQL audit retention cleanup failed (admin_only={})", adminOnly, e);
         }
         return total;
+    }
+
+    private int readAdminMaxDaysFromRedis() {
+        try (Jedis jedis = new Jedis(REDIS_HOST_DEFAULT, REDIS_PORT_DEFAULT)) {
+            String v = jedis.hget(AUDIT_CONFIG_KEY, "admin_max_days");
+            if (v != null && !v.isEmpty()) {
+                int days = Integer.parseInt(v);
+                return Math.min(Math.max(days, 1), 3650);
+            }
+        } catch (Exception e) {
+            log.debug("Failed to read admin_max_days from Redis, using default {}", DEFAULT_ADMIN_MAX_DAYS);
+        }
+        return DEFAULT_ADMIN_MAX_DAYS;
+    }
+
+    /** Escape LIKE wildcards so a literal '%' or '_' cannot widen an audit search. */
+    private static String escapeLike(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return value.replace("!", "!!").replace("%", "!%").replace("_", "!_");
+    }
+
+    /** Read-only admin-operation listing. Exports reuse this with a larger pageSize. */
+    public Map<String, Object> queryAdminOperations(Long startMs, Long endMs, String action,
+        String keyword, int page, int pageSize) {
+        // Repository uses ESCAPE '!' on both LIKE predicates; escape here so list and
+        // count stay in sync and user input is matched literally.
+        String safeAction = escapeLike(action);
+        String safeKeyword = escapeLike(keyword);
+        int safeSize = Math.min(Math.max(pageSize, 1), 10000);
+        int offset = (Math.max(page, 1) - 1) * safeSize;
+        long total = repository.countAdminOperations(startMs, endMs, safeAction, safeKeyword).longValue();
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Object[] row : repository.findAdminOperations(startMs, endMs, safeAction, safeKeyword,
+            offset, safeSize)) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", ((Number) row[0]).longValue());
+            item.put("time", String.valueOf(row[1]));
+            item.put("timestampMs", ((Number) row[2]).longValue());
+            item.put("sessionId", row[3] == null ? "" : String.valueOf(row[3]));
+            item.put("userId", row[4] == null ? "" : String.valueOf(row[4]));
+            String raw = row[6] == null ? "" : String.valueOf(row[6]);
+            JSONObject rawObj = parseRaw(raw);
+            item.put("action", rawField(rawObj, "action"));
+            item.put("clientIp", rawField(rawObj, "client_ip"));
+            item.put("httpStatus", rawField(rawObj, "http_status"));
+            item.put("source", rawField(rawObj, "source"));
+            item.put("rawJson", raw);
+            items.add(item);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("list", items);
+        result.put("total", total);
+        return result;
+    }
+
+    /** Parse once per row; exports can return up to 10000 rows. */
+    private static JSONObject parseRaw(String raw) {
+        if (raw.isEmpty()) {
+            return null;
+        }
+        try {
+            return JSON.parseObject(raw);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String rawField(JSONObject obj, String key) {
+        if (obj == null) {
+            return "";
+        }
+        Object value = obj.get(key);
+        return value == null ? "" : String.valueOf(value);
     }
 
     private int readMaxDaysFromRedis() {
@@ -304,8 +396,23 @@ public class AgentAuditPersistenceService implements AuditLogSink {
                 log.warn("Audit sink recovered; {} entries were dropped while MySQL was unavailable", dropped);
             }
         } catch (DataIntegrityViolationException e) {
-            // Duplicate event ids: another instance already persisted this batch.
-            log.warn("Audit sink batch skipped, duplicate event ids detected: {} entries", batch.size());
+            // saveAll runs the whole batch in one transaction: a single duplicate event_id
+            // rolls every row back. The old code only logged a warning, silently dropping
+            // unrelated audit entries (observed 2026-11-10: 6 of 6 rows lost, including
+            // 2 console admin-operation records). Retry row by row so only genuine
+            // duplicates are skipped and the rest still reach MySQL.
+            int saved = 0;
+            int skipped = 0;
+            for (AgentAuditLog entry : filterExisting(batch)) {
+                try {
+                    repository.saveAndFlush(entry);
+                    saved++;
+                } catch (Exception rowError) {
+                    skipped++;
+                    log.debug("Audit sink skipped duplicate event {}", entry.getEventId(), rowError);
+                }
+            }
+            log.warn("Audit sink duplicate batch recovered: {} saved, {} skipped", saved, skipped);
             consecutiveFailures.set(0);
             backoffMs = INITIAL_BACKOFF_MS;
         } catch (Exception e) {

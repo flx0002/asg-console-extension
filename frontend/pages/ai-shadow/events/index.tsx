@@ -25,7 +25,8 @@ type RangeKey = 'today' | 'week' | 'month' | 'custom';
 type ChannelKey = 'all' | 'shadow' | 'route';
 type StatusKey = 'all' | 'blocked' | 'recorded';
 type RiskKey = 'all' | 'critical' | 'high' | 'medium' | 'low';
-type ReasonKey = 'all' | 'no_key' | 'unknown_key' | 'not_in_allow' | 'off_channel';
+type ReasonKey = 'all' | 'no_key' | 'unknown_key' | 'not_in_allow' | 'off_channel'
+  | 'ai_domain_match' | 'policy_violation' | 'policy_blocked';
 
 const RANGE_DAYS: Record<Exclude<RangeKey, 'custom'>, number> = { today: 1, week: 7, month: 30 };
 const MAX_CUSTOM_DAYS = 31;
@@ -427,7 +428,26 @@ const AiShadowEventsPage: React.FC = () => {
       dataIndex: 'eventTime',
       key: 'eventTime',
       width: 162,
-      render: (value: AiShadowDetectEvent['eventTime']) => formatEventTime(value),
+      // 折叠后用会话末次时间作主时间；跨时段的会话在下方补一行首末区间。
+      render: (value: AiShadowDetectEvent['eventTime'], row: AiShadowDetectEvent) => (
+        <span>
+          {row.lastSeen ? moment(row.lastSeen).format('YYYY-MM-DD HH:mm:ss') : formatEventTime(value)}
+          {row.firstSeen && row.lastSeen && row.lastSeen > row.firstSeen && (
+            <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+              {moment(row.firstSeen).format('HH:mm:ss')} ~ {moment(row.lastSeen).format('HH:mm:ss')}
+            </div>
+          )}
+        </span>
+      ),
+    },
+    {
+      // 一条告警代表一个会话：命中数是被折叠掉的流水条数，流水表本身没删。
+      title: t('aiShadow.eventColHits'),
+      key: 'hitCount',
+      width: 92,
+      render: (_: unknown, row: AiShadowDetectEvent) => (
+        <span style={{ fontVariantNumeric: 'tabular-nums' }}>{Number(row.hitCount ?? 1).toLocaleString()}</span>
+      ),
     },
     {
       title: t('aiShadow.colChannel'),
@@ -443,7 +463,7 @@ const AiShadowEventsPage: React.FC = () => {
       dataIndex: 'status',
       key: 'status',
       width: 92,
-      render: (value?: string) => (value === 'blocked'
+      render: (value: string | undefined, row: AiShadowDetectEvent) => ((row.sessionStatus ?? value) === 'blocked'
         ? <Tag color="red">{t('aiShadow.eventStatusBlocked')}</Tag>
         : <Tag>{t('aiShadow.statusRecorded')}</Tag>),
     },
@@ -452,11 +472,12 @@ const AiShadowEventsPage: React.FC = () => {
       dataIndex: 'riskLevel',
       key: 'riskLevel',
       width: 84,
-      render: (value?: string) => {
-        if (!value) return <span style={{ color: '#bfbfbf' }}>-</span>;
-        if (value === 'critical') return <Tag color="red">{t('aiShadow.riskCritical')}</Tag>;
-        if (value === 'high') return <Tag color="orange">{t('aiShadow.riskHigh')}</Tag>;
-        if (value === 'medium') return <Tag color="gold">{t('aiShadow.riskMedium')}</Tag>;
+      render: (value: string | undefined, row: AiShadowDetectEvent) => {
+        const level = row.sessionRiskLevel ?? value;
+        if (!level) return <span style={{ color: '#bfbfbf' }}>-</span>;
+        if (level === 'critical') return <Tag color="red">{t('aiShadow.riskCritical')}</Tag>;
+        if (level === 'high') return <Tag color="orange">{t('aiShadow.riskHigh')}</Tag>;
+        if (level === 'medium') return <Tag color="gold">{t('aiShadow.riskMedium')}</Tag>;
         return <Tag>{t('aiShadow.riskLow')}</Tag>;
       },
     },
@@ -465,7 +486,9 @@ const AiShadowEventsPage: React.FC = () => {
       dataIndex: 'reason',
       key: 'reason',
       width: 180,
-      render: (value?: string) => <span>{eventReasonLabel(t, value)}</span>,
+      render: (value: string | undefined, row: AiShadowDetectEvent) => (
+        <span>{eventReasonLabel(t, row.sessionReason ?? value)}</span>
+      ),
     },
     {
       title: t('aiShadow.eventColDomain'),
@@ -803,6 +826,9 @@ const AiShadowEventsPage: React.FC = () => {
               { value: 'unknown_key', label: t('aiShadow.reasonUnknownKey') },
               { value: 'not_in_allow', label: t('aiShadow.reasonNotInAllow') },
               { value: 'off_channel', label: t('aiShadow.reasonOffChannel') },
+              { value: 'ai_domain_match', label: t('aiShadow.reasonAiDomainMatch') },
+              { value: 'policy_violation', label: t('aiShadow.reasonPolicyViolation') },
+              { value: 'policy_blocked', label: t('aiShadow.reasonPolicyBlocked') },
             ]}
           />
           <Input.Search

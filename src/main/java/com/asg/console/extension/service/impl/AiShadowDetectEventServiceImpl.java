@@ -9,9 +9,7 @@
 package com.asg.console.extension.service;
 
 import java.sql.Timestamp;
-import java.time.Instant;
 import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -25,9 +23,8 @@ import javax.persistence.PersistenceContext;
 
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
-import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
 import com.asg.console.extension.model.AiShadowDetectEvent;
@@ -72,6 +69,12 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
         return saved;
     }
 
+    /**
+     * 事件明细按会话折叠后分页：一条记录 = 一个告警，命中数在 hitCount 里补偿，流水本身不删。
+     * 折叠与计数都在 SQL 里完成，避免把整张表拉进 JVM 做内存分页——数据面关闭 60s 去重后
+     * 流水量会明显增长。筛选作用在折叠后的会话行上（折叠后过滤），所以 hitCount 是会话内
+     * 全部流水数、不随筛选变化；域名/IP 按会话代表值匹配，原因按会话内最近非空值匹配并展示。
+     */
     @Override
     public Page<AiShadowDetectEvent> query(String domain, String status, String category, String riskLevel,
         String source, String surface, String reason, String srcIp, Long startTime, Long endTime, int page,
@@ -82,17 +85,69 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
         if (size <= 0 || size > 500) {
             size = 20;
         }
-        Specification<AiShadowDetectEvent> spec = buildSpec(domain, status, category, riskLevel, source, surface,
-            reason, srcIp, toLocalDateTime(startTime), toLocalDateTime(endTime));
-        return eventRepository.findAll(spec, PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "eventTime")));
+        // 空串 = 不过滤：SQL 用 (:x = '' OR ...) 统一处理，避免动态拼 SQL 带来注入面。
+        String fDomain = StringUtils.trimToEmpty(domain);
+        String fStatus = StringUtils.trimToEmpty(status);
+        String fCategory = StringUtils.trimToEmpty(category);
+        String fRisk = StringUtils.trimToEmpty(riskLevel);
+        String fSource = StringUtils.trimToEmpty(source);
+        String fSurface = StringUtils.trimToEmpty(surface);
+        String fReason = StringUtils.trimToEmpty(reason);
+        String fSrcIp = StringUtils.trimToEmpty(srcIp);
+        Long startSec = epochSeconds(startTime);
+        Long endSec = epochSeconds(endTime);
+        List<Object[]> rows = eventRepository.aggregateSessions(startSec, endSec, fDomain, fStatus, fCategory,
+            fRisk, fSource, fSurface, fReason, fSrcIp, page * size, size);
+        // COUNT(*) 在 MySQL 原生查询里可能返回 BigInteger，声明成 Number 避免 ClassCastException。
+        Number total = eventRepository.countSessions(startSec, endSec, fDomain, fStatus, fCategory, fRisk,
+            fSource, fSurface, fReason, fSrcIp);
+        List<Long> ids = new ArrayList<>(rows.size());
+        for (Object[] row : rows) {
+            if (row != null && row.length >= 7 && row[0] != null) {
+                ids.add(((Number) row[0]).longValue());
+            }
+        }
+        Map<Long, AiShadowDetectEvent> byId = new HashMap<>();
+        for (AiShadowDetectEvent event : eventRepository.findAllById(ids)) {
+            if (event.getId() != null) {
+                byId.put(event.getId(), event);
+            }
+        }
+        List<AiShadowDetectEvent> content = new ArrayList<>(rows.size());
+        for (Object[] row : rows) {
+            if (row == null || row.length < 7 || row[0] == null) {
+                continue;
+            }
+            AiShadowDetectEvent event = byId.get(((Number) row[0]).longValue());
+            if (event == null) {
+                continue;
+            }
+            // 只写 transient 字段：findAllById 取回的是实体，改持久化字段有被 flush 回库的风险。
+            event.setHitCount(numberOrZero(row[1]));
+            event.setFirstSeen(epochMillis(row[2]));
+            event.setLastSeen(epochMillis(row[3]));
+            event.setSessionRiskLevel(text(row[4]));
+            event.setSessionStatus(text(row[5]));
+            event.setSessionReason(text(row[6]));
+            content.add(event);
+        }
+        return new PageImpl<>(content, PageRequest.of(page, size), total == null ? 0L : total.longValue());
     }
 
-    /** Convert an epoch-millis filter bound to the product time zone; null stays null (no bound). */
-    private static LocalDateTime toLocalDateTime(Long epochMillis) {
-        if (epochMillis == null || epochMillis <= 0L) {
-            return null;
-        }
-        return LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneId.systemDefault());
+    private static Long epochSeconds(Long epochMillis) {
+        return epochMillis == null || epochMillis <= 0L ? null : epochMillis / 1000L;
+    }
+
+    private static long numberOrZero(Object value) {
+        return value instanceof Number ? ((Number) value).longValue() : 0L;
+    }
+
+    private static Long epochMillis(Object value) {
+        return value instanceof Number ? ((Number) value).longValue() * 1000L : null;
+    }
+
+    private static String text(Object value) {
+        return value == null ? null : String.valueOf(value);
     }
 
     @Override
@@ -244,55 +299,4 @@ public class AiShadowDetectEventServiceImpl implements AiShadowDetectEventServic
         return eventRepository.findByEventTimeBetween(start, end).size();
     }
 
-    private Specification<AiShadowDetectEvent> buildSpec(String domain, String status, String category,
-        String riskLevel, String source, String surface, String reason, String srcIp, LocalDateTime startTime,
-        LocalDateTime endTime) {
-        return (root, query, cb) -> {
-            List<javax.persistence.criteria.Predicate> predicates = new ArrayList<>();
-            if (domain != null && !StringUtils.isBlank(domain)) {
-                predicates.add(cb.like(root.get("domain"), "%" + domain.trim() + "%"));
-            }
-            if (status != null && !StringUtils.isBlank(status)) {
-                // 支持逗号分隔的多值：界面上的「仅记录」不是一个枚举值，而是「除 blocked 以外的
-                // 所有放行状态」（基础流量侧是 allowed，准入侧是 monitored）。按单值等于筛，
-                // 无论选哪个都会漏掉另一侧的放行事件。
-                List<String> statuses = java.util.Arrays.stream(status.split(","))
-                    .map(String::trim).filter(StringUtils::isNotBlank).collect(java.util.stream.Collectors.toList());
-                if (statuses.size() == 1) {
-                    predicates.add(cb.equal(root.get("status"), statuses.get(0)));
-                } else if (!statuses.isEmpty()) {
-                    predicates.add(root.get("status").in(statuses));
-                }
-            }
-            if (category != null && !StringUtils.isBlank(category)) {
-                predicates.add(cb.equal(root.get("category"), category.trim()));
-            }
-            if (riskLevel != null && !StringUtils.isBlank(riskLevel)) {
-                predicates.add(cb.equal(root.get("riskLevel"), riskLevel.trim()));
-            }
-            if (source != null && !StringUtils.isBlank(source)) {
-                predicates.add(cb.equal(root.get("source"), source.trim()));
-            }
-            if (surface != null && !StringUtils.isBlank(surface)) {
-                predicates.add(cb.equal(root.get("surface"), surface.trim()));
-            }
-            // 前缀匹配而不是等值：not_in_allow 的取值后面带着消费者名（not_in_allow:张三），
-            // 按等值筛「不在白名单」会一条都匹配不到。
-            if (reason != null && !StringUtils.isBlank(reason)) {
-                predicates.add(cb.like(root.get("reason"), reason.trim() + "%"));
-            }
-            // 来源 IP 同样按前缀匹配：现场多半只记得网段（10.244.0.），
-            // 等值匹配会逼着人把最后一位也打全。
-            if (srcIp != null && !StringUtils.isBlank(srcIp)) {
-                predicates.add(cb.like(root.get("srcIp"), srcIp.trim() + "%"));
-            }
-            if (startTime != null) {
-                predicates.add(cb.greaterThanOrEqualTo(root.get("eventTime"), startTime));
-            }
-            if (endTime != null) {
-                predicates.add(cb.lessThanOrEqualTo(root.get("eventTime"), endTime));
-            }
-            return cb.and(predicates.toArray(new javax.persistence.criteria.Predicate[0]));
-        };
-    }
 }

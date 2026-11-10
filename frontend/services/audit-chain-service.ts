@@ -61,3 +61,26 @@ export const exportAuditLogs = (sessionId: string, format = 'json'): Promise<any
     responseType: 'blob',
   });
 };
+
+// 管理操作审计（record_types=admin_operation）：直查 MySQL，不依赖 Redis 会话列表。
+export interface AdminOperationQuery {
+  page?: number;
+  pageSize?: number;
+  startMs?: number;
+  endMs?: number;
+  action?: string;
+  keyword?: string;
+}
+
+export const getAdminOperations = (params: AdminOperationQuery = {}): Promise<any> => {
+  return request.get('/v1/audit-chain/admin-operations', { params });
+};
+
+export const exportAdminOperations = (
+  params: Omit<AdminOperationQuery, 'page' | 'pageSize'> = {},
+): Promise<any> => {
+  return request.get('/v1/audit-chain/admin-operations/export', {
+    params,
+    responseType: 'blob',
+  });
+};

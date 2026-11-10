@@ -57,13 +57,16 @@ export const renderEventDetail = (t: Translator, detail?: string): React.ReactNo
   );
 };
 
-// 判定原因：reason 是后端枚举（no_key / unknown_key / not_in_allow[:consumer]），
-// 未知值原样返回，避免新原因在界面上变成空白。
+// 判定原因：reason 是后端枚举（准入类 no_key / unknown_key / not_in_allow[:consumer] / off_channel，
+// 旁路类 ai_domain_match / policy_violation / policy_blocked），未知值原样返回，避免新原因变空白。
 export const eventReasonLabel = (t: Translator, reason?: string): string => {
   if (!reason) return '-';
   if (reason === 'no_key') return t('aiShadow.reasonNoKey');
   if (reason === 'unknown_key') return t('aiShadow.reasonUnknownKey');
   if (reason === 'off_channel') return t('aiShadow.reasonOffChannel');
+  if (reason === 'ai_domain_match') return t('aiShadow.reasonAiDomainMatch');
+  if (reason === 'policy_violation') return t('aiShadow.reasonPolicyViolation');
+  if (reason === 'policy_blocked') return t('aiShadow.reasonPolicyBlocked');
   if (reason.startsWith('not_in_allow')) {
     const consumer = reason.split(':')[1];
     return consumer

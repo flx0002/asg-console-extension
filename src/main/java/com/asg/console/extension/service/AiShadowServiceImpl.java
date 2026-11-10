@@ -1704,6 +1704,7 @@ public class AiShadowServiceImpl implements AiShadowService {
 
             auditChainService.writeAuditLog(entry.toJSONString(), eventId, ADMIN_OPS_SESSION_ID,
                 timestampMs, operator, true, null);
+            com.asg.console.extension.config.AdminOperationAuditInterceptor.markWritten();
         } catch (Exception e) {
             log.error("Failed to write admin audit log for action: {}", action, e);
         }

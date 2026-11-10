@@ -8,6 +8,9 @@
  */
 package com.asg.console.extension.controller;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -17,6 +20,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -27,6 +31,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -48,7 +53,6 @@ import com.asg.console.extension.controller.dto.DnsPolicyResponse;
 import com.asg.console.extension.controller.dto.DnsPolicyUpdateRequest;
 import com.asg.console.extension.controller.dto.PageResult;
 import com.asg.console.extension.controller.dto.Response;
-import com.asg.console.extension.controller.exception.AuthException;
 import com.asg.console.extension.model.AiChannelChangeEvent;
 import com.asg.console.extension.model.AiShadowCaptureConfig;
 import com.asg.console.extension.model.AiShadowDetectEvent;
@@ -165,7 +169,9 @@ public class AiShadowDetectController {
     public ResponseEntity<Response<Integer>> reportEvents(
         @RequestHeader(value = "X-Collector-Token", required = false) String token,
         @RequestBody DetectEventReportRequest request, HttpServletRequest servletRequest) {
-        checkCollectorToken(token);
+        if (!isCollectorTokenValid(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
         if (request == null || request.getEvents() == null || request.getEvents().isEmpty()) {
             throw new ValidationException("events must not be empty");
         }
@@ -188,7 +194,7 @@ public class AiShadowDetectController {
             event.setStatus(StringUtils.defaultIfBlank(source.getStatus(), DEFAULT_STATUS));
             event.setSource(StringUtils.defaultIfBlank(source.getSource(), DEFAULT_SOURCE));
             event.setSrcIp(source.getSrcIp());
-            event.setSessionId(source.getSessionId());
+            event.setSessionId(resolveSessionId(source));
             event.setDetail(source.getDetail());
             event.setSurface(surface);
             event.setVerdict(StringUtils.defaultIfBlank(source.getVerdict(), DEFAULT_VERDICT));
@@ -308,7 +314,9 @@ public class AiShadowDetectController {
     @Operation(summary = "Get DNS shadow AI detection policy")
     public ResponseEntity<Response<DnsPolicyResponse>> getDnsPolicy(
         @RequestHeader(value = "X-Collector-Token", required = false) String token) {
-        checkCollectorToken(token);
+        if (!isCollectorTokenValid(token)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
         return ResponseEntity.ok(Response.success(toPolicyResponse(dnsPolicyService.getPolicy())));
     }
 
@@ -407,10 +415,13 @@ public class AiShadowDetectController {
         return controls;
     }
 
-    private void checkCollectorToken(String token) {
-        if (StringUtils.isBlank(collectorToken) || !collectorToken.equals(token)) {
-            throw new AuthException("Invalid collector token");
-        }
+    /**
+     * A missing/invalid collector token is an authentication failure (401), not a server
+     * error. AuthException is an unannotated RuntimeException that Spring maps to 500,
+     * which hides the real cause from collectors and monitoring.
+     */
+    private boolean isCollectorTokenValid(String token) {
+        return StringUtils.isNotBlank(collectorToken) && collectorToken.equals(token);
     }
 
     private DnsPolicyResponse toPolicyResponse(AiShadowDnsPolicy policy) {
@@ -481,5 +492,102 @@ public class AiShadowDetectController {
             log.warn("Failed to load gateway AI categories, bypass collector will use its local library", e);
             return null;
         }
+    }
+
+    /**
+     * Session id for one reported detect event, resolved centrally for every reporter
+     * (ai-shadow-detect, key-auth, bypass collector and any future source).
+     *
+     * <p>A reported id wins as-is: the bypass collector already sanitizes business session ids
+     * and emits ids like {@code bp:<hash>:<nano>}, so rewriting characters here would break
+     * stage-1 data. Only the length is bounded, because the column is varchar(128) and an
+     * oversized external header would otherwise fail the whole batch.
+     *
+     * <p>When the reporter sends no id, derive an access-session id from
+     * {@code srcIp x main domain x 30min bucket}. It must be deterministic: Console runs two
+     * replicas, and the same session must never get two ids. The fixed bucket only bounds the id
+     * lifetime; the idle split is finished by the display-layer fold (LAG over event_time), so a
+     * session crossing a bucket boundary yields two alerts rather than merging across days.
+     *
+     * <p>Package-private for unit tests.
+     */
+    static String resolveSessionId(DetectEventReportRequest.DetectEvent source) {
+        String reported = normalizeSessionId(source.getSessionId());
+        if (!reported.isEmpty()) {
+            return reported;
+        }
+        String srcIp = firstIp(source.getSrcIp());
+        String domain = registeredDomain(normalizeDomain(source.getDomain()));
+        long eventTime = source.getEventTime() != null ? source.getEventTime() : System.currentTimeMillis();
+        long bucket = eventTime / (30L * 60 * 1000);
+        return "cx:" + hash8(srcIp + "|" + domain + "|" + bucket) + ":" + bucket;
+    }
+
+    /** Trim, drop control characters, bound to varchar(128). Never rewrites structural chars. */
+    private static String normalizeSessionId(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String v = raw.trim().replaceAll("[\\p{Cntrl}]", "");
+        if (v.length() > 128) {
+            int end = 128;
+            // varchar(128) counts UTF-16 chars; never leave a dangling high surrogate for JDBC.
+            if (Character.isHighSurrogate(v.charAt(end - 1))) {
+                end--;
+            }
+            v = v.substring(0, end);
+        }
+        return v;
+    }
+
+    /** x-forwarded-for may carry a chain; the gateway plugins report only the first hop. */
+    private static String firstIp(String raw) {
+        if (raw == null) {
+            return "unknown";
+        }
+        int comma = raw.indexOf(',');
+        String v = (comma >= 0 ? raw.substring(0, comma) : raw).trim();
+        return v.isEmpty() ? "unknown" : v;
+    }
+
+    private static String normalizeDomain(String raw) {
+        if (raw == null) {
+            return "unknown";
+        }
+        String v = raw.trim().toLowerCase(Locale.ROOT);
+        int colon = v.indexOf(':');
+        if (colon >= 0) {
+            v = v.substring(0, colon);
+        }
+        while (v.endsWith(".")) {
+            v = v.substring(0, v.length() - 1);
+        }
+        return v.isEmpty() ? "unknown" : v;
+    }
+
+    /** Last two labels only, mirroring the bypass collector (no public suffix table). */
+    private static String registeredDomain(String domain) {
+        String[] parts = domain.split("\\.");
+        if (parts.length <= 2) {
+            return domain;
+        }
+        return parts[parts.length - 2] + "." + parts[parts.length - 1];
+    }
+
+    private static String hash8(String key) {
+        byte[] digest;
+        try {
+            digest = MessageDigest.getInstance("SHA-256").digest(key.getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 is mandated for every JRE; keep event reporting alive on stripped runtimes.
+            digest = String.valueOf(key.hashCode()).getBytes(StandardCharsets.UTF_8);
+        }
+        char[] hex = "0123456789abcdef".toCharArray();
+        StringBuilder out = new StringBuilder(16);
+        for (int i = 0; i < 8 && i < digest.length; i++) {
+            int v = digest[i] & 0xff;
+            out.append(hex[v >>> 4]).append(hex[v & 0x0f]);
+        }
+        return out.toString();
     }
 }

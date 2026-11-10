@@ -93,6 +93,9 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private static final int WHITELIST_DEFAULT_TTL = 7 * 86400;
     private static final int RULE_CHANGES_TTL = 90 * 86400;
     private static final int DEDUP_DEFAULT_TTL = 300;
+    // 会话滑动续期：最后一次命中后 30min 无活动才算会话结束。
+    // alert_dedup_mode=fixed 可一键回退到固定窗口行为（无需改代码/重启）。
+    private static final int DEDUP_DEFAULT_IDLE_SECONDS = 1800;
     private static final int RISK_DETECTION_WINDOW_MS = 120000; // 检测窗口 120s（2 倍调度周期，避免遗漏）
     private static final int PROFILE_BUILD_LOOKBACK_MS = 120000; // 覆盖审计日志兜底采集延迟
 
@@ -289,6 +292,8 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
         defaults.put("alert_retention_days", "90");
         defaults.put("profile_retention_days", "7");
         defaults.put("alert_dedup_window_seconds", "300");
+        defaults.put("alert_dedup_mode", "sliding");
+        defaults.put("alert_dedup_idle_seconds", String.valueOf(DEDUP_DEFAULT_IDLE_SECONDS));
         defaults.put("timezone", "Asia/Shanghai");
         defaults.put("absolute_token_threshold", "1000000");
         defaults.put("absolute_step_threshold", "200");
@@ -300,6 +305,15 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
     private String getConfigValue(Jedis jedis, String field, String def) {
         String v = jedis.hget(CONFIG_KEY, field);
         return v != null ? v : def;
+    }
+
+    private static int parsePositiveInt(String raw, int def) {
+        try {
+            int v = Integer.parseInt(raw);
+            return v > 0 ? v : def;
+        } catch (NumberFormatException e) {
+            return def;
+        }
     }
 
     // ==================== 画像查询 ====================
@@ -1876,16 +1890,29 @@ public class BehaviorAnalysisServiceImpl implements BehaviorAnalysisService {
             + ":" + nullSafe(sessionId) + ":" + riskType + ":" + nullSafe(title);
         int dedupTtl = Integer.parseInt(
             getConfigValue(jedis, "alert_dedup_window_seconds", String.valueOf(DEDUP_DEFAULT_TTL)));
+        // sliding(默认): 去重键生命周期 = 最后一次会话活动后 alert_dedup_idle_seconds；
+        // fixed 或 mode 值非法: 与改动前完全一致（固定 dedupTtl、不续期），用于一键回退。
+        // idle_seconds 缺失或非法时 parsePositiveInt 回退到默认 30min。
+        boolean sliding = "sliding".equalsIgnoreCase(
+            getConfigValue(jedis, "alert_dedup_mode", "sliding"));
+        int idleTtl = parsePositiveInt(
+            getConfigValue(jedis, "alert_dedup_idle_seconds", String.valueOf(DEDUP_DEFAULT_IDLE_SECONDS)),
+            DEDUP_DEFAULT_IDLE_SECONDS);
+        int initialTtl = sliding ? idleTtl : dedupTtl;
 
         // 先生成 alertId，用 SET NX 原子抢占去重键
         String alertId = "ba-" + System.currentTimeMillis() + "-"
             + UUID.randomUUID().toString().substring(0, 8);
-        SetParams nxParams = new SetParams().nx().ex(dedupTtl);
+        SetParams nxParams = new SetParams().nx().ex(initialTtl);
         String setResult = jedis.set(dedupKey, alertId, nxParams);
         if (setResult == null) {
             // 去重命中：已有告警，原子更新 risk_score（仅取最高值）
             String existingAlertId = jedis.get(dedupKey);
             if (existingAlertId != null) {
+                if (sliding) {
+                    // 会话仍活跃：空闲窗口从本次命中重新起算，活跃会话不会被切成多条告警
+                    jedis.expire(dedupKey, idleTtl);
+                }
                 String evidenceJson = evidence != null ? evidence.toJSONString() : "{}";
                 // KEYS[1]=existingAlertId, ARGV[1]=riskScore, ARGV[2]=evidenceJson
                 // eval(String, int, String...) 要求 KEYS+ARGV 合并为单个 String[]

@@ -89,6 +89,10 @@ export const asgMenuRoutes: any[] = [
         path: '/audit-chain/audit-logs',
       },
       {
+        name: 'menu.logsAdminOperations',
+        path: '/audit-chain/admin-operations',
+      },
+      {
         name: 'menu.logsAuditChainTracking',
         path: '/audit-chain/audit-chain',
       },

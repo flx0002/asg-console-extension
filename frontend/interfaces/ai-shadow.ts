@@ -87,9 +87,21 @@ export interface AiShadowDetectEvent {
   // (off-channel discovery). Never re-derive it from detectType in the UI.
   surface?: string;
   verdict?: string;
-  // no_key / unknown_key / not_in_allow:<consumer> / off_channel.
+  // no_key / unknown_key / not_in_allow:<consumer> / off_channel /
+  // ai_domain_match / policy_violation / policy_blocked.
   reason?: string;
   routeHint?: string;
+  // ---- 会话折叠展示字段（后端按 session_id 聚合，流水本身逐条保留）----
+  // 这一行代表多少条原始事件；1 表示该会话只有一条流水。
+  hitCount?: number;
+  // Epoch millis of the first / last event in this session.
+  firstSeen?: number;
+  lastSeen?: number;
+  // 会话内最严重的处置 / 最高风险；缺省时回退到代表行的 status / riskLevel。
+  sessionStatus?: string;
+  sessionRiskLevel?: string;
+  // 会话内最近一条非空 reason；由折叠 SQL 返回，优先于代表行的 reason 展示。
+  sessionReason?: string;
 }
 
 export interface AiShadowDetectEventPage {
