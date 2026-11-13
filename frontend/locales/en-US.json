@@ -791,10 +791,16 @@
       "summary": "{{count}} route(s) individually enabled",
       "globalSwitchHint": "This switch controls the global layer: ON protects all routes (including routes added later) with the parameters on this page; OFF leaves protection active only on routes enabled in Route Scope, which use their route-level parameters.",
       "aiRoute": "AI Route",
-      "fallbackSuffix": "fallback"
+      "fallbackSuffix": "fallback",
+      "searchPlaceholder": "Search route name or domain",
+      "filterAll": "All",
+      "filterSelected": "Selected",
+      "filterUnselected": "Unselected",
+      "noMatch": "No matching routes",
+      "pendingChanges": "Pending: add {{add}}, remove {{remove}}. Click \"Save Scope\" to apply."
     },
     "securityGuard": {
-      "detectMode": "Detection Mode",
+      "detectMode": "Detection Engine",
       "textModeration": "Text Moderation (TMP)",
       "multiModalGuard": "Multi-Modal Guard (MMG)",
       "riskThreshold": "Risk Threshold",
@@ -1173,7 +1179,12 @@
       "passed": "Passed",
       "inbound": "Inbound hits",
       "outbound": "Outbound hits"
-    }
+    },
+    "rangeToday": "Today",
+    "rangeWeek": "Last week",
+    "rangeMonth": "Last month",
+    "rangeCustom": "Custom",
+    "rangeWindowHint": "Stats window: {{range}} (KPI and event list share the same source)"
   },
   "complianceKb": {
     "unauthorizedHint": "Compliance lexicon versioning is a separate licensed feature. Current device is unlicensed.",

@@ -790,10 +790,16 @@
       "summary": "已单独启用 {{count}} 条路由",
       "globalSwitchHint": "此开关控制全局层：开启时，所有路由（含未来新增的路由）都按本页参数防护；关闭时，仅在“作用路由”中单独启用的路由仍按路由级参数防护。",
       "aiRoute": "AI路由",
-      "fallbackSuffix": "兜底"
+      "fallbackSuffix": "兜底",
+      "searchPlaceholder": "搜索路由名或域名",
+      "filterAll": "全部",
+      "filterSelected": "已选",
+      "filterUnselected": "未选",
+      "noMatch": "没有匹配的路由",
+      "pendingChanges": "待新增 {{add}} 条、待移除 {{remove}} 条，点击“保存作用范围”后生效"
     },
     "securityGuard": {
-      "detectMode": "检测模式",
+      "detectMode": "检测引擎",
       "textModeration": "文本审核 (TMP)",
       "multiModalGuard": "多模态防护 (MMG)",
       "riskThreshold": "风险等级阈值",
@@ -1172,7 +1178,12 @@
       "passed": "放行",
       "inbound": "请求方向命中",
       "outbound": "响应方向命中"
-    }
+    },
+    "rangeToday": "今天",
+    "rangeWeek": "最近一周",
+    "rangeMonth": "最近一个月",
+    "rangeCustom": "自定义",
+    "rangeWindowHint": "统计窗口：{{range}}（KPI 与事件列表同源同口径）"
   },
   "complianceKb": {
     "unauthorizedHint": "内容合规词库版本管理为独立授权功能位，当前设备未获得授权，仅可查看已激活版本与回滚历史；如需管理词库请联系厂商开通。",

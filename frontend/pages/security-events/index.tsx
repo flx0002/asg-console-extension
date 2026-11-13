@@ -12,7 +12,7 @@
  */
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  Card, Table, Tag, Button, Space, Select, DatePicker, Input, Row, Col, Statistic,
+  Card, Table, Tag, Button, Space, Select, DatePicker, Input, Row, Col, Statistic, Segmented,
   Tooltip, message, Typography, Popconfirm, Drawer, Descriptions,
 } from 'antd';
 import {
@@ -20,10 +20,25 @@ import {
 } from '@ant-design/icons';
 import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
+import moment from 'moment';
 import { getAuditSessions, getAuditLogs } from '@/services/audit-chain-service';
 import { formatEventTime, normalizeDisposition, renderEventDetail } from '@/components/audit-event-format';
 
 const { RangePicker } = DatePicker;
+
+type RangeKey = 'today' | 'week' | 'month' | 'custom';
+const RANGE_DAYS: Record<Exclude<RangeKey, 'custom'>, number> = { today: 1, week: 7, month: 30 };
+
+// 与影子AI 事件页同一套窗口算法：起点对齐浏览器本地零点，终点 = now（滚动窗口）。
+const rangeWindow = (key: Exclude<RangeKey, 'custom'>): { startTime: number; endTime: number } => {
+  const endTime = Date.now();
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (RANGE_DAYS[key] - 1));
+  return { startTime: start.getTime(), endTime };
+};
+const startOfDay = (ms: number): number => new Date(ms).setHours(0, 0, 0, 0);
+const endOfDay = (ms: number): number => new Date(ms).setHours(23, 59, 59, 999);
 
 /**
  * 6 类业务场景（用户 sign-off）：
@@ -100,7 +115,13 @@ const SecurityEventsPage: React.FC = () => {
   const [businessFilter, setBusinessFilter] = useState<string>('all');
   const [directionFilter, setDirectionFilter] = useState<string>('all');
   const [actionFilter, setActionFilter] = useState<string>('all');
-  const [range, setRange] = useState<[any, any] | null>(null);
+  const [rangeKey, setRangeKey] = useState<RangeKey>('today');
+  const [customRange, setCustomRange] = useState<[number, number] | null>(null);
+  // 已确定的查询窗口：今天/本周/本月是滚动窗口（终点=now），自定义区间是固定值。
+  // 刚切到「自定义」还没确定日期时保持上一个窗口不动。
+  const [appliedWindow, setAppliedWindow] = useState<{ key: RangeKey; startTime: number; endTime: number }>(
+    () => ({ key: 'today', ...rangeWindow('today') }),
+  );
   const [keyword, setKeyword] = useState<string>('');
   const [sortOrder, setSortOrder] = useState<'ascend' | 'descend'>('descend');
   const [drawer, setDrawer] = useState<{ open: boolean; row: EventRow | null }>({ open: false, row: null });
@@ -175,17 +196,29 @@ const SecurityEventsPage: React.FC = () => {
 
   useEffect(() => { loadEvents(); }, []);
 
+  const currentWindow = useCallback((): { startTime: number; endTime: number } => {
+    if (appliedWindow.key === 'custom') {
+      return { startTime: appliedWindow.startTime, endTime: appliedWindow.endTime };
+    }
+    return rangeWindow(appliedWindow.key);
+  }, [appliedWindow]);
+
+  const switchTo = useCallback((key: Exclude<RangeKey, 'custom'>) => {
+    setRangeKey(key);
+    setAppliedWindow({ key, ...rangeWindow(key) });
+  }, []);
+
+  // 每次渲染现算（滚动窗口），与影子AI 事件页一致
+  const rangeSummary = `${moment(currentWindow().startTime).format('YYYY-MM-DD HH:mm')} ~ ${moment(currentWindow().endTime).format('YYYY-MM-DD HH:mm')}`;
+
   const filteredSorted = useMemo(() => {
     const kw = keyword.toLowerCase();
+    const win = currentWindow();
     const list = rows.filter((r) => {
       if (businessFilter !== 'all' && r.business !== businessFilter) return false;
       if (directionFilter !== 'all' && r.direction !== directionFilter) return false;
       if (actionFilter !== 'all' && r.action !== actionFilter) return false;
-      if (range && range[0] && range[1]) {
-        const start = range[0].valueOf();
-        const end = range[1].valueOf();
-        if (r.tsMs < start || r.tsMs > end) return false;
-      }
+      if (r.tsMs < win.startTime || r.tsMs > win.endTime) return false;
       if (kw) {
         const hit = [r.sessionId, r.eventType, r.rule, r.snippet, r.sourceIp]
           .some((v) => String(v).toLowerCase().includes(kw));
@@ -195,7 +228,7 @@ const SecurityEventsPage: React.FC = () => {
     });
     list.sort((a, b) => (sortOrder === 'descend' ? b.tsMs - a.tsMs : a.tsMs - b.tsMs));
     return list;
-  }, [rows, businessFilter, directionFilter, actionFilter, range, keyword, sortOrder]);
+  }, [rows, businessFilter, directionFilter, actionFilter, currentWindow, keyword, sortOrder]);
 
   const kpi = useMemo(() => {
     let blocked = 0; let alerted = 0; let passed = 0; let inbound = 0; let outbound = 0;
@@ -331,7 +364,43 @@ const SecurityEventsPage: React.FC = () => {
         title={t('securityEvents.title', '安全事件')}
         style={{ marginBottom: 16 }}
         extra={(
-          <Space>
+          <Space wrap>
+            <Segmented
+              value={rangeKey}
+              onChange={(value) => {
+                const key = value as RangeKey;
+                if (key !== 'custom') {
+                  switchTo(key);
+                  return;
+                }
+                setRangeKey('custom');
+                // 自定义：确定日期前保持上一个窗口；此前已确定过就继续按该区间
+                if (customRange) {
+                  setAppliedWindow({ key: 'custom', startTime: customRange[0], endTime: customRange[1] });
+                }
+              }}
+              options={[
+                { value: 'today', label: t('securityEvents.rangeToday', '今天') },
+                { value: 'week', label: t('securityEvents.rangeWeek', '最近一周') },
+                { value: 'month', label: t('securityEvents.rangeMonth', '最近一个月') },
+                { value: 'custom', label: t('securityEvents.rangeCustom', '自定义') },
+              ]}
+            />
+            {rangeKey === 'custom' ? (
+              <RangePicker
+                allowClear={false}
+                style={{ width: 250 }}
+                value={customRange ? ([moment(customRange[0]), moment(customRange[1])] as any) : null}
+                disabledDate={(d: any) => !!d && startOfDay(d.valueOf()) > startOfDay(Date.now())}
+                onChange={(v: any) => {
+                  if (!v || !v[0] || !v[1]) return;
+                  const start = startOfDay(v[0].valueOf());
+                  const end = endOfDay(v[1].valueOf());
+                  setCustomRange([start, end] as [number, number]);
+                  setAppliedWindow({ key: 'custom', startTime: start, endTime: end });
+                }}
+              />
+            ) : null}
             <Popconfirm
               title={t('securityEvents.refreshConfirm', '重新拉取最新事件？')}
               onConfirm={loadEvents}
@@ -356,6 +425,14 @@ const SecurityEventsPage: React.FC = () => {
           <Col span={4}><Card size="small"><Statistic title={t('securityEvents.kpi.inbound', '请求方向命中')} value={kpi.inbound} /></Card></Col>
           <Col span={4}><Card size="small"><Statistic title={t('securityEvents.kpi.outbound', '响应方向命中')} value={kpi.outbound} /></Card></Col>
         </Row>
+        <div style={{ marginTop: 12 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {t('securityEvents.rangeWindowHint', {
+              defaultValue: '统计窗口：{{range}}（KPI 与事件列表同源同口径）',
+              range: rangeSummary,
+            })}
+          </Typography.Text>
+        </div>
       </Card>
 
       {/* Zone 2: 筛选面板 */}
@@ -379,7 +456,6 @@ const SecurityEventsPage: React.FC = () => {
             style={{ width: 140 }}
             options={ACTION_FILTERS}
           />
-          <RangePicker showTime onChange={(v) => setRange(v as any)} />
           <Input
             placeholder={t('securityEvents.search', '按规则/会话/IP/内容搜索')}
             prefix={<SearchOutlined />}
@@ -393,7 +469,8 @@ const SecurityEventsPage: React.FC = () => {
               setBusinessFilter('all');
               setDirectionFilter('all');
               setActionFilter('all');
-              setRange(null);
+              switchTo('today');
+              setCustomRange(null);
               setKeyword('');
               setSortOrder('descend');
             }}

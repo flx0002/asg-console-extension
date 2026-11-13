@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Card, Button, Tag, Typography, Divider, message, Skeleton, Transfer } from 'antd';
+import { Card, Button, Tag, Typography, Divider, message, Skeleton, Checkbox, Input, Segmented, Space } from 'antd';
+import { SearchOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { updateRoutePluginInstance } from '@/services';
 import request from '@/services/request';
@@ -10,16 +11,6 @@ interface RouteItem {
   // AI 路由自动生成的内部路由，用业务配置名（AI 路由管理页所见）作为友好显示名
   display?: string;
   isAi?: boolean;
-}
-
-// Transfer 数据项：在标准 key/title/description 之外附带内部路由名与标签态，供 render/过滤使用
-interface TransferRoute {
-  key: string;
-  title: string;
-  description: string;
-  name: string;
-  isAi: boolean;
-  configured: boolean;
 }
 
 export interface RouteScope {
@@ -132,20 +123,40 @@ export function useRouteScope(pluginName: string): RouteScope {
   return { routes, bound, selected, loading, saving, setSelected, reload, applyScope };
 }
 
-// 第二区 UI：antd 穿梭框（搜索 + 分页 + 跨页全选 + 已选计数），路由较多时避免全量平铺难检索/易误选
+// 第二区 UI：清单式勾选（搜索 + 全部/已选/未选 + 行内勾选），操作语义直白：
+// 勾选 = 作用路由；保存前用「待新增/待移除」把差异说清楚，再点「保存作用范围」生效。
 export const RouteScopeCard: React.FC<{
   scope: RouteScope;
   getRawConfig: () => string;
 }> = ({ scope, getRawConfig }) => {
   const { t } = useTranslation();
-  const dataSource: TransferRoute[] = scope.routes.map((r) => ({
-    key: r.name,
-    title: r.display || r.name,
-    description: r.desc,
-    name: r.name,
-    isAi: !!r.isAi,
-    configured: scope.bound.includes(r.name),
-  }));
+  const [keyword, setKeyword] = useState('');
+  const [filter, setFilter] = useState<'all' | 'selected' | 'unselected'>('all');
+
+  const kw = keyword.trim().toLowerCase();
+  const visible = scope.routes.filter((r) => {
+    const checked = scope.selected.includes(r.name);
+    if (filter === 'selected' && !checked) return false;
+    if (filter === 'unselected' && checked) return false;
+    if (!kw) return true;
+    return (
+      String(r.display || r.name).toLowerCase().includes(kw)
+      || String(r.desc || '').toLowerCase().includes(kw)
+      || r.name.toLowerCase().includes(kw)
+    );
+  });
+
+  const toggle = (name: string, checked: boolean) => {
+    scope.setSelected(checked
+      ? scope.selected.concat(name)
+      : scope.selected.filter((n) => n !== name));
+  };
+
+  // 待生效差异：勾选态 vs 已生效（bound）态，保存前显式提示，避免“改了没生效”或“以为生效了”
+  const toAdd = scope.selected.filter((n) => !scope.bound.includes(n));
+  const toRemove = scope.bound.filter((n) => !scope.selected.includes(n));
+  const dirty = toAdd.length > 0 || toRemove.length > 0;
+
   return (
     <Card
       title={t('aiContentSec.routeScope.title')}
@@ -164,59 +175,112 @@ export const RouteScopeCard: React.FC<{
         <Skeleton active paragraph={{ rows: 4 }} />
       ) : (
         <>
-          {dataSource.length ? (
-            <Transfer
-              dataSource={dataSource as any}
-              titles={[
-                t('aiContentSec.routeScope.availableTitle', '可选路由'),
-                t('aiContentSec.routeScope.selectedTitle', '已选路由'),
-              ]}
-              operations={[t('aiContentSec.routeScope.opAdd', '添加'), t('aiContentSec.routeScope.opRemove', '移除')]}
-              showSearch
-              filterOption={(input, item) => {
-                const kw = String(input || '').toLowerCase();
-                if (!kw) return true;
-                const r = item as TransferRoute;
-                return (
-                  String(r.title || '').toLowerCase().includes(kw)
-                  || String(r.description || '').toLowerCase().includes(kw)
-                  || String(r.name || '').toLowerCase().includes(kw)
-                );
-              }}
-              render={(item) => {
-                const r = item as TransferRoute;
-                return (
-                  <span>
-                    <span style={{ fontWeight: 500 }}>{r.title}</span>
-                    {r.isAi ? (
-                      <Tag color="blue" style={{ marginLeft: 8 }}>{t('aiContentSec.routeScope.aiRoute')}</Tag>
-                    ) : null}
-                    {r.configured ? (
-                      <Tag color="green" style={{ marginLeft: 8 }}>{t('aiContentSec.routeScope.configured')}</Tag>
-                    ) : null}
-                    {r.description ? (
-                      <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
-                        {r.description}
-                      </Typography.Text>
-                    ) : null}
-                  </span>
-                );
-              }}
-              targetKeys={scope.selected}
-              onChange={(keys) => scope.setSelected(keys as string[])}
-              pagination={{ pageSize: 8 }}
-              listStyle={{ width: 340, height: 360 }}
-              style={{ justifyContent: 'center' }}
-            />
+          {scope.routes.length ? (
+            <>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+                <Input
+                  allowClear
+                  prefix={<SearchOutlined />}
+                  placeholder={t('aiContentSec.routeScope.searchPlaceholder', '搜索路由名或域名')}
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  style={{ width: 260 }}
+                />
+                <Segmented
+                  value={filter}
+                  onChange={(v) => setFilter(v as 'all' | 'selected' | 'unselected')}
+                  options={[
+                    { value: 'all', label: t('aiContentSec.routeScope.filterAll', '全部') },
+                    { value: 'selected', label: t('aiContentSec.routeScope.filterSelected', '已选') },
+                    { value: 'unselected', label: t('aiContentSec.routeScope.filterUnselected', '未选') },
+                  ]}
+                />
+                <Space size={4}>
+                  <Typography.Link
+                    onClick={() => {
+                      const add = visible.map((r) => r.name).filter((n) => !scope.selected.includes(n));
+                      scope.setSelected(scope.selected.concat(add));
+                    }}
+                  >
+                    {t('aiContentSec.routeScope.selectAll', '全选')}
+                  </Typography.Link>
+                  <Typography.Text type="secondary">/</Typography.Text>
+                  <Typography.Link
+                    onClick={() => {
+                      const drop = visible.map((r) => r.name);
+                      scope.setSelected(scope.selected.filter((n) => !drop.includes(n)));
+                    }}
+                  >
+                    {t('aiContentSec.routeScope.clearAll', '全取消')}
+                  </Typography.Link>
+                </Space>
+              </div>
+              <div style={{ border: '1px solid #f0f0f0', borderRadius: 8, maxHeight: 340, overflowY: 'auto' }}>
+                {visible.length ? visible.map((r) => {
+                  const checked = scope.selected.includes(r.name);
+                  const applied = scope.bound.includes(r.name);
+                  return (
+                    <div
+                      key={r.name}
+                      style={{
+                        display: 'flex', alignItems: 'flex-start', gap: 10,
+                        padding: '10px 14px', borderBottom: '1px solid #f5f5f5', background: checked ? '#f6ffed' : undefined,
+                      }}
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onChange={(e) => toggle(r.name, e.target.checked)}
+                        style={{ marginTop: 3 }}
+                      />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 500 }}>{r.display || r.name}</span>
+                          {r.isAi ? (
+                            <Tag color="blue" style={{ marginInlineEnd: 0 }}>{t('aiContentSec.routeScope.aiRoute')}</Tag>
+                          ) : null}
+                          {applied ? (
+                            <Tag color="green" style={{ marginInlineEnd: 0 }}>{t('aiContentSec.routeScope.configured')}</Tag>
+                          ) : null}
+                        </div>
+                        {r.desc ? (
+                          <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: 2 }}>{r.desc}</div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div style={{ padding: 24, textAlign: 'center', color: '#8c8c8c' }}>
+                    {t('aiContentSec.routeScope.noMatch', '没有匹配的路由')}
+                  </div>
+                )}
+              </div>
+              {dirty ? (
+                <div
+                  style={{
+                    marginTop: 10, padding: '8px 12px', fontSize: 12, color: '#874d00',
+                    background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 6,
+                  }}
+                >
+                  {t('aiContentSec.routeScope.pendingChanges', {
+                    defaultValue: '待新增 {{add}} 条、待移除 {{remove}} 条，点击“保存作用范围”后生效',
+                    add: toAdd.length,
+                    remove: toRemove.length,
+                  })}
+                </div>
+              ) : null}
+            </>
           ) : (
             <Typography.Text type="secondary">{t('aiContentSec.routeScope.empty')}</Typography.Text>
           )}
-          <Divider />
-          <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 16 }}>
-            <Typography.Text type="secondary">{t('aiContentSec.routeScope.hint')}</Typography.Text>
+          <Divider style={{ margin: '16px 0 12px' }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {t('aiContentSec.routeScope.hint')}
+            </Typography.Text>
             <Button
               type="primary"
               loading={scope.saving}
+              disabled={!dirty}
               onClick={() => scope.applyScope(getRawConfig())}
             >
               {t('aiContentSec.routeScope.saveScope')}
