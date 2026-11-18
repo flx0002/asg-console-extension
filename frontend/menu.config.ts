@@ -23,7 +23,7 @@ export const asgMenuRoutes: any[] = [
     icon: <EyeOutlined />,
     children: [
       {
-        // 路径必须与 /ai-shadow/events 平级（不能写成 /ai-shadow）：
+        // 路径必须与 /ai-shadow/events 同路径深度（不能写成 /ai-shadow）：
         // 侧栏高亮按 path 前缀匹配，父路径会与子路径同时命中，两个菜单项一起亮。
         name: 'menu.aiShadowConfig',
         path: '/ai-shadow/config',
@@ -31,11 +31,6 @@ export const asgMenuRoutes: any[] = [
       {
         name: 'menu.aiKb',
         path: '/ai-kb',
-      },
-      {
-        // 发现出来的东西单独一页：配置页只管「怎么判定」和「发现之后怎么办」。
-        name: 'menu.aiShadowEvents',
-        path: '/ai-shadow/events',
       },
     ],
   },
@@ -85,12 +80,13 @@ export const asgMenuRoutes: any[] = [
     icon: <FileSearchOutlined />,
     children: [
       {
-        name: 'menu.logsAuditChainLogs',
-        path: '/audit-chain/audit-logs',
+        // 影子AI事件属可审计事件流，归「日志与审计」首位；页面与路径不变。
+        name: 'menu.aiShadowEvents',
+        path: '/ai-shadow/events',
       },
       {
-        name: 'menu.logsAdminOperations',
-        path: '/audit-chain/admin-operations',
+        name: 'menu.logsAuditChainLogs',
+        path: '/audit-chain/audit-logs',
       },
       {
         name: 'menu.logsAuditChainTracking',
@@ -100,6 +96,10 @@ export const asgMenuRoutes: any[] = [
         name: 'menu.logsSecurityEvents',
         path: '/security-events',
         icon: <AlertOutlined />,
+      },
+      {
+        name: 'menu.logsAdminOperations',
+        path: '/audit-chain/admin-operations',
       },
     ],
   },
