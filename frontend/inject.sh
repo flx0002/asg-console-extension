@@ -226,7 +226,7 @@ else:
     print('  SKIP: no legacy configVersion top-level block')
 
 # b. systemSettings 叶子项 → 加 children（幂等；首个子项保留原系统设置页面入口，
-#    ProLayout 父项带 children 后仅展开不跳转，必须显式保留 /system 子项）
+#    ProLayout 父项带 children 后仅展开不跳转，必须显式保留 /system 子项；注意 2c2 默认隐藏该子项，届时 /system 仅 URL 直达，恢复入口=从 2c2 清单移除）
 LEAF = """      {
         name: 'menu.systemSettings',
         path: '/system',
@@ -269,6 +269,257 @@ if changed:
 PYEOF
 
 echo
+echo "=== 2c. 菜单裁剪（ASG 定制清单，与 baseline 解耦）==="
+# 只隐藏侧栏入口：不删块、不删路由，页面仍可通过 URL 与页面内跳转访问（layout.tsx menuDataRender 过滤）。
+# 清单只在此处维护：从 upstream 刷新 _defaultProps.baseline.tsx 后无需重打标；
+# 上游新增菜单不必加入本清单；只有列出的菜单被删掉或改名（上游或 menu.config.ts）才需同步更新。
+# 匹配 8 空格缩进的顶级块（name/path/icon）；每项都做硬校验，缺失、重复、
+# icon 不唯一或字段落点不对一律中止构建，杜绝「静默回滚」。
+HIDDEN_MENUS=(
+  menu.serviceSources
+  menu.serviceList
+  menu.routeConfig
+  menu.domainManagement
+  menu.certManagement
+  menu.aiAgentGuard
+  menu.behaviorAnalysis
+)
+python3 - "$SRC/pages/_defaultProps.tsx" "${HIDDEN_MENUS[@]}" <<'PYEOF_CULL'
+import sys
+p = sys.argv[1]
+keys = sys.argv[2:]
+def own(seg):
+    for x, l in enumerate(seg):
+        if l.strip() == 'children: [':
+            return seg[:x]
+    return seg
+assert keys, 'HIDDEN_MENUS is empty'
+lines = open(p, encoding='utf-8').read().split('\n')
+ins = []
+for key in keys:
+    needle = "        name: '" + key + "',"
+    hits = [i for i, l in enumerate(lines) if l == needle]
+    assert len(hits) == 1, 'menu not found or duplicated: ' + key
+    i = hits[0]
+    j = i + 1
+    while j < len(lines) and lines[j] != '      },':
+        j += 1
+    assert j < len(lines), 'block end not found: ' + key
+    block = lines[i:j]
+    if any('hideFromMenu: true' in l for l in own(block)):
+        print('  SKIP already hidden:', key)
+        continue
+    icon_lines = [x for x, l in enumerate(block) if l.startswith('        icon:')]
+    assert len(icon_lines) == 1, 'icon line not found or not unique: ' + key
+    ins.append((i + icon_lines[0] + 1, '        hideFromMenu: true,'))
+for pos, text in sorted(ins, reverse=True):
+    lines.insert(pos, text)
+out = '\n'.join(lines)
+check = out.split('\n')
+for key in keys:
+    i = check.index("        name: '" + key + "',")
+    j = i + 1
+    while j < len(check) and check[j] != '      },':
+        j += 1
+    assert j < len(check), 'block end not found in verify: ' + key
+    assert any('hideFromMenu: true' in l for l in own(check[i:j])), 'hide not applied in block: ' + key
+orphans = [n + 1 for n, l in enumerate(check)
+           if l.strip() == 'hideFromMenu: true,' and n > 0 and check[n-1].strip() == '},']
+assert not orphans, 'orphan hideFromMenu lines: ' + str(orphans)
+open(p, 'w', encoding='utf-8').write(out)
+print('  OK hidden %d menus: %s' % (len(keys), ', '.join(keys)))
+PYEOF_CULL
+echo
+echo "=== 2c2. 子菜单裁剪（children 项，12 空格缩进；与顶级块同名 key 靠缩进区分）==="
+# 只隐藏侧栏子项入口；父菜单与路由保留（layout.tsx menuDataRender 递归过滤 hideFromMenu）。
+# 隐藏 menu.systemSettings 子项后侧栏将无 /system 入口（父项带 children 仅展开不跳转），
+# URL 直达保留，属有意下架；恢复入口=从本清单移除该项。
+# 注意：menu.systemSettings 父子同名同 key，本清单按 12 空格 name 行精确匹配，只会命中子项。
+# 上游/menu.config.ts 删掉或改名这里列出的子菜单才需同步更新；缺失、重复、icon 不唯一或
+# 字段落点不对一律中止构建，杜绝「静默回滚」。
+HIDDEN_SUBMENUS=(
+  menu.systemSettings
+  menu.logsAuditChainLogs
+  menu.logsAuditChainTracking
+)
+python3 - "$SRC/pages/_defaultProps.tsx" "${HIDDEN_SUBMENUS[@]}" <<'PYEOF_CULL_SUB'
+import sys
+p = sys.argv[1]
+keys = sys.argv[2:]
+def own(seg):
+    for x, l in enumerate(seg):
+        if l.strip() == 'children: [':
+            return seg[:x]
+    return seg
+assert keys, 'HIDDEN_SUBMENUS is empty'
+NAME = '            '
+END = '          },'
+lines = open(p, encoding='utf-8').read().split('\n')
+ins = []
+for key in keys:
+    needle = NAME + "name: '" + key + "',"
+    hits = [i for i, l in enumerate(lines) if l == needle]
+    assert len(hits) == 1, 'submenu not found or duplicated: ' + key
+    i = hits[0]
+    j = i + 1
+    while j < len(lines) and lines[j] != END:
+        j += 1
+    assert j < len(lines), 'submenu block end not found: ' + key
+    block = lines[i:j]
+    if any('hideFromMenu: true' in l for l in own(block)):
+        print('  SKIP already hidden:', key)
+        continue
+    icon_lines = [x for x, l in enumerate(block) if l.startswith(NAME + 'icon:')]
+    assert len(icon_lines) <= 1, 'submenu icon not unique: ' + key
+    at = (i + icon_lines[0] + 1) if icon_lines else (i + 1)
+    ins.append((at, NAME + 'hideFromMenu: true,'))
+for pos, text in sorted(ins, reverse=True):
+    lines.insert(pos, text)
+out = '\n'.join(lines)
+check = out.split('\n')
+for key in keys:
+    i = check.index(NAME + "name: '" + key + "',")
+    j = i + 1
+    while j < len(check) and check[j] != END:
+        j += 1
+    assert j < len(check), 'submenu block end not found in verify: ' + key
+    assert any('hideFromMenu: true' in l for l in own(check[i:j])), 'submenu hide not applied: ' + key
+orphans = [n + 1 for n, l in enumerate(check)
+           if l.strip() == 'hideFromMenu: true,' and n > 0 and check[n-1].strip() == '},']
+assert not orphans, 'orphan hideFromMenu lines: ' + str(orphans)
+open(p, 'w', encoding='utf-8').write(out)
+print('  OK hidden %d submenus: %s' % (len(keys), ', '.join(keys)))
+PYEOF_CULL_SUB
+echo
+
+echo "=== 2d. AI路由管理页使用说明（route.tsx 注入说明条 + aiRoute.usageHint* i18n，幂等）==="
+# route.tsx 是 2 号仓上游页面，按 patch-topbar/brand.patch 既有机制由本脚本构建期注入说明条，
+# 改动源留在 3 号仓；i18n 键同 4b 约定直接写 fork translation.json（EXT locales 勿定义同名键）。
+# 锚点失配即中止构建，杜绝「静默失效」。
+for LOC in zh-CN en-US; do
+  node - "$SRC/locales/$LOC/translation.json" "$LOC" <<'PYEOF_HINT_I18N'
+const fs = require('fs');
+const [target, locale] = process.argv.slice(2);
+const cur = JSON.parse(fs.readFileSync(target, 'utf8'));
+if (typeof cur.aiRoute !== 'object' || cur.aiRoute === null) cur.aiRoute = {};
+const add = locale === 'zh-CN'
+  ? {
+      usageHintTitle: '使用说明',
+      usageHint: 'AI 路由把发送到网关的 AI 请求按域名、路径或模型转发到后端 AI 服务。使用步骤：1）在「AI网关管理 › AI服务提供者管理」添加 AI 服务提供者；2）点击「创建AI路由」，填写名称、目标 AI 服务与匹配规则；3）需要访问控制时启用「请求认证」并绑定消费者；4）创建完成后点击列表中的「使用方法」查看调用命令。',
+    }
+  : {
+      usageHintTitle: 'How to use',
+      usageHint: 'AI routes forward AI requests hitting the gateway to backend AI services by domain, path or model. Steps: 1) Add an LLM provider under AI Gateway Config > LLM Provider Management; 2) Click "Create AI Route" and fill in the name, target AI service and match rules; 3) Enable request authentication and bind consumers for access control; 4) Click "Usage" in the list to view a sample request command.',
+    };
+let changed = false;
+for (const [k, v] of Object.entries(add)) {
+  if (cur.aiRoute[k] !== v) { cur.aiRoute[k] = v; changed = true; }
+}
+if (changed) {
+  fs.writeFileSync(target, JSON.stringify(cur, null, 2) + '\n');
+  console.log('  aiRoute.usageHint* set (' + locale + ')');
+} else {
+  console.log('  SKIP i18n already present (' + locale + ')');
+}
+PYEOF_HINT_I18N
+done
+python3 - "$SRC/pages/ai/route.tsx" <<'PYEOF_HINT_PATCH'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+if 'aiRoute.usageHintTitle' in s:
+    print('  SKIP route.tsx already patched')
+    sys.exit(0)
+old_import = "import { Button, Col, Drawer, Form, FormProps, Input, message, Modal, Row, Select, Space, Table } from 'antd';"
+new_import = "import { Alert, Button, Col, Drawer, Form, FormProps, Input, message, Modal, Row, Select, Space, Table } from 'antd';"
+assert s.count(old_import) == 1, 'antd import line not found or not unique'
+s = s.replace(old_import, new_import, 1)
+anchor = "    <PageContainer>\n      <Form"
+assert s.count(anchor) == 1, 'PageContainer>Form anchor not found or not unique'
+hint = "    <PageContainer>\n      <Alert\n        type=\"info\"\n        showIcon\n        style={{ marginBottom: 16 }}\n        message={t('aiRoute.usageHintTitle')}\n        description={t('aiRoute.usageHint')}\n      />\n      <Form"
+s = s.replace(anchor, hint, 1)
+assert 'Alert, Button, Col, Drawer' in s, 'Alert import not applied'
+assert s.count('<Alert') == 1, 'Alert block not applied'
+assert s.count("t('aiRoute.usageHintTitle')") == 1, 'hint title ref wrong'
+assert s.count("t('aiRoute.usageHint')") == 1, 'hint desc ref wrong'
+open(p, 'w', encoding='utf-8').write(s)
+print('  OK route.tsx patched: Alert usage hint injected')
+PYEOF_HINT_PATCH
+echo
+
+echo "=== 2e. 监控菜单指向自建中文页（menu.dashboard / menu.aiDashboard，幂等）==="
+# 上游 /dashboard 与 /ai/dashboard 是 Grafana iframe 页：英文 + Higress 品牌，
+# 且模板每次启动会被 2 号仓按 title 覆盖，无法在不改禁改仓的前提下汉化。
+# 改为指向 3 号仓自建中文页；path 是菜单匹配主键，锚点失配即中止构建。
+python3 - "$SRC/pages/_defaultProps.tsx" <<'PYEOF_DASH_REDIR'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8').read()
+pairs = [
+    ("        name: 'menu.dashboard',\n        path: '/dashboard',",
+     "        name: 'menu.dashboard',\n        path: '/ai-dashboard',"),
+    ("            name: 'menu.aiDashboard',\n            path: '/ai/dashboard',",
+     "            name: 'menu.aiDashboard',\n            path: '/ai-dashboard/detail',"),
+]
+changed = 0
+for old, new in pairs:
+    cnt = s.count(old)
+    if cnt == 0:
+        if new in s:
+            continue
+        raise SystemExit('FATAL: menu path anchor not found: ' + old[:60].replace(chr(10), '|'))
+    assert cnt == 1, 'menu path anchor not unique: ' + old[:60].replace(chr(10), '|')
+    s = s.replace(old, new, 1)
+    changed += 1
+assert "path: '/ai-dashboard'," in s, 'main dashboard path not set'
+assert "path: '/ai-dashboard/detail'," in s, 'ai dashboard path not set'
+open(p, 'w', encoding='utf-8').write(s)
+print('  OK redirected %d dashboard menus to self-built pages' % changed)
+PYEOF_DASH_REDIR
+echo
+
+echo "=== 2f. 隐藏 AI 监控面板菜单项（menu.aiDashboard，幂等）==="
+# 背景：监控面板已升级为全量（含 Token 指标），两页内容重复，AI 面板菜单暂隐藏。
+# 只隐藏侧栏入口，不删块、不删路由：/ai-dashboard/detail 仍可通过 URL 直达。
+# ⚠ 必须放在 2e 之后：2e 的 path 重定向锚点要求 name/path 连续两行；
+#   若先插入 hideFromMenu 会让锚点失配、构建中止。恢复入口 = 从本段移除（或改回不插入）。
+python3 - "$SRC/pages/_defaultProps.tsx" <<'PYEOF_HIDE_AI_DASH'
+import sys
+p = sys.argv[1]
+NAME = '            '
+END = '          },'
+needle = NAME + "name: 'menu.aiDashboard',"
+lines = open(p, encoding='utf-8').read().split('\n')
+hits = [i for i, l in enumerate(lines) if l == needle]
+assert len(hits) == 1, 'aiDashboard submenu not found or duplicated: ' + str(hits)
+i = hits[0]
+j = i + 1
+while j < len(lines) and lines[j] != END:
+    j += 1
+assert j < len(lines), 'aiDashboard submenu block end not found'
+block = lines[i:j]
+if any('hideFromMenu: true' in l for l in block):
+    print('  SKIP aiDashboard already hidden')
+    sys.exit(0)
+icons = [x for x, l in enumerate(block) if l.startswith(NAME + 'icon:')]
+assert len(icons) <= 1, 'aiDashboard icon not unique'
+at = (i + icons[0] + 1) if icons else (i + 1)
+lines.insert(at, NAME + 'hideFromMenu: true,')
+out = '\n'.join(lines)
+check = out.split('\n')
+ci = check.index(needle)
+cj = ci + 1
+while cj < len(check) and check[cj] != END:
+    cj += 1
+assert cj < len(check), 'verify: aiDashboard block end not found'
+assert any('hideFromMenu: true' in l for l in check[ci:cj]), 'verify: hide not applied'
+orphans = [n + 1 for n, l in enumerate(check)
+           if l.strip() == 'hideFromMenu: true,' and n > 0 and check[n-1].strip() == '},']
+assert not orphans, 'orphan hideFromMenu lines: ' + str(orphans)
+open(p, 'w', encoding='utf-8').write(out)
+print('  OK hidden submenu: menu.aiDashboard')
+PYEOF_HIDE_AI_DASH
+echo
 echo "=== 3. services/index.ts 追加 export（幂等）==="
 python3 - "$SRC/services/index.ts" <<'PYEOF'
 import sys
@@ -276,6 +527,7 @@ p = sys.argv[1]
 s = open(p, encoding='utf-8').read()
 exports = [
     "export * from './ai-shadow';",
+    "export * from './ai-dashboard';",
       "export * from './ai-kb';",
     "export * from './agent-guard';",
     "export * from './audit-chain-service';",
