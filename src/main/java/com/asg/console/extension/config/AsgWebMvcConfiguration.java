@@ -8,20 +8,29 @@
  */
 package com.asg.console.extension.config;
 
+import org.springframework.beans.BeansException;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import com.asg.console.extension.service.AuditChainService;
+import com.asg.console.extension.util.AdminOperatorResolver;
 
-/** Registers the console-wide admin-operation audit interceptor. */
+/** Registers the console-wide admin-operation audit interceptor and wires the operator resolver. */
 @Configuration
-public class AsgWebMvcConfiguration implements WebMvcConfigurer {
+public class AsgWebMvcConfiguration implements WebMvcConfigurer, ApplicationContextAware {
 
     private final AuditChainService auditChainService;
 
     public AsgWebMvcConfiguration(AuditChainService auditChainService) {
         this.auditChainService = auditChainService;
+    }
+
+    @Override
+    public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+        AdminOperatorResolver.setApplicationContext(applicationContext);
     }
 
     @Override

@@ -73,6 +73,7 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.asg.console.extension.context.HttpContext;
+import com.asg.console.extension.util.AdminOperatorResolver;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -1690,6 +1691,10 @@ public class AiShadowServiceImpl implements AiShadowService {
             entry.put("identity_trusted", true);
             entry.put("user_id", operator);
             entry.put("user_name", operator);
+            String clientIp = com.asg.console.extension.util.AdminOperatorResolver.currentClientIp();
+            if (StringUtils.isNotEmpty(clientIp)) {
+                entry.put("client_ip", clientIp);
+            }
             entry.put("action", action);
             entry.put("source", "ai_shadow_console");
             if (StringUtils.isNotEmpty(routeName)) {
@@ -1715,20 +1720,7 @@ public class AiShadowServiceImpl implements AiShadowService {
      * Basic auth header username, falling back to {@link #OPERATOR_CONSOLE}.
      */
     private static String resolveOperator() {
-        try {
-            HttpContext context = HttpContext.getCurrent();
-            if (context != null && context.getRequest() != null) {
-                String auth = context.getRequest().getHeader("Authorization");
-                if (StringUtils.isNotBlank(auth) && auth.startsWith("Basic ")) {
-                    String decoded = new String(Base64.getDecoder().decode(auth.substring(6)), StandardCharsets.UTF_8);
-                    int separator = decoded.indexOf(':');
-                    return separator > 0 ? decoded.substring(0, separator) : decoded;
-                }
-            }
-        } catch (Exception e) {
-            log.debug("Failed to resolve operator identity, falling back to {}", OPERATOR_CONSOLE, e);
-        }
-        return OPERATOR_CONSOLE;
+        return com.asg.console.extension.util.AdminOperatorResolver.resolve();
     }
 
     private static String getCategoryLabel(String category) {

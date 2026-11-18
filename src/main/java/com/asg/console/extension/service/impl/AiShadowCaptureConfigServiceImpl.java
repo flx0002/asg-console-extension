@@ -156,13 +156,18 @@ public class AiShadowCaptureConfigServiceImpl implements AiShadowCaptureConfigSe
             entry.put("record_types", Collections.singletonList("admin_operation"));
             entry.put("blocked", false);
             entry.put("identity_trusted", true);
-            entry.put("user_id", "console");
-            entry.put("user_name", "console");
+            String operator = com.asg.console.extension.util.AdminOperatorResolver.resolve();
+            entry.put("user_id", operator);
+            entry.put("user_name", operator);
+            String clientIp = com.asg.console.extension.util.AdminOperatorResolver.currentClientIp();
+            if (org.apache.commons.lang3.StringUtils.isNotEmpty(clientIp)) {
+                entry.put("client_ip", clientIp);
+            }
             entry.put("action", "set_capture_config");
             entry.put("source", "ai_shadow_console");
             entry.put("consumer_name", interfaces == null ? "" : interfaces);
             entry.put("detail", "controls=" + (controls == null ? "" : controls));
-            auditChainService.writeAuditLog(entry.toJSONString(), eventId, "admin_ops", timestampMs, "console", true,
+            auditChainService.writeAuditLog(entry.toJSONString(), eventId, "admin_ops", timestampMs, operator, true,
                 null);
             com.asg.console.extension.config.AdminOperationAuditInterceptor.markWritten();
         } catch (Exception e) {

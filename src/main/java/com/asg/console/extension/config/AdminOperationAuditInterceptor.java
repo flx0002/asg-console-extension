@@ -8,8 +8,6 @@
  */
 package com.asg.console.extension.config;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.UUID;
 
@@ -25,6 +23,7 @@ import org.springframework.web.servlet.HandlerInterceptor;
 
 import com.alibaba.fastjson.JSONObject;
 import com.asg.console.extension.service.AuditChainService;
+import com.asg.console.extension.util.AdminOperatorResolver;
 
 /**
  * Fallback audit for every console write operation and export action.
@@ -42,6 +41,7 @@ public class AdminOperationAuditInterceptor implements HandlerInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(AdminOperationAuditInterceptor.class);
     private static final String WRITTEN_ATTR = "asg.adminAuditWritten";
+    private static final String OPERATOR_ATTR = "asg.adminAuditOperator";
     private static final String ADMIN_SESSION = "admin_ops";
     private static final String RECORD_TYPE = "admin_operation";
     private static final String OPERATOR_CONSOLE = "console";
@@ -62,6 +62,21 @@ public class AdminOperationAuditInterceptor implements HandlerInterceptor {
         }
     }
 
+    /**
+     * Cache the operator identity while the security context is still live. The container
+     * clears it before {@code afterCompletion} on some auth setups, so resolve once here.
+     */
+    @Override
+    public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+        String path = request.getRequestURI();
+        // Data-plane batch upload is high-frequency and never audited; skip the identity lookup.
+        if (path != null && path.startsWith(DATA_PLANE_REPORT_PATH)) {
+            return true;
+        }
+        request.setAttribute(OPERATOR_ATTR, resolveOperator(request));
+        return true;
+    }
+
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response,
         Object handler, Exception ex) {
@@ -78,7 +93,7 @@ public class AdminOperationAuditInterceptor implements HandlerInterceptor {
         try {
             long timestampMs = System.currentTimeMillis();
             String eventId = timestampMs + "-" + UUID.randomUUID().toString().replace("-", "").substring(0, 6);
-            String operator = resolveOperator(request);
+            String operator = operatorOf(request);
             JSONObject entry = new JSONObject();
             entry.put("event_id", eventId);
             entry.put("timestamp_ms", timestampMs);
@@ -93,6 +108,17 @@ public class AdminOperationAuditInterceptor implements HandlerInterceptor {
             entry.put("http_method", method);
             entry.put("http_path", path);
             entry.put("http_status", response.getStatus());
+            // Only a compact front-end summary is captured for plugin config saves.
+            // The request body itself is still never read (no wrapping filter).
+            String auditSummary = request.getHeader("X-Asg-Audit-Summary");
+            if (auditSummary != null && !auditSummary.isEmpty()) {
+                try {
+                    String detail = java.net.URLDecoder.decode(auditSummary, "UTF-8");
+                    entry.put("detail", detail.length() > 200 ? detail.substring(0, 200) : detail);
+                } catch (Exception e) {
+                    log.debug("Failed to decode audit summary header", e);
+                }
+            }
             // X-Forwarded-For is caller-controlled; keep the socket address as the
             // auditable client_ip and store the header separately for reference only.
             entry.put("client_ip", request.getRemoteAddr());
@@ -114,24 +140,24 @@ public class AdminOperationAuditInterceptor implements HandlerInterceptor {
         }
     }
 
+    private static String operatorOf(HttpServletRequest request) {
+        Object cached = request.getAttribute(OPERATOR_ATTR);
+        if (cached instanceof String && !((String) cached).isEmpty()) {
+            return (String) cached;
+        }
+        return AdminOperatorResolver.resolve(request);
+    }
+
     private static boolean isWritten(HttpServletRequest request) {
         return Boolean.TRUE.equals(request.getAttribute(WRITTEN_ATTR));
     }
 
-    /** Same identity source as AiShadowServiceImpl.resolveOperator: Basic auth user, else console. */
+    /**
+     * Operator identity via {@link AdminOperatorResolver}: session cookie (front-end login),
+     * Basic auth (curl / API), then {@code console} as last resort.
+     */
     private static String resolveOperator(HttpServletRequest request) {
-        try {
-            String auth = request.getHeader("Authorization");
-            if (auth != null && auth.startsWith("Basic ")) {
-                String decoded = new String(Base64.getDecoder().decode(auth.substring(6)), StandardCharsets.UTF_8);
-                int separator = decoded.indexOf(':');
-                String user = separator > 0 ? decoded.substring(0, separator) : decoded;
-                return user.isEmpty() ? OPERATOR_CONSOLE : user;
-            }
-        } catch (Exception e) {
-            log.debug("Failed to resolve operator identity", e);
-        }
-        return OPERATOR_CONSOLE;
+        return AdminOperatorResolver.resolve(request);
     }
 
 }

@@ -319,7 +319,7 @@ public class AgentAuditPersistenceService implements AuditLogSink {
             item.put("clientIp", rawField(rawObj, "client_ip"));
             item.put("httpStatus", rawField(rawObj, "http_status"));
             item.put("source", rawField(rawObj, "source"));
-            item.put("rawJson", raw);
+            item.put("rawJson", sanitizeRaw(raw));
             items.add(item);
         }
         Map<String, Object> result = new LinkedHashMap<>();
@@ -337,6 +337,32 @@ public class AgentAuditPersistenceService implements AuditLogSink {
             return JSON.parseObject(raw);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * raw_json is handed to both the list API and the JSON export, so strip fields that must
+     * not leave the server: query_string may carry tokens / search keywords, error leaks the
+     * exception class (tech stack), forwarded_for is caller-controlled. Keep the fields the
+     * detail view needs (http_method / http_path / event_id / route_name / consumer_name /
+     * mode / detail). Storage keeps the full record for accountability.
+     */
+    private static String sanitizeRaw(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return raw;
+        }
+        try {
+            JSONObject obj = JSON.parseObject(raw);
+            if (obj == null) {
+                return raw;
+            }
+            obj.remove("query_string");
+            obj.remove("error");
+            obj.remove("forwarded_for");
+            return obj.toJSONString();
+        } catch (Exception e) {
+            // Unparseable raw is returned as-is rather than dropped, so audit data is not lost.
+            return raw;
         }
     }
 
