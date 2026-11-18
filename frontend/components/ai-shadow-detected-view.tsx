@@ -11,13 +11,13 @@ const pad2 = (n: number): string => (n < 10 ? `0${n}` : String(n));
 
 // 输入的域名先归一：去掉协议、路径、端口和通配前缀，否则同一域名会以多种写法进清单，
 // 之后清理时谁也说不清哪一条才是「有效的那条」。
-const normalizeAuthzInput = (raw: string): string => raw.trim().toLowerCase()
+export const normalizeAuthzInput = (raw: string): string => raw.trim().toLowerCase()
   .replace(/^https?:\/\//, '')
   .replace(/\/.*$/, '')
   .replace(/:\d+$/, '')
   .replace(/^\*\.?/, '');
 
-const isPlausibleDomain = (value: string): boolean => value.length > 0 && value.length <= 255
+export const isPlausibleDomain = (value: string): boolean => value.length > 0 && value.length <= 255
   && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(value);
 
 const formatDateTime = (ms?: number): string => {
@@ -198,6 +198,13 @@ const AiShadowBasicTrafficPage: React.FC<{ enabled?: boolean }> = ({ enabled }) 
 
   return (
     <Card size="small" loading={loading && !data}>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('aiShadow.whitelistIntroTitle')}
+        description={t('aiShadow.whitelistIntro')}
+      />
       <Space style={{ marginBottom: 12 }} wrap>
         <Input
           style={{ width: 320 }}
@@ -222,8 +229,6 @@ const AiShadowBasicTrafficPage: React.FC<{ enabled?: boolean }> = ({ enabled }) 
           {t('aiShadow.authzBatchDeauthz', { count: selected.length })}
         </Button>
         <Button icon={<ReloadOutlined />} onClick={refresh}>{t('aiShadow.refresh')}</Button>
-        {/* 页面上唯一的一句规则说明：它定义的是「漏配会发生什么」，删了会让人不知道后果。 */}
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#8c8c8c' }}>{t('aiShadow.basicTrafficRule')}</span>
       </Space>
 
       {error ? (

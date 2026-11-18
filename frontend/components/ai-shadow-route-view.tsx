@@ -11,6 +11,8 @@ import type { AiShadowStatus } from '@/interfaces/ai-shadow';
 interface AiShadowRouteAdmissionProps {
   /** 影子AI总开关。关闭时授权按钮不可点，避免在功能停用期间改动准入名单。 */
   enabled?: boolean;
+  /** 事件页「授权调用方」带过来的命中依据（host=/reason=/model=…），只作提示，不是路由名。 */
+  focusHint?: string;
 }
 
 /**
@@ -19,8 +21,10 @@ interface AiShadowRouteAdmissionProps {
  * <p>这里只回答「谁被允许」——允许名单为空即默认拒绝。发现出来的准入违规在
  * 「影子AI事件」里看，处置方式是全局的（在配置页顶部），所以本页不做任何观测与开关。
  */
-const AiShadowRouteAdmissionPage: React.FC<AiShadowRouteAdmissionProps> = ({ enabled = true }) => {
+const AiShadowRouteAdmissionPage: React.FC<AiShadowRouteAdmissionProps> = ({ enabled = true, focusHint = '' }) => {
   const { t } = useTranslation();
+  // 事件里的命中依据不是 routeName。拿它预填搜索框会把整张表过滤成空表，
+  // 用户会以为「授权调用方」是坏链接，所以搜索框恒为空。
   const [keyword, setKeyword] = useState('');
   const [filter, setFilter] = useState<'all' | 'deny'>('all');
   const [drawerRow, setDrawerRow] = useState<AiShadowStatus | null>(null);
@@ -128,6 +132,21 @@ const AiShadowRouteAdmissionPage: React.FC<AiShadowRouteAdmissionProps> = ({ ena
 
   return (
     <Card size="small" loading={loading && !statusList}>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('aiShadow.routeIntroTitle')}
+        description={t('aiShadow.routeIntro')}
+      />
+      {focusHint ? (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('aiShadow.routeFocusHint', { route: focusHint })}
+        />
+      ) : null}
       <Space style={{ marginBottom: 12 }} wrap>
         <Input
           allowClear
@@ -147,8 +166,6 @@ const AiShadowRouteAdmissionPage: React.FC<AiShadowRouteAdmissionProps> = ({ ena
         <Button icon={<ReloadOutlined />} onClick={() => { refresh(); refreshConsumers(); }}>
           {t('aiShadow.refresh')}
         </Button>
-        {/* 与基础流量页对称的那一行规则：它定义的是「漏配会发生什么」。 */}
-        <span style={{ marginLeft: 'auto', fontSize: 12, color: '#8c8c8c' }}>{t('aiShadow.routeAdmissionRule')}</span>
       </Space>
 
       {error ? (

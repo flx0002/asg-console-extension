@@ -41,8 +41,15 @@ export const getAiShadowDetectMode = (): Promise<string> => {
   return request.get<any, string>('/v1/ai-shadow/detect-mode');
 };
 
-export const getAiShadowEnabled = (): Promise<boolean> => {
-  return request.get<any, boolean>('/v1/ai-shadow/enabled');
+export const getAiShadowEnabled = async (): Promise<boolean> => {
+  const res = await request.get<any, any>('/v1/ai-shadow/enabled');
+  // 现网返回裸布尔值；响应拦截器只在 data 为真值时解包，所以后端若改回
+  // {success:true,data:false}，关闭态会连包装体一起交给调用方，必须认出来。
+  if (typeof res === 'boolean') return res;
+  if (res && typeof res === 'object' && typeof res.data === 'boolean') return res.data;
+  // 其余形态（错误页 HTML、异常包装、字段被改名）一律当读取失败抛出：
+  // 静默按「开启」处理会让界面显示运行中、并把停用期间的白名单写操作放过去。
+  throw new Error('unexpected /v1/ai-shadow/enabled response');
 };
 
 export const setAiShadowEnabled = (enabled: boolean): Promise<boolean> => {

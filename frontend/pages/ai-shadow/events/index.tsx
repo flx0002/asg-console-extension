@@ -1,7 +1,7 @@
 /* eslint-disable max-len, no-nested-ternary, @typescript-eslint/indent, react/jsx-indent */
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Alert, Button, Card, Col, DatePicker, Empty, Input, Row, Segmented, Select, Space, Table, Tag, Tooltip,
+  Alert, Button, Card, Col, DatePicker, Empty, Input, Modal, Row, Segmented, Select, Space, Table, Tag, Tooltip,
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -11,11 +11,13 @@ import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
 import moment from 'moment';
 import {
-  getAiConsumerUsage, getAiShadowDetectEvents, getAiShadowDetectedStats, getAiShadowDetectedTrend,
-  getAiShadowStatus,
+  getAiConsumerUsage, getAiShadowAuthorizedDomains, getAiShadowCaptureConfig, getAiShadowCaptureNics,
+  getAiShadowDetectEvents, getAiShadowDetectMode, getAiShadowDetectedStats, getAiShadowDetectedTrend,
+  getAiShadowEnabled, getAiShadowStatus, updateAiShadowAuthorizedDomains,
 } from '@/services';
 import type { AiConsumerUsage, AiShadowDetectEvent, AiShadowTrendResponse } from '@/interfaces/ai-shadow';
 import { eventReasonLabel, formatEventTime, renderEventDetail } from '@/components/ai-shadow-events';
+import { isPlausibleDomain, normalizeAuthzInput } from '@/components/ai-shadow-detected-view';
 
 const REFRESH_INTERVAL = 30000;
 const DEFAULT_PAGE_SIZE = 20;
@@ -62,6 +64,25 @@ interface TrendRow {
   count: number;
 }
 
+type DiagState = 'ok' | 'warn' | 'bad';
+interface DiagRow {
+  state: DiagState;
+  name: string;
+  text: string;
+  actionText?: string;
+  onAction?: () => void;
+}
+
+// 接口失败与「没有配置」必须分开：失败时返回 ok=false，自检据此标「读取失败」，
+// 不能把一次请求错误读成「没开 / 没配」。
+const probe = async <T,>(promise: Promise<T>): Promise<{ ok: boolean; value?: T }> => {
+  try {
+    return { ok: true, value: await promise };
+  } catch {
+    return { ok: false };
+  }
+};
+
 // 图表组件单独拎出来并 memo：父组件每 30 秒轮询一次都会重渲染，
 // 若它跟着重渲染，G2 会重新挂载并重放一次入场动画，用户眼前那根柱子在原地闪。
 // 只有 data 真的变了（trendRows 换引用）才需要重画。
@@ -87,26 +108,33 @@ const AiShadowEventsPage: React.FC = () => {
   const [page, setPage] = useState(0);
   const [size, setSize] = useState(DEFAULT_PAGE_SIZE);
 
-  const windowKey = range === 'custom'
-    ? `custom:${customRange?.[0] ?? 0}:${customRange?.[1] ?? 0}`
-    : range;
+  // 已确定的查询窗口。刚切到「自定义」还没确定日期时保持上一个窗口不动，
+  // 确定日期后才按新区间取数；windowKey 不变就不会触发下面各请求重查。
+  // 今天/本周/本月是滚动窗口（终点=now），每次取数都要现算；只有自定义区间是固定值。
+  const [appliedWindow, setAppliedWindow] = useState<{ key: RangeKey; startTime: number; endTime: number }>(
+    () => ({ key: 'today', ...rangeWindow('today') }),
+  );
+  const windowKey = appliedWindow.key === 'custom'
+    ? `custom:${appliedWindow.startTime}:${appliedWindow.endTime}`
+    : appliedWindow.key;
 
   const currentWindow = useCallback((): { startTime: number; endTime: number } => {
-    if (range !== 'custom') {
-      return rangeWindow(range);
+    if (appliedWindow.key === 'custom') {
+      return { startTime: appliedWindow.startTime, endTime: appliedWindow.endTime };
     }
-    if (customRange) {
-      return { startTime: startOfDay(customRange[0]), endTime: endOfDay(customRange[1]) };
-    }
-    // 刚切到自定义还没选日期：先按近 7 天取数，避免整页空白
-    return rangeWindow('week');
-  }, [range, customRange]);
+    return rangeWindow(appliedWindow.key);
+  }, [appliedWindow]);
 
-  const rangeSummary = useMemo(
-    () => `${moment(currentWindow().startTime).format('YYYY-MM-DD HH:mm')} ~ ${moment(currentWindow().endTime).format('YYYY-MM-DD HH:mm')}`,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [windowKey],
-  );
+  // 「切换窗口」在一处收敛：UI 选中态与取数窗口一起改，自检里的「换到本周」直达也走这里。
+  const switchTo = useCallback((key: Exclude<RangeKey, 'custom'>) => {
+    setRange(key);
+    setAppliedWindow({ key, ...rangeWindow(key) });
+    setPage(0);
+    setDrill(null);
+  }, []);
+
+  // 每次渲染现算，不记进 state/memo：今天/本周/本月是滚动窗口，记下来摘要会一直停在切换那一刻。
+  const rangeSummary = `${moment(currentWindow().startTime).format('YYYY-MM-DD HH:mm')} ~ ${moment(currentWindow().endTime).format('YYYY-MM-DD HH:mm')}`;
 
   // KPI 与两张分面卡都读同一份统计：一次请求就能拿到两侧各自的构成
   // （shadowTotal / admissionTotal / blockedTotal / reason 分面），不必分两次取再对上。
@@ -121,13 +149,13 @@ const AiShadowEventsPage: React.FC = () => {
   );
 
   // 趋势按通道取两份再合并：后端一次只回一个 surface，而这里要的是「同一根轴上的两组柱」。
-  const { data: shadowTrend, error: shadowTrendError } = useRequest(
+  const { data: shadowTrend, error: shadowTrendError, refresh: refreshShadowTrend } = useRequest(
     () => getAiShadowDetectedTrend({ ...currentWindow(), surface: 'shadow' }),
     {
       refreshDeps: [windowKey], pollingInterval: REFRESH_INTERVAL, pollingWhenHidden: false, onError: () => {},
     },
   );
-  const { data: routeTrend, error: routeTrendError } = useRequest(
+  const { data: routeTrend, error: routeTrendError, refresh: refreshRouteTrend } = useRequest(
     () => getAiShadowDetectedTrend({ ...currentWindow(), surface: 'route' }),
     {
       refreshDeps: [windowKey], pollingInterval: REFRESH_INTERVAL, pollingWhenHidden: false, onError: () => {},
@@ -139,7 +167,7 @@ const AiShadowEventsPage: React.FC = () => {
   const trendBroken = !!shadowTrendError || !!routeTrendError;
 
   // 用量来自 Prometheus（只有 6 小时），与事件表不是同一个数据源，所以单独一张卡。
-  const { data: usage, error: usageError } = useRequest(() => getAiConsumerUsage(currentWindow()), {
+  const { data: usage, error: usageError, refresh: refreshUsage } = useRequest(() => getAiConsumerUsage(currentWindow()), {
     refreshDeps: [windowKey], pollingInterval: REFRESH_INTERVAL, pollingWhenHidden: false, onError: () => {},
   });
   const { data: statusList } = useRequest(() => getAiShadowStatus(false), {
@@ -178,6 +206,199 @@ const AiShadowEventsPage: React.FC = () => {
       onError: () => {},
     },
   );
+
+  // 一键自检：全复用已有只读接口，不写任何状态。从配置页第 4 步带 #selfcheck 进来时自动跑一次。
+  const [diagRows, setDiagRows] = useState<DiagRow[] | null>(null);
+  const [diagRunning, setDiagRunning] = useState(false);
+  const [diagRequested] = useState<boolean>(() => window.location.hash === '#selfcheck');
+
+  // 总开关关闭期间冻结写操作，与配置页「关闭时授权按钮不可点」同一条不变式。
+  // 读不到状态时按不可写处理：接口失败期间不该把配置写进一个可能已停用的功能。
+  const {
+    data: switchState, error: switchError, refresh: refreshSwitchState,
+  } = useRequest(() => getAiShadowEnabled(), {
+    // 读取失败时按钮按不可写处理，必须能自愈：跟着页面 30 秒轮询一起重试，另给一个手动入口。
+    pollingInterval: REFRESH_INTERVAL,
+    pollingWhenHidden: false,
+    onError: () => {},
+  });
+  // ahooks 轮询失败会保留上次成功的 data，只看 switchState 会让读取失败期间
+  // 仍按「开启」放行写入；成功后 ahooks 会清 error，按钮随下一轮轮询自愈。
+  const canEditWhitelist = !switchError && switchState === true;
+  // 「读不到状态」与「明确关闭」是两回事：前者的提示不能说成总开关关了。
+  const whitelistBlockedText = switchError ? t('aiShadow.switchReadFailed') : t('aiShadow.eventActionDisabled');
+
+  // 白名单清单只用于判断某行是否已经加过，避免重复给按钮。
+  const { data: authzData, refresh: refreshAuthz } = useRequest(() => getAiShadowAuthorizedDomains(), { onError: () => {} });
+  const whitelisted = useMemo(() => {
+    const items = authzData?.items;
+    // items:[] 是 truthy，不能直接用 || 短路掉 domains（降级响应里 domains 才是有效清单）。
+    const names = items && items.length > 0 ? items.map((item) => item.domain) : (authzData?.domains ?? []);
+    return new Set(names.map((name) => normalizeAuthzInput(name)));
+  }, [authzData]);
+
+  // 白名单按域名放行，命中父域即覆盖子域：按钮不能只比精确串，
+  // 否则 api.openai.com 在已放行 openai.com 时还会让人再点一次「加入」。
+  const isWhitelisted = useCallback((domain: string): boolean => {
+    let name = domain;
+    while (name) {
+      if (whitelisted.has(name)) return true;
+      const dot = name.indexOf('.');
+      if (dot < 0) break;
+      name = name.slice(dot + 1);
+    }
+    return false;
+  }, [whitelisted]);
+
+  const gotoConfig = useCallback((hash = '') => {
+    window.location.href = `/ai-shadow/config${hash}`;
+  }, []);
+
+  const addToWhitelist = useCallback((rawDomain: string) => {
+    if (!canEditWhitelist) {
+      message.warning(whitelistBlockedText);
+      return;
+    }
+    // 事件里的域名来自抓包解析出的 SNI/Host，属于外部输入：先按白名单同一套规则归一并校验，
+    // 否则带端口或 *. 前缀的串会写进白名单却不命中，看起来「已放行」实际仍在被记录。
+    const domain = normalizeAuthzInput(rawDomain);
+    if (!isPlausibleDomain(domain)) {
+      message.error(t('aiShadow.authzInvalidDomain'));
+      return;
+    }
+    Modal.confirm({
+      title: t('aiShadow.eventWhitelistTitle'),
+      content: t('aiShadow.eventWhitelistContent', { domain }),
+      okText: t('aiShadow.eventWhitelistOk'),
+      cancelText: t('misc.cancel'),
+      onOk: async () => {
+        try {
+          // source='detected' 是授权接口为「从检测结果一键授权」预留的来源标记。
+          await updateAiShadowAuthorizedDomains({ addDomains: [domain], source: 'detected' });
+          message.success(t('aiShadow.eventWhitelistSuccess', { domain }));
+          refreshAuthz();
+          refreshEvents();
+        } catch {
+          message.error(t('aiShadow.actionFailed'));
+        }
+      },
+    });
+  }, [t, refreshAuthz, refreshEvents, canEditWhitelist, whitelistBlockedText]);
+
+  const gotoAuthorize = useCallback((row: AiShadowDetectEvent) => {
+    // 事件表迄今不记录路由归属（route_hint 全为 NULL）。退而给一条「命中依据」当线索，
+    // 让用户知道是从哪条事件跳过来的；但它不是路由名，配置页只作提示、不进搜索框。
+    const clue = (row.routeHint || '').trim()
+      || (row.domain ? `host=${row.domain}` : '')
+      || (row.sessionReason || row.reason ? `reason=${row.sessionReason || row.reason}` : '');
+    window.location.href = `/ai-shadow/config?tab=route${clue ? `&hint=${encodeURIComponent(clue)}` : ''}`;
+  }, []);
+
+  const runSelfCheck = useCallback(async () => {
+    setDiagRunning(true);
+    const [en, md, dom, cfg, nics] = await Promise.all([
+      probe(getAiShadowEnabled()),
+      probe(getAiShadowDetectMode()),
+      probe(getAiShadowAuthorizedDomains()),
+      probe(getAiShadowCaptureConfig()),
+      probe(getAiShadowCaptureNics()),
+    ]);
+    const readFailed = (name: string): DiagRow => ({
+      state: 'bad', name, text: t('aiShadow.diagReadFailed'),
+      actionText: t('aiShadow.diagGoConfig'), onAction: () => gotoConfig(),
+    });
+    const rows: DiagRow[] = [];
+    rows.push(windowKey === 'today'
+      ? {
+        state: 'warn', name: t('aiShadow.diagRangeName'), text: t('aiShadow.diagRangeToday'),
+        actionText: t('aiShadow.diagGoWeek'),
+        onAction: () => { switchTo('week'); },
+      }
+      : { state: 'ok', name: t('aiShadow.diagRangeName'), text: t('aiShadow.diagRangeWide') });
+
+    if (!en.ok) {
+      rows.push(readFailed(t('aiShadow.diagSwitchName')));
+    } else if (en.value === false) {
+      rows.push({
+        state: 'bad', name: t('aiShadow.diagSwitchName'), text: t('aiShadow.diagSwitchOff'),
+        actionText: t('aiShadow.diagGoEnable'), onAction: () => gotoConfig(),
+      });
+    } else {
+      rows.push({ state: 'ok', name: t('aiShadow.diagSwitchName'), text: t('aiShadow.diagSwitchOn') });
+    }
+
+    if (!md.ok) {
+      rows.push(readFailed(t('aiShadow.diagModeName')));
+    } else {
+      rows.push({
+        state: 'warn', name: t('aiShadow.diagModeName'),
+        text: md.value === 'enforcement' ? t('aiShadow.diagModeEnforce') : t('aiShadow.diagModeMonitor'),
+        actionText: t('aiShadow.diagGoConfig'), onAction: () => gotoConfig(),
+      });
+    }
+
+    if (!dom.ok) {
+      rows.push(readFailed(t('aiShadow.diagWhitelistName')));
+    } else {
+      const items = dom.value?.items;
+      const count = items && items.length > 0 ? items.length : (dom.value?.domains?.length ?? 0);
+      rows.push({
+        state: 'warn', name: t('aiShadow.diagWhitelistName'), text: t('aiShadow.diagWhitelistHit', { count }),
+        actionText: t('aiShadow.diagGoWhitelist'), onAction: () => gotoConfig('?tab=basic'),
+      });
+    }
+
+    // 采集行只依据自己的两个接口；总开关接口失败不该把「采集器离线」这个根因盖掉。
+    if (!nics.ok || !cfg.ok) {
+      rows.push(readFailed(t('aiShadow.diagCaptureName')));
+    } else if (!en.ok) {
+      // 总开关读失败：采集是否被门控未知，不能报「正在采集」。
+      rows.push({
+        state: 'warn', name: t('aiShadow.diagCaptureName'), text: t('aiShadow.diagReadFailed'),
+        actionText: t('aiShadow.diagGoCapture'), onAction: () => gotoConfig('?tab=capture'),
+      });
+    } else if (en.value === false) {
+      rows.push({
+        state: 'bad', name: t('aiShadow.diagCaptureName'), text: t('aiShadow.diagCaptureOff'),
+        actionText: t('aiShadow.diagGoEnable'), onAction: () => gotoConfig(),
+      });
+    } else if (nics.value?.agentOnline === false) {
+      rows.push({
+        state: 'warn', name: t('aiShadow.diagCaptureName'), text: t('aiShadow.diagCaptureOffline'),
+        actionText: t('aiShadow.diagGoCapture'), onAction: () => gotoConfig('?tab=capture'),
+      });
+    } else if (cfg.value?.interfaces != null && cfg.value.interfaces.length === 0) {
+      // 显式 [] 才是「主动关采集 / 勾了又全取消」。
+      rows.push({
+        state: 'warn', name: t('aiShadow.diagCaptureName'), text: t('aiShadow.diagCaptureNoPort'),
+        actionText: t('aiShadow.diagGoCapture'), onAction: () => gotoConfig('?tab=capture'),
+      });
+    } else if (cfg.value?.interfaces == null) {
+      // null = 从未在此页面配置，采集器沿用设备默认口，不算缺配置；
+      // 误报「没配采集口」会把用户导向一次不必要的下发，反而改掉默认配置。
+      rows.push({
+        state: 'ok', name: t('aiShadow.diagCaptureName'), text: t('aiShadow.diagCaptureLocalDefault'),
+        actionText: t('aiShadow.diagGoCapture'), onAction: () => gotoConfig('?tab=capture'),
+      });
+    } else {
+      rows.push({
+        state: 'ok', name: t('aiShadow.diagCaptureName'),
+        text: t('aiShadow.diagCaptureOn', { count: cfg.value?.interfaces?.length ?? 0 }),
+        actionText: t('aiShadow.diagGoCapture'), onAction: () => gotoConfig('?tab=capture'),
+      });
+    }
+    setDiagRows(rows);
+    setDiagRunning(false);
+  }, [t, windowKey, gotoConfig, switchTo]);
+
+  // StrictMode 下挂载 effect 会跑两次，用 ref 守住「自动只跑一次」。
+  const diagAutoRan = useRef(false);
+  useEffect(() => {
+    if (diagRequested && !diagAutoRan.current) {
+      diagAutoRan.current = true;
+      runSelfCheck();
+    }
+  }, [diagRequested, runSelfCheck]);
 
   const total = (stats?.shadowTotal ?? 0) + (stats?.admissionTotal ?? 0);
   const blockedTotal = stats?.blockedTotal ?? 0;
@@ -503,10 +724,46 @@ const AiShadowEventsPage: React.FC = () => {
       width: 136,
       render: (value?: string) => <span style={{ fontFamily: 'monospace' }}>{value || '-'}</span>,
     },
+    {
+      title: t('aiShadow.eventColActions'),
+      key: 'actions',
+      width: 190,
+      render: (_: unknown, row: AiShadowDetectEvent) => {
+        const domain = normalizeAuthzInput(row.domain || '');
+        const isRoute = statusChannelLabel(row.surface) === 'route';
+        return (
+          <Space size={4} wrap>
+            {domain ? (
+              isWhitelisted(domain)
+                ? <Tag color="green">{t('aiShadow.eventAlreadyWhitelisted')}</Tag>
+                : (
+                  <Tooltip title={canEditWhitelist || switchState === undefined ? '' : whitelistBlockedText}>
+                    {/* 禁用按钮本身不触发鼠标事件，Tooltip 要挂在外层 span 上才显示得出来。 */}
+                    <span>
+                      <Button size="small" disabled={!canEditWhitelist} onClick={() => addToWhitelist(domain)}>
+                        {t('aiShadow.eventAddWhitelist')}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                )
+            ) : null}
+            {isRoute ? (
+              <Button type="link" size="small" style={{ padding: 0 }} onClick={() => gotoAuthorize(row)}>
+                {t('aiShadow.eventAuthorizeCaller')}
+              </Button>
+            ) : null}
+            {!domain && !isRoute ? <span style={{ color: '#bfbfbf' }}>-</span> : null}
+          </Space>
+        );
+      },
+    },
   ];
 
   const items = eventPage?.items || [];
   const eventTotal = eventPage?.total ?? 0;
+  // 只有首屏拿到结果（或明确失败）后才按「0 条」显示自查卡：
+  // useRequest 的 loading 在 30 秒轮询期间也会变 true，拿它判显隐会让卡片每轮闪一下。
+  const showDiagCard = ((!!eventPage || !!eventsError) && eventTotal === 0) || diagRequested || !!diagRows;
 
   return (
     <div style={{ padding: '0 0 24px' }}>
@@ -525,7 +782,20 @@ const AiShadowEventsPage: React.FC = () => {
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <Segmented
             value={range}
-            onChange={(value) => { setRange(value as RangeKey); setPage(0); setDrill(null); }}
+            onChange={(value) => {
+              const key = value as RangeKey;
+              if (key !== 'custom') {
+                switchTo(key);
+                return;
+              }
+              setRange('custom');
+              // 自定义：确定日期前不动视图；此前已确定过日期区间就继续按该区间展示
+              if (customRange) {
+                setAppliedWindow({ key: 'custom', startTime: customRange[0], endTime: customRange[1] });
+                setPage(0);
+                setDrill(null);
+              }
+            }}
             options={[
               { value: 'today', label: t('aiShadow.trendRangeToday') },
               { value: 'week', label: t('aiShadow.trendRangeWeek') },
@@ -549,6 +819,7 @@ const AiShadowEventsPage: React.FC = () => {
                   return;
                 }
                 setCustomRange([start, end]);
+                setAppliedWindow({ key: 'custom', startTime: start, endTime: end });
                 setPage(0);
                 setDrill(null);
               }}
@@ -557,7 +828,15 @@ const AiShadowEventsPage: React.FC = () => {
           <span style={{ fontSize: 12, color: '#8c8c8c' }}>{rangeSummary}</span>
           <Button
             icon={<ReloadOutlined />}
-            onClick={() => { refreshStats(); refreshEvents(); }}
+            onClick={() => {
+              // 与日期过滤同范围：只刷 refreshDeps 含 windowKey 的 5 个请求。
+              // 通道状态 / 总开关 / 白名单清单不读日期，不跟着这个按钮重取。
+              refreshStats();
+              refreshShadowTrend();
+              refreshRouteTrend();
+              refreshUsage();
+              refreshEvents();
+            }}
             loading={eventsLoading}
           >
             {t('aiShadow.refresh')}
@@ -567,6 +846,68 @@ const AiShadowEventsPage: React.FC = () => {
 
       {statsBroken ? (
         <Alert type="warning" showIcon style={{ marginBottom: 12 }} message={t('aiShadow.trendDegraded')} />
+      ) : null}
+
+      {switchError ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('aiShadow.switchReadFailed')}
+          description={(
+            <Button size="small" onClick={refreshSwitchState}>{t('aiShadow.switchRetry')}</Button>
+          )}
+        />
+      ) : null}
+
+      {showDiagCard ? (
+        <Card
+          size="small"
+          style={{ marginBottom: 12 }}
+          title={t('aiShadow.diagTitle')}
+          extra={(
+            <Button type="primary" size="small" loading={diagRunning} onClick={runSelfCheck}>
+              {diagRunning
+                ? t('aiShadow.diagRunning')
+                : diagRows ? t('aiShadow.diagRerun') : t('aiShadow.diagRun')}
+            </Button>
+          )}
+        >
+          {!diagRows ? (
+            <ul style={{ paddingLeft: 18, margin: 0, color: '#595959', fontSize: 12 }}>
+              <li style={{ margin: '4px 0' }}>{t('aiShadow.diagStatic1')}</li>
+              <li style={{ margin: '4px 0' }}>{t('aiShadow.diagStatic2')}</li>
+              <li style={{ margin: '4px 0' }}>{t('aiShadow.diagStatic3')}</li>
+              <li style={{ margin: '4px 0' }}>{t('aiShadow.diagStatic4')}</li>
+              <li style={{ margin: '4px 0' }}>{t('aiShadow.diagStatic5')}</li>
+            </ul>
+          ) : (
+            <div>
+              <div style={{ padding: '7px 10px', marginBottom: 8, background: '#e6f4ff', border: '1px solid #bae0ff', borderRadius: 4, fontSize: 12 }}>
+                <b>{t('aiShadow.diagSummary', {
+                  ok: diagRows.filter((r) => r.state === 'ok').length,
+                  warn: diagRows.filter((r) => r.state === 'warn').length,
+                  bad: diagRows.filter((r) => r.state === 'bad').length,
+                })}</b>
+              </div>
+              {diagRows.map((row) => (
+                <div
+                  key={row.name}
+                  style={{ display: 'flex', alignItems: 'flex-start', gap: 9, padding: '7px 0', borderBottom: '1px dashed #f0f0f0', fontSize: 12 }}
+                >
+                  <Tag color={row.state === 'ok' ? 'green' : row.state === 'warn' ? 'orange' : 'red'}>
+                    {row.state === 'ok' ? t('aiShadow.diagOk') : row.state === 'warn' ? t('aiShadow.diagWarn') : t('aiShadow.diagBad')}
+                  </Tag>
+                  <span style={{ flex: 1 }}><b>{row.name}</b>：{row.text}</span>
+                  {row.actionText && row.onAction ? (
+                    <Button size="small" onClick={row.onAction}>{row.actionText}</Button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ marginTop: 10, fontSize: 12, color: '#8c8c8c' }}>{t('aiShadow.diagFooter')}</div>
+        </Card>
       ) : null}
 
       <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
@@ -876,6 +1217,11 @@ const AiShadowEventsPage: React.FC = () => {
           }}
           locale={{ emptyText: t('aiShadow.eventsEmptyRange') }}
         />
+        {items.length > 0 ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: '#8c8c8c' }}>
+            {t('aiShadow.eventWhitelistNote')}
+          </div>
+        ) : null}
       </Card>
     </div>
   );

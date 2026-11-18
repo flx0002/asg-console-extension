@@ -19,7 +19,7 @@ import type { AiShadowCaptureNic } from '@/interfaces/ai-shadow';
  *
  * <p>回注口只在「拦截」模式下有意义（监控只记录不发包），故监控模式下列置灰禁用。
  */
-const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement' }> = ({ mode }) => {
+const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement'; enabled?: boolean }> = ({ mode, enabled = true }) => {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [controlMap, setControlMap] = useState<Record<string, string>>({});
@@ -46,7 +46,8 @@ const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement' }> = ({
   }, [nicsData]);
   const agentOnline = nicsData?.agentOnline === true;
   // 配置未成功初始化前禁止保存：否则读取失败时空勾选会被当「显式关闭采集」下发。
-  const disabled = !agentOnline || saving || !initialized;
+  // 总开关关闭时旁路采集器已经停了，此时下发配置会让人以为立刻能采集。
+  const disabled = !enabled || !agentOnline || saving || !initialized;
 
   // 默认采集口：第一个可用镜像口（有速率），没有就退回第一个口——与出厂默认（enp3s0）一致。
   const defaultSelection = useCallback((list: AiShadowCaptureNic[]): string[] => {
@@ -171,7 +172,7 @@ const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement' }> = ({
       render: (_, record) => (
         <Checkbox
           checked={selected.has(record.name)}
-          disabled={!agentOnline}
+          disabled={!enabled || !agentOnline}
           onChange={() => toggle(record.name)}
         />
       ),
@@ -211,6 +212,9 @@ const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement' }> = ({
       title: t('aiShadow.captureColStatus'),
       key: 'status',
       render: (_, record) => {
+        if (!enabled) {
+          return <span style={{ color: '#8c8c8c', fontSize: 12 }}>{t('aiShadow.capturePausedTitle')}</span>;
+        }
         if (!selected.has(record.name)) {
           return <span style={{ color: '#8c8c8c', fontSize: 12 }}>{t('aiShadow.captureStatusOff')}</span>;
         }
@@ -224,14 +228,14 @@ const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement' }> = ({
       title: t('aiShadow.captureColControl'),
       key: 'control',
       render: (_, record) => {
-        const enabled = selected.has(record.name) && mode === 'enforcement' && agentOnline;
+        const controlEnabled = selected.has(record.name) && mode === 'enforcement' && agentOnline;
         return (
           <span style={{ opacity: mode === 'monitoring' ? 0.4 : 1, display: 'inline-block' }}>
             <Select
               size="small"
               style={{ width: 148 }}
               value={controlMap[record.name] ?? record.name}
-              disabled={!enabled}
+              disabled={!controlEnabled || !enabled}
               onChange={(value) => setControl(record.name, value)}
               options={[
                 { value: record.name, label: t('aiShadow.captureControlSame') },
@@ -245,12 +249,28 @@ const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement' }> = ({
         );
       },
     },
-  ], [selected, controlMap, mode, agentOnline, nics, toggle, setControl, t]);
+  ], [selected, controlMap, mode, agentOnline, enabled, nics, toggle, setControl, t]);
 
   const capturingCount = nics.filter((n) => selected.has(n.name)).length;
 
   return (
     <div>
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={t('aiShadow.captureIntroTitle')}
+        description={t('aiShadow.captureIntro')}
+      />
+      {!enabled ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('aiShadow.capturePausedTitle')}
+          description={t('aiShadow.capturePausedDesc')}
+        />
+      ) : null}
       {!agentOnline && nicsData ? (
         <Alert
           type="warning"
@@ -276,22 +296,27 @@ const AiShadowCaptureView: React.FC<{ mode: 'monitoring' | 'enforcement' }> = ({
               width: 8,
               height: 8,
               borderRadius: '50%',
-              background: capturingCount > 0 ? '#52c41a' : '#bfbfbf',
+              background: enabled && capturingCount > 0 ? '#52c41a' : '#bfbfbf',
             }}
           />
           <span style={{ fontWeight: 600 }}>
-            {capturingCount > 0 ? t('aiShadow.captureSvcCapturing') : t('aiShadow.captureSvcIdle')}
+            {!enabled
+              ? t('aiShadow.capturePausedTitle')
+              : capturingCount > 0 ? t('aiShadow.captureSvcCapturing') : t('aiShadow.captureSvcIdle')}
           </span>
           <span style={{ color: '#8c8c8c' }}>
-            {capturingCount > 0
-              ? `· ${t('aiShadow.captureSvcPortCount', { count: capturingCount })}`
-              : `· ${t('aiShadow.captureSvcNone')}`}
+            {!enabled
+              ? `· ${t('aiShadow.capturePausedPort')}`
+              : capturingCount > 0
+                ? `· ${t('aiShadow.captureSvcPortCount', { count: capturingCount })}`
+                : `· ${t('aiShadow.captureSvcNone')}`}
           </span>
           <Button
             type="link"
             size="small"
             style={{ marginLeft: 'auto' }}
             loading={nicsLoading}
+            disabled={!enabled}
             onClick={() => {
               redetect();
               message.success(t('aiShadow.captureRedetectToast'));
