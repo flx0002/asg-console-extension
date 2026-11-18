@@ -28,7 +28,7 @@
     "logsAuditChainLogs": "Audit Logs",
     "logsAuditChainTracking": "Chain Tracking",
     "logsAdminOperations": "Admin Operations",
-    "logsSecurityEvents": "Security Events",
+    "logsSecurityEvents": "Content Security Events",
     "aiComplianceKb": "Compliance Lexicon",
     "aiShadowConfig": "Shadow AI Settings",
     "aiShadowEvents": "Shadow AI Events"

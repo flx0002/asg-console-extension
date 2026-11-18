@@ -28,7 +28,7 @@
     "logsAuditChainLogs": "审计日志",
     "logsAuditChainTracking": "执行链追踪",
     "logsAdminOperations": "管理操作审计",
-    "logsSecurityEvents": "安全事件",
+    "logsSecurityEvents": "内容安全事件",
     "aiComplianceKb": "内容合规词库",
     "aiShadowConfig": "影子AI配置",
     "aiShadowEvents": "影子AI事件"
