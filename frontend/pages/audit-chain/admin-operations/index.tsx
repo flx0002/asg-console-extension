@@ -4,10 +4,13 @@ import {
   Button, Card, DatePicker, Drawer, Input, Space, Table, Tag, message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DownloadOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import moment from 'moment';
 import { getAdminOperations, exportAdminOperations } from '@/services';
+import {
+  describeAdminAction, describeAdminResult, renderAdminOperationDetail,
+} from '@/components/audit-event-format';
 
 const { RangePicker } = DatePicker;
 
@@ -24,14 +27,10 @@ interface AdminOperation {
   rawJson: string;
 }
 
-const pretty = (raw?: string): string => {
-  if (!raw) return '';
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch (e) {
-    return raw;
-  }
+const RAW_STYLE: React.CSSProperties = {
+  color: '#bfbfbf', fontFamily: 'monospace', fontSize: 11, marginTop: 2,
 };
+const SUB_STYLE: React.CSSProperties = { color: '#86909c', fontSize: 12 };
 
 const AdminOperationAuditPage: React.FC = () => {
   const { t } = useTranslation();
@@ -113,48 +112,67 @@ const AdminOperationAuditPage: React.FC = () => {
     {
       title: t('adminOperationAudit.time'),
       dataIndex: 'time',
-      width: 180,
+      width: 170,
       render: (_: string, row) => moment(Number(row.timestampMs)).format('YYYY-MM-DD HH:mm:ss'),
     },
     {
       title: t('adminOperationAudit.action'),
       dataIndex: 'action',
-      ellipsis: true,
-      render: (value: string) => (
-        <Tag color={value?.startsWith('DELETE') ? 'red' : value?.startsWith('PUT') ? 'blue' : 'green'}>
-          {value || '-'}
-        </Tag>
-      ),
+      render: (value: string) => {
+        const desc = describeAdminAction(value);
+        return (
+          <div>
+            {desc.matched ? (
+              <div>
+                <span style={SUB_STYLE}>{desc.menu} › {desc.page}</span>
+                <div><b>{desc.verb}「{desc.item}」</b></div>
+              </div>
+            ) : (
+              <div>
+                <b>{t('adminOperationAudit.actionFallback')}</b>
+                <div style={SUB_STYLE}>{t('adminOperationAudit.actionFallbackHint')}</div>
+              </div>
+            )}
+            <div style={RAW_STYLE}>{value}</div>
+          </div>
+        );
+      },
     },
     {
       title: t('adminOperationAudit.operator'),
       dataIndex: 'userId',
-      width: 120,
-      render: (value: string) => value || 'console',
+      width: 110,
+      render: (value: string) => value || '-',
     },
     {
       title: t('adminOperationAudit.clientIp'),
       dataIndex: 'clientIp',
-      width: 150,
+      width: 140,
       render: (value: string) => value || '-',
     },
     {
       title: t('adminOperationAudit.status'),
       dataIndex: 'httpStatus',
-      width: 90,
-      render: (value: string) => value || '-',
-    },
-    {
-      title: t('adminOperationAudit.source'),
-      dataIndex: 'source',
       width: 160,
-      render: (value: string) => value || '-',
+      render: (_: string, row) => {
+        const res = describeAdminResult(row.httpStatus);
+        return (
+          <div>
+            <Tag color={res.ok ? 'green' : 'red'}>{res.label}</Tag>
+            <div style={SUB_STYLE}>
+              {res.noted ? res.reason : `${res.code}${res.reason ? ` · ${res.reason}` : ''}`}
+            </div>
+          </div>
+        );
+      },
     },
     {
       title: t('adminOperationAudit.detail'),
       width: 80,
       render: (_, row) => (
-        <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => setDetail(row)} />
+        <Button type="link" size="small" onClick={() => setDetail(row)}>
+          {t('adminOperationAudit.viewDetail')}
+        </Button>
       ),
     },
   ];
@@ -210,11 +228,11 @@ const AdminOperationAuditPage: React.FC = () => {
       />
       <Drawer
         title={t('adminOperationAudit.detail')}
-        width={720}
+        width={760}
         open={!!detail}
         onClose={() => setDetail(null)}
       >
-        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{pretty(detail?.rawJson)}</pre>
+        {detail ? renderAdminOperationDetail(detail) : null}
       </Drawer>
     </Card>
   );

@@ -22,13 +22,22 @@ import {
   Typography, Popconfirm, Tooltip,
 } from 'antd';
 import { useRequest } from 'ahooks';
-import { getGlobalPluginInstance, updateGlobalPluginInstance, updateRoutePluginInstance } from '@/services';
+import { getGlobalPluginInstance, updateRoutePluginInstance } from '@/services';
+import request from '@/services/request';
 import { GlobalSwitchHint, RouteScopeCard, useRouteScope } from '../_route-scope';
 import { useTranslation } from 'react-i18next';
 import yaml from 'js-yaml';
 import appAData from './appA_rules.json';
 
 const PLUGIN_NAME = 'ai-prompt-guard';
+
+// The fallback auditor never reads the request body; it only copies this
+// user-readable summary. encodeURIComponent keeps the header ASCII-safe.
+const auditPut = (params: any, summary: string) => request.put(
+  `/v1/global/plugin-instances/${PLUGIN_NAME}`,
+  params,
+  { headers: { 'X-Asg-Audit-Summary': encodeURIComponent(summary) } },
+);
 
 interface RuleItem { name: string; regex: string; matchType: string; }
 interface KeywordRuleGroup { name: string; patterns: string[]; enabled: boolean; }
@@ -141,7 +150,7 @@ const AiPromptGuardPage: React.FC = () => {
     try {
       const params = { ...pluginData, enabled: checked };
       delete params.configurations;
-      await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      await auditPut(params, `${checked ? '开启' : '关闭'}提示注入防护`);
       setEnabled(checked);
       message.success(t('aiContentSec.saveSuccess'));
     } catch { message.error(t('aiContentSec.saveFailed')); }
@@ -163,7 +172,7 @@ const AiPromptGuardPage: React.FC = () => {
       const rawConfig = buildRawConfig();
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
-      await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      await auditPut(params, `保存提示注入防护配置（拒绝规则 ${form.denyRules.length} 条、放行规则 ${form.allowRules.length} 条）`);
       if (scope.selected.length) {
         const failed: string[] = [];
         await Promise.all(scope.selected.map(async (n: string) => {
