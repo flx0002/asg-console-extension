@@ -70,6 +70,9 @@ const EVENT_TYPE_META: Record<string, { business: string; plugin: string }> = {
   waf_detect: { business: 'waf-attack', plugin: 'waf' },
   pii_hit: { business: 'pii-leak', plugin: 'ai-pii-guard' },
   pii_masked: { business: 'pii-leak', plugin: 'ai-pii-guard' },
+  pii_leak: { business: 'pii-leak', plugin: 'ai-pii-guard' },
+  secret_exfil: { business: 'pii-leak', plugin: 'ai-pii-guard' },
+  code_exfil: { business: 'pii-leak', plugin: 'ai-pii-guard' },
   shadow_ai: { business: 'agent-shadow', plugin: 'ai-agent-guard' },
   agent_anomaly: { business: 'agent-shadow', plugin: 'ai-agent-guard' },
 };
