@@ -112,6 +112,10 @@ export const renderEventDetail = (record: any, event?: any): React.ReactNode => 
     ['命中片段', e.matched_text || '-'],
     ['检测方向', e.direction || '-'],
     ['检测模式', e.detect_mode || '-'],
+    ['严重度', e.severity
+      ? <Tag color={String(e.severity).toLowerCase() === 'high' ? 'red' : String(e.severity).toLowerCase() === 'low' ? 'blue' : 'default'}>{e.severity}</Tag>
+      : '-'],
+    ['置信度', e.score != null ? String(e.score) : '-'],
     ['处置结果', <Tag color={DISPOSITION_COLOR[d]}>{DISPOSITION_TEXT[d]}</Tag>],
     ['事件描述', e.detail || '-'],
   ];

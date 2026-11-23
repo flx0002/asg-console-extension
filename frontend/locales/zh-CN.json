@@ -1243,6 +1243,8 @@
       "snippet": "内容摘要",
       "sourceIp": "源 IP",
       "action": "处置结果",
+      "severity": "严重度",
+      "confidence": "置信度",
       "session": "会话 ID",
       "detail": "详情",
       "rawEvent": "原始事件对象"

@@ -105,6 +105,8 @@ interface EventRow {
   eventType: string;
   direction: 'request' | 'response' | '-';
   rule: string;
+  severity: string;
+  score: string;
   snippet: string;
   sourceIp: string;
   action: 'blocked' | 'alerted' | 'passed';
@@ -180,6 +182,8 @@ const SecurityEventsPage: React.FC = () => {
               eventType: e.type || '-',
               direction: dir,
               rule: e.rule_name || e.rule_group || e.rule || e.rule_id || e.name || '-',
+              severity: e.severity != null ? String(e.severity) : '-',
+              score: e.score != null ? String(e.score) : '-',
               snippet: redactContent(e.hit_content || e.detail || e.snippet),
               sourceIp: r.source_ip || '-',
               action,
@@ -255,11 +259,11 @@ const SecurityEventsPage: React.FC = () => {
       message.warning(t('securityEvents.noData', '当前筛选无数据'));
       return;
     }
-    const header = ['time', 'business', 'plugin', 'eventType', 'direction', 'rule', 'action', 'sourceIp', 'sessionId', 'snippet'];
+    const header = ['time', 'business', 'plugin', 'eventType', 'direction', 'rule', 'action', 'sourceIp', 'sessionId', 'snippet', 'severity', 'score'];
     const lines = [header.join(',')];
     filteredSorted.forEach((r) => {
       const bizLabel = zh ? (BUSINESS_META[r.business]?.zh || r.business) : (BUSINESS_META[r.business]?.en || r.business);
-      const cells = [r.time, bizLabel, r.plugin, r.eventType, r.direction, r.rule, r.action, r.sourceIp, r.sessionId, r.snippet]
+      const cells = [r.time, bizLabel, r.plugin, r.eventType, r.direction, r.rule, r.action, r.sourceIp, r.sessionId, r.snippet, r.severity, r.score]
         .map((c) => `"${String(c).replace(/"/g, '""')}"`);
       lines.push(cells.join(','));
     });
@@ -338,6 +342,24 @@ const SecurityEventsPage: React.FC = () => {
       render: (v: string) => (v === 'blocked'
         ? <Tag color="red">拦截</Tag>
         : v === 'alerted' ? <Tag color="orange">告警</Tag> : <Tag color="green">放行</Tag>),
+    },
+    {
+      title: t('securityEvents.col.severity', '严重度'),
+      dataIndex: 'severity',
+      key: 'severity',
+      width: 90,
+      render: (v: string) => {
+        const s = String(v || '').toLowerCase();
+        const color = s === 'high' ? 'red' : s === 'low' ? 'blue' : s === 'medium' ? 'gold' : 'default';
+        return <Tag color={color}>{v || '-'}</Tag>;
+      },
+    },
+    {
+      title: t('securityEvents.col.confidence', '置信度'),
+      dataIndex: 'score',
+      key: 'score',
+      width: 90,
+      render: (v: string) => <Typography.Text code>{v || '-'}</Typography.Text>,
     },
     {
       title: t('securityEvents.col.session', '会话 ID'),

@@ -1244,6 +1244,8 @@
       "snippet": "Snippet",
       "sourceIp": "Source IP",
       "action": "Action",
+      "severity": "Severity",
+      "confidence": "Confidence",
       "session": "Session ID",
       "detail": "Detail",
       "rawEvent": "Raw Event"
