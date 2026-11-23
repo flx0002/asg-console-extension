@@ -79,6 +79,23 @@ const LONG_TEXT: React.CSSProperties = {
 };
 
 /**
+ * 展示层脱敏：命中内容可能夹带未脱敏的手机号 / 邮箱 / 身份证 / API Key。
+ * PII 类事件在入库前已由插件脱敏；这里兜底其他类型（如提示注入）原文里夹带的敏感串。
+ */
+export const redactContent = (value: any): string => {
+  const s = value == null ? '' : String(value);
+  if (!s) return '';
+  return s
+    .replace(/\b\d{17}[\dXx]\b/g, (m) => `${m.slice(0, 6)}********${m.slice(-4)}`)
+    .replace(/\b1[3-9]\d{9}\b/g, (m) => `${m.slice(0, 3)}****${m.slice(-4)}`)
+    .replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, (m) => {
+      const at = m.indexOf('@');
+      return `${m.slice(0, 1)}***${m.slice(at)}`;
+    })
+    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/g, 'sk-***');
+};
+
+/**
  * 详情面板：补齐「报了提示注入却看不到输入和判断原因」。
  * event = 事件级对象（hit_content / reason / rule_name ...）；
  * record = 记录级对象（request_body_content / events ...）。
@@ -87,7 +104,7 @@ export const renderEventDetail = (record: any, event?: any): React.ReactNode => 
   const e = event || (Array.isArray(record?.events) ? record.events[0] : undefined) || {};
   const d = normalizeDisposition(record);
   const items: Array<[string, React.ReactNode]> = [
-    ['命中内容（输入原文）', e.hit_content || record?.request_body_content || '-'],
+    ['命中内容（输入原文）', redactContent(e.hit_content || record?.request_body_content) || '-'],
     ['判断原因', e.reason || '-'],
     ['命中规则', e.rule_name || e.rule || e.rule_id || '-'],
     ['规则组', e.rule_group || '-'],
@@ -97,7 +114,6 @@ export const renderEventDetail = (record: any, event?: any): React.ReactNode => 
     ['检测模式', e.detect_mode || '-'],
     ['处置结果', <Tag color={DISPOSITION_COLOR[d]}>{DISPOSITION_TEXT[d]}</Tag>],
     ['事件描述', e.detail || '-'],
-    ['记录级请求正文', record?.request_body_content || '-'],
   ];
   return (
     <div>
@@ -110,9 +126,6 @@ export const renderEventDetail = (record: any, event?: any): React.ReactNode => 
           </Descriptions.Item>
         ))}
       </Descriptions>
-      <pre style={{ margin: '12px 0 0', padding: 12, background: '#fafafa', fontSize: 12, maxHeight: 300, overflow: 'auto' }}>
-        {JSON.stringify({ event: e, record }, null, 2)}
-      </pre>
     </div>
   );
 };

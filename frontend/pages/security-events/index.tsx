@@ -22,7 +22,7 @@ import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
 import moment from 'moment';
 import { getAuditSessions, getAuditLogs } from '@/services/audit-chain-service';
-import { formatEventTime, normalizeDisposition, renderEventDetail } from '@/components/audit-event-format';
+import { formatEventTime, normalizeDisposition, redactContent, renderEventDetail } from '@/components/audit-event-format';
 
 const { RangePicker } = DatePicker;
 
@@ -180,7 +180,7 @@ const SecurityEventsPage: React.FC = () => {
               eventType: e.type || '-',
               direction: dir,
               rule: e.rule_name || e.rule_group || e.rule || e.rule_id || e.name || '-',
-              snippet: (e.hit_content || e.detail || e.snippet || '').toString(),
+              snippet: redactContent(e.hit_content || e.detail || e.snippet),
               sourceIp: r.source_ip || '-',
               action,
               detail: { event: e, record: r },
