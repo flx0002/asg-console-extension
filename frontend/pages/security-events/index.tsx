@@ -22,7 +22,7 @@ import { useRequest } from 'ahooks';
 import { useTranslation } from 'react-i18next';
 import moment from 'moment';
 import { getAuditSessions, getAuditLogs } from '@/services/audit-chain-service';
-import { formatEventTime, normalizeDisposition, redactContent, renderEventDetail } from '@/components/audit-event-format';
+import { formatEventTime, normalizeDisposition, redactContent, renderEventDetail, fieldText, fieldColor } from '@/components/audit-event-format';
 
 const { RangePicker } = DatePicker;
 
@@ -263,7 +263,7 @@ const SecurityEventsPage: React.FC = () => {
     const lines = [header.join(',')];
     filteredSorted.forEach((r) => {
       const bizLabel = zh ? (BUSINESS_META[r.business]?.zh || r.business) : (BUSINESS_META[r.business]?.en || r.business);
-      const cells = [r.time, bizLabel, r.plugin, r.eventType, r.direction, r.rule, r.action, r.sourceIp, r.sessionId, r.snippet, r.severity, r.score]
+      const cells = [r.time, bizLabel, r.plugin, r.eventType, fieldText('direction', r.direction, zh), r.rule, fieldText('action', r.action, zh), r.sourceIp, r.sessionId, r.snippet, fieldText('severity', r.severity, zh), r.score]
         .map((c) => `"${String(c).replace(/"/g, '""')}"`);
       lines.push(cells.join(','));
     });
@@ -310,9 +310,9 @@ const SecurityEventsPage: React.FC = () => {
       dataIndex: 'direction',
       key: 'direction',
       width: 110,
-      render: (v: string) => (v === 'request'
-        ? <Tag color="blue">请求</Tag>
-        : v === 'response' ? <Tag color="cyan">响应</Tag> : <Tag>-</Tag>),
+      render: (v: string) => (v === '-'
+        ? <Tag>-</Tag>
+        : <Tag color={fieldColor('direction', v)}>{fieldText('direction', v, zh)}</Tag>),
     },
     {
       title: t('securityEvents.col.rule', '命中规则'),
@@ -339,20 +339,18 @@ const SecurityEventsPage: React.FC = () => {
       dataIndex: 'action',
       key: 'action',
       width: 110,
-      render: (v: string) => (v === 'blocked'
-        ? <Tag color="red">拦截</Tag>
-        : v === 'alerted' ? <Tag color="orange">告警</Tag> : <Tag color="green">放行</Tag>),
+      render: (v: string) => (v === '-'
+        ? <Tag>-</Tag>
+        : <Tag color={fieldColor('action', v)}>{fieldText('action', v, zh)}</Tag>),
     },
     {
       title: t('securityEvents.col.severity', '严重度'),
       dataIndex: 'severity',
       key: 'severity',
       width: 90,
-      render: (v: string) => {
-        const s = String(v || '').toLowerCase();
-        const color = s === 'high' ? 'red' : s === 'low' ? 'blue' : s === 'medium' ? 'gold' : 'default';
-        return <Tag color={color}>{v || '-'}</Tag>;
-      },
+      render: (v: string) => (v === '-'
+        ? <Tag>-</Tag>
+        : <Tag color={fieldColor('severity', v)}>{fieldText('severity', v, zh)}</Tag>),
     },
     {
       title: t('securityEvents.col.confidence', '置信度'),
@@ -556,9 +554,9 @@ const SecurityEventsPage: React.FC = () => {
             <Descriptions.Item label={t('securityEvents.col.eventType', '事件类型')}>
               <Typography.Text code>{drawer.row.eventType}</Typography.Text>
             </Descriptions.Item>
-            <Descriptions.Item label={t('securityEvents.col.direction', '检测方向')}>{drawer.row.direction}</Descriptions.Item>
+            <Descriptions.Item label={t('securityEvents.col.direction', '检测方向')}>{fieldText('direction', drawer.row.direction, zh)}</Descriptions.Item>
             <Descriptions.Item label={t('securityEvents.col.rule', '命中规则')}>{drawer.row.rule}</Descriptions.Item>
-            <Descriptions.Item label={t('securityEvents.col.action', '处置结果')}>{drawer.row.action}</Descriptions.Item>
+            <Descriptions.Item label={t('securityEvents.col.action', '处置结果')}>{fieldText('action', drawer.row.action, zh)}</Descriptions.Item>
             <Descriptions.Item label={t('securityEvents.col.sourceIp', '源 IP')}>{drawer.row.sourceIp}</Descriptions.Item>
             <Descriptions.Item label={t('securityEvents.col.session', '会话 ID')}>
               <Typography.Text copyable>{drawer.row.sessionId}</Typography.Text>
@@ -566,7 +564,7 @@ const SecurityEventsPage: React.FC = () => {
           </Descriptions>
         )}
         {/* 命中原文、判断原因、规则名、匹配方式、检测模式与记录级请求正文 */}
-        {drawer.row && drawer.row.detail && renderEventDetail(drawer.row.detail.record, drawer.row.detail.event)}
+        {drawer.row && drawer.row.detail && renderEventDetail(drawer.row.detail.record, drawer.row.detail.event, zh)}
       </Drawer>
     </div>
   );

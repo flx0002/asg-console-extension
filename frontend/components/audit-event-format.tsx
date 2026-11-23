@@ -57,19 +57,52 @@ export const normalizeDisposition = (r: any): Disposition => {
   return 'passed';
 };
 
-const DISPOSITION_TEXT: Record<Disposition, string> = {
-  blocked: '拦截',
-  alerted: '仅告警 / 放行',
-  masked: '脱敏',
-  passed: '放行',
-};
-
 const DISPOSITION_COLOR: Record<Disposition, string> = {
   blocked: 'red',
   alerted: 'orange',
   masked: 'orange',
   passed: 'green',
 };
+
+/**
+ * 枚举字段的中英展示映射（表格 / 抽屉 / 详情 / CSV 唯一来源）。
+ * 后端与插件写入的是英文原值（request / blocked / high / deny ...），
+ * 中文界面需转成中文，英文界面保留规范英文，未识别值原样透出便于回溯。
+ */
+type FieldKey = 'direction' | 'action' | 'severity' | 'detectMode';
+const FIELD_META: Record<FieldKey, Record<string, { zh: string; en: string; color: string }>> = {
+  direction: {
+    request: { zh: '请求', en: 'Request', color: 'blue' },
+    response: { zh: '响应', en: 'Response', color: 'cyan' },
+  },
+  action: {
+    blocked: { zh: '拦截', en: 'Blocked', color: 'red' },
+    alerted: { zh: '告警', en: 'Alerted', color: 'orange' },
+    masked: { zh: '脱敏', en: 'Masked', color: 'orange' },
+    passed: { zh: '放行', en: 'Passed', color: 'green' },
+  },
+  severity: {
+    critical: { zh: '严重', en: 'Critical', color: 'red' },
+    high: { zh: '高', en: 'High', color: 'red' },
+    medium: { zh: '中', en: 'Medium', color: 'gold' },
+    low: { zh: '低', en: 'Low', color: 'blue' },
+  },
+  detectMode: {
+    deny: { zh: '拦截', en: 'Deny', color: 'red' },
+    monitor: { zh: '仅告警', en: 'Monitor', color: 'orange' },
+  },
+};
+
+/** 枚举值展示文本：中文界面给中文，英文界面给规范英文，未知值/空值原样或 '-'。 */
+export const fieldText = (field: FieldKey, value: any, zh = true): string => {
+  if (value == null || value === '' || String(value) === '-') return '-';
+  const m = FIELD_META[field][String(value).toLowerCase()];
+  return m ? (zh ? m.zh : m.en) : String(value);
+};
+
+/** 枚举值 Tag 颜色：未知值用默认色。 */
+export const fieldColor = (field: FieldKey, value: any): string =>
+  FIELD_META[field][String(value ?? '').toLowerCase()]?.color || 'default';
 
 const LONG_TEXT: React.CSSProperties = {
   whiteSpace: 'pre-wrap',
@@ -100,7 +133,7 @@ export const redactContent = (value: any): string => {
  * event = 事件级对象（hit_content / reason / rule_name ...）；
  * record = 记录级对象（request_body_content / events ...）。
  */
-export const renderEventDetail = (record: any, event?: any): React.ReactNode => {
+export const renderEventDetail = (record: any, event?: any, zh = true): React.ReactNode => {
   const e = event || (Array.isArray(record?.events) ? record.events[0] : undefined) || {};
   const d = normalizeDisposition(record);
   const items: Array<[string, React.ReactNode]> = [
@@ -110,13 +143,13 @@ export const renderEventDetail = (record: any, event?: any): React.ReactNode => 
     ['规则组', e.rule_group || '-'],
     ['命中方式', e.match_method || '-'],
     ['命中片段', e.matched_text || '-'],
-    ['检测方向', e.direction || '-'],
-    ['检测模式', e.detect_mode || '-'],
+    ['检测方向', fieldText('direction', e.direction, zh)],
+    ['检测模式', fieldText('detectMode', e.detect_mode, zh)],
     ['严重度', e.severity
-      ? <Tag color={String(e.severity).toLowerCase() === 'high' ? 'red' : String(e.severity).toLowerCase() === 'low' ? 'blue' : 'default'}>{e.severity}</Tag>
+      ? <Tag color={fieldColor('severity', e.severity)}>{fieldText('severity', e.severity, zh)}</Tag>
       : '-'],
     ['置信度', e.score != null ? String(e.score) : '-'],
-    ['处置结果', <Tag color={DISPOSITION_COLOR[d]}>{DISPOSITION_TEXT[d]}</Tag>],
+    ['处置结果', <Tag color={DISPOSITION_COLOR[d]}>{fieldText('action', d, zh)}</Tag>],
     ['事件描述', e.detail || '-'],
   ];
   return (
