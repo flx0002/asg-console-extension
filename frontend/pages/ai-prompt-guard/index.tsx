@@ -310,9 +310,32 @@ const AiPromptGuardPage: React.FC = () => {
         </div>
       </Card>
 
-      {/* Zone 4: 检测规则（默认运行方式；内置词库简要说明 + 用户自定义检测规则） */}
+      {/* Zone 4: 白名单规则（allowRules，优先级最高：命中即放行，不进入黑名单规则/词库） */}
       <Card
-        title={t('aiContentSec.promptGuard.blacklist', '检测规则')}
+        title={t('aiContentSec.promptGuard.allowRules', '白名单规则')}
+        style={{ marginBottom: 16 }}
+        extra={(
+          <Button type="primary" size="small" onClick={() => openRuleModal('allow', -1)}>
+            {t('aiContentSec.add', '新增规则')}
+          </Button>
+        )}
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12, fontSize: 13 }}>
+          {t('aiContentSec.promptGuard.allowRulesHint', '白名单为放行例外，命中即直接放行，优先级高于黑名单规则与内置词库。')}
+        </Typography.Paragraph>
+        <Table
+          rowKey={(r, i) => `${r.name}-${i}`}
+          dataSource={form.allowRules}
+          columns={renderRuleColumns('allow') as any}
+          size="small"
+          pagination={false}
+          locale={{ emptyText: t('aiContentSec.promptGuard.allowRulesEmpty', '暂无白名单规则') }}
+        />
+      </Card>
+
+      {/* Zone 4.5: 黑名单规则（denyRules，默认运行方式；内置词库简要说明 + 用户自定义拒绝规则） */}
+      <Card
+        title={t('aiContentSec.promptGuard.blacklist', '黑名单规则')}
         style={{ marginBottom: 16 }}
         extra={(
           <Button type="primary" size="small" onClick={() => openRuleModal('deny', -1)}>
@@ -341,29 +364,6 @@ const AiPromptGuardPage: React.FC = () => {
         />
       </Card>
 
-      {/* Zone 4.5: 允许规则（白名单，优先级最高：命中即放行，不进检测规则/词库） */}
-      <Card
-        title={t('aiContentSec.promptGuard.allowRules', '允许规则')}
-        style={{ marginBottom: 16 }}
-        extra={(
-          <Button type="primary" size="small" onClick={() => openRuleModal('allow', -1)}>
-            {t('aiContentSec.add', '新增规则')}
-          </Button>
-        )}
-      >
-        <Typography.Paragraph type="secondary" style={{ marginBottom: 12, fontSize: 13 }}>
-          {t('aiContentSec.promptGuard.allowRulesHint', '白名单为放行例外，命中即直接放行，优先级高于检测规则与内置词库。')}
-        </Typography.Paragraph>
-        <Table
-          rowKey={(r, i) => `${r.name}-${i}`}
-          dataSource={form.allowRules}
-          columns={renderRuleColumns('allow') as any}
-          size="small"
-          pagination={false}
-          locale={{ emptyText: t('aiContentSec.promptGuard.allowRulesEmpty', '暂无允许规则') }}
-        />
-      </Card>
-
       {/* Zone 5: 拒绝响应文案 */}
       <Card title={t('aiContentSec.rejectMessage', '拒绝响应文案')} style={{ marginBottom: 16 }}>
         <div style={{ maxWidth: 720 }}>
@@ -385,7 +385,7 @@ const AiPromptGuardPage: React.FC = () => {
       <Modal
         open={ruleModal.open}
         title={ruleModal.kind === 'deny'
-          ? t('aiContentSec.promptGuard.blacklist', '检测规则')
+          ? t('aiContentSec.promptGuard.blacklist', '黑名单规则')
           : t('aiContentSec.promptGuard.allowRules', '白名单规则')}
         onOk={commitRuleModal}
         onCancel={() => setRuleModal({ ...ruleModal, open: false })}
