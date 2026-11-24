@@ -7,14 +7,14 @@
  *  2. 「检测模式」原为黑/白名单选择（deny/allow）——改为 WAF 式「命中处置」：默认以检测规则运行，
  *     可配置命中规则后 拦截 / 仅检测告警。后端契约字段为 `detectMode`（deny=拦截 / monitor=仅告警），
  *     本页下发真实字段名与取值（BE-012：根因是前端之前写了后端不读的 `mode`，已对齐）。
- *     本页默认以检测规则方式运行；allowRules 不在本页编辑，读入后端存量后只读透传保留。
+ *     本页默认以检测规则方式运行；allowRules（白名单）在本页可编辑，命中即放行、优先级最高。
  *  3. 内置内容合规词库不再是「独立 Wasm 内置处置通道」——它与本页检测规则同构，命中处置
  *     同样遵循「命中处置」模式；词库只是默认预置在库里的检测词条。
  *  4. 本页不展示词库详情（折叠卡片/KPI 已移除），仅在检测规则区给一行简要说明 + 跳转
  *     「内容合规词库」页；keywordRules/advisoryRules 读入后原样透传保存，避免本页保存清空存量词库。
  *
- * 数据流：本页编辑 denyRules/detectMode/rejectMessage；allowRules/keywordRules/advisoryRules 均只读
- * 透传（不渲染编辑入口），由后端存量、词库页与运维装载脚本维护，本页保存不会静默清空。
+ * 数据流：本页编辑 denyRules/allowRules/detectMode/rejectMessage；keywordRules/advisoryRules 只读
+ * 透传（不渲染编辑入口），由词库页与运维装载脚本维护，本页保存不会静默清空。
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -56,7 +56,7 @@ const defaultDenyRules: RuleItem[] = [
   { name: '系统提示词窃取', regex: '(?i)(reveal\\s+system\\s+prompt|输出(系统)?提示词)', matchType: 'regex' },
   { name: '角色扮演越狱', regex: '(?i)(you\\s+are\\s+now\\s+(DAN|developer mode)|假装(你)?是(?!.*安全))', matchType: 'regex' },
 ];
-const defaultAllowRules: RuleItem[] = [];  // 本页不编辑，仅在读入后端存量缺失时占位
+const defaultAllowRules: RuleItem[] = [];  // 本页可编辑；后端存量缺失时以空数组占位
 
 // 内置基线词库（后端不可用时透传用；正常应从 CR 读取存量）
 const buildDefaultKeywordRules = (): KeywordRuleGroup[] =>
@@ -338,6 +338,29 @@ const AiPromptGuardPage: React.FC = () => {
           columns={renderRuleColumns('deny') as any}
           size="small"
           pagination={false}
+        />
+      </Card>
+
+      {/* Zone 4.5: 允许规则（白名单，优先级最高：命中即放行，不进检测规则/词库） */}
+      <Card
+        title={t('aiContentSec.promptGuard.allowRules', '允许规则')}
+        style={{ marginBottom: 16 }}
+        extra={(
+          <Button type="primary" size="small" onClick={() => openRuleModal('allow', -1)}>
+            {t('aiContentSec.add', '新增规则')}
+          </Button>
+        )}
+      >
+        <Typography.Paragraph type="secondary" style={{ marginBottom: 12, fontSize: 13 }}>
+          {t('aiContentSec.promptGuard.allowRulesHint', '白名单为放行例外，命中即直接放行，优先级高于检测规则与内置词库。')}
+        </Typography.Paragraph>
+        <Table
+          rowKey={(r, i) => `${r.name}-${i}`}
+          dataSource={form.allowRules}
+          columns={renderRuleColumns('allow') as any}
+          size="small"
+          pagination={false}
+          locale={{ emptyText: t('aiContentSec.promptGuard.allowRulesEmpty', '暂无允许规则') }}
         />
       </Card>
 

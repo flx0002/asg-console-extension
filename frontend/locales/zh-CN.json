@@ -982,7 +982,9 @@
       "detectModeHint": "检测模式：命中规则（含内置词库）仅记入安全事件审计，不拦截流量",
       "blacklist": "检测规则",
       "blacklistHint": "命中规则（含内置内容合规词库）即按上方「命中处置」拦截或仅告警。",
-      "allowRulesHint": "白名单为放行例外，命中即直接放行，优先级高于检测规则与内置词库。"
+      "allowRules": "允许规则",
+      "allowRulesHint": "白名单为放行例外，命中即直接放行，优先级高于检测规则与内置词库。",
+      "allowRulesEmpty": "暂无允许规则"
     },
     "keywordFilter": {
       "requestFilter": "请求体关键词过滤",

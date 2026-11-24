@@ -983,7 +983,9 @@
       "detectModeHint": "Detect mode: rule hits (including the built-in lexicon) are only recorded to security-event audit and not blocked",
       "blacklist": "Detection Rules",
       "blacklistHint": "Rule hits (including the built-in compliance lexicon) are blocked or alert-only per the Action on Hit above.",
-      "allowRulesHint": "Whitelist are pass-through exceptions; a hit is allowed directly and takes priority over the detection rules and built-in lexicon."
+      "allowRules": "Allow Rules",
+      "allowRulesHint": "Whitelist are pass-through exceptions; a hit is allowed directly and takes priority over the detection rules and built-in lexicon.",
+      "allowRulesEmpty": "No allow rules yet"
     },
     "keywordFilter": {
       "requestFilter": "Request Body Keyword Filter",
