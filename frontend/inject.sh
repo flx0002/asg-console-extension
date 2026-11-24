@@ -601,6 +601,38 @@ if (!j.dependencies['@antv/g6']) {
 PYEOF
 
 echo
+echo "=== 5b. 登录页背景图注入（幂等；图片入 src + 相对路径 url）==="
+python3 - "$SRC/pages/login/index.module.css" "$SRC/pages/login/login-bg.jpg" "$EXT_DIR/brand/assets/public/login-bg.jpg" <<'PYEOF_LOGIN_BG'
+import sys, shutil, os
+css_path, dst_img, src_img = sys.argv[1], sys.argv[2], sys.argv[3]
+OLD = '/* ASG_LOGIN_BG_PATCH'
+NEW = '/* ASG_LOGIN_BG_V2'
+s = open(css_path, encoding='utf-8').read()
+# 自清理：注入段恒在文件末尾，砍掉历史 V1/V2 段保证幂等
+for mark in (OLD, NEW):
+    if mark in s:
+        s = s[:s.index(mark)].rstrip() + '\n'
+assert '.container {' in s, 'login CSS missing .container anchor'
+assert os.path.isfile(src_img), 'source image missing: ' + src_img
+extra = """
+/* ASG_LOGIN_BG_V2 - industrial login background (relative url, injected by inject.sh); do not edit */
+.container {
+  background:
+    linear-gradient(180deg, rgba(6, 10, 28, 0.32) 0%, rgba(6, 10, 28, 0.08) 42%, rgba(6, 10, 28, 0.45) 100%),
+    url('./login-bg.jpg') center center / cover no-repeat fixed;
+}
+"""
+s = s + extra
+open(css_path, 'w', encoding='utf-8').write(s)
+shutil.copyfile(src_img, dst_img)  # webpack 相对路径解析需要图片在 src 同目录
+chk = open(css_path, encoding='utf-8').read()
+assert chk.count(NEW) == 1, 'verify: marker count abnormal'
+assert "url('./login-bg.jpg')" in chk, 'verify: relative url missing'
+assert OLD not in chk, 'verify: old V1 block still present'
+assert os.path.isfile(dst_img), 'verify: image not copied to src'
+print('  OK: login bg V2 injected (relative url, brighter overlay)')
+PYEOF_LOGIN_BG
+
 echo "=== 6. 注入结果统计 ==="
 cd "$CON"
 git status --porcelain -- frontend/ | wc -l
