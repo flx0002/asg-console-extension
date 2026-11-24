@@ -172,6 +172,15 @@ public class AiShadowDetectController {
         if (!isCollectorTokenValid(token)) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+        // 总开关关闭期间不落库任何事件：影子AI的四个上报方（detect/key-auth/pii/bypass）
+        // 共用本端点，这是唯一写入口；关闭即整条判定链停止记录，含 surface=route 准入事件。
+        // 返回 200 + 0 而非拒绝：上报是 best-effort，4xx 只会让插件刷错误日志并重试。
+        // isFeatureEnabled() 刻意 fail-open：读不到状态时继续记录，绝不静默丢审计。
+        if (!isFeatureEnabled()) {
+            int dropped = request == null || request.getEvents() == null ? 0 : request.getEvents().size();
+            log.info("Shadow AI disabled, dropped {} detect events", dropped);
+            return ResponseEntity.ok(Response.success(0));
+        }
         if (request == null || request.getEvents() == null || request.getEvents().isEmpty()) {
             throw new ValidationException("events must not be empty");
         }
