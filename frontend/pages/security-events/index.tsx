@@ -66,6 +66,9 @@ const EVENT_TYPE_META: Record<string, { business: string; plugin: string }> = {
   keyword_block: { business: 'keyword-filter', plugin: 'request-block' },
   compliance_hit: { business: 'content-compliance', plugin: 'ai-prompt-guard' },
   compliance_advisory: { business: 'content-compliance', plugin: 'ai-prompt-guard' },
+  // 数据面 ai-prompt-guard 对附录 A.1-A.4 命中实际写入的 type（见 main.go eventFor），
+  // 缺失该映射会让合规事件落到 unknown 业务场景/归属插件。
+  content_violation: { business: 'content-compliance', plugin: 'ai-prompt-guard' },
   waf_block: { business: 'waf-attack', plugin: 'waf' },
   waf_detect: { business: 'waf-attack', plugin: 'waf' },
   pii_hit: { business: 'pii-leak', plugin: 'ai-pii-guard' },
