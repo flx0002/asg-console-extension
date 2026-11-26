@@ -889,7 +889,21 @@
       "passed": "已放行",
       "highRisk": "高风险",
       "mediumRisk": "中风险",
-      "lowRisk": "低风险"
+      "lowRisk": "低风险",
+      "serviceName": "服务名",
+      "servicePort": "服务端口",
+      "serviceHost": "服务域名（阿里云内容安全 endpoint）",
+      "accessKey": "访问密钥 AK",
+      "secretKey": "访问密钥 SK",
+      "requestCheckService": "请求检测服务",
+      "responseCheckService": "响应检测服务",
+      "requestContentJsonPath": "请求内容 JSONPath",
+      "responseContentJsonPath": "响应内容 JSONPath",
+      "responseStreamContentJsonPath": "流式响应内容 JSONPath",
+      "denyCode": "拒绝状态码",
+      "protocol": "协议类型（openai / original）",
+      "requiredHint": "请先填写服务域名、访问密钥 AK 和 SK",
+      "serviceHint": "本插件对接阿里云内容安全服务（spec v2.0.3），需提供有效的 endpoint 与 AK/SK；本环境未配置该服务时请勿启用。"
     },
     "piiGuard": {
       "requestProtect": "请求保护",

@@ -8,7 +8,48 @@ import { useTranslation } from 'react-i18next';
 import yaml from 'js-yaml';
 
 const PLUGIN_NAME = 'ai-pii-guard';
-const EVENT_TYPE_FILTER = 'pii_leak';
+
+// spec.yaml 契约：rules 为对象数组（name/pattern/replacement + IR-023 扩展 category/severity/action）。
+// 页面勾选的是内置规则短名，保存时展开为完整对象；pattern 与插件 DefaultPIIRules/DefaultSecretRules/
+// DefaultCodeRules 保持一致，避免两套定义漂移。
+interface RuleObject {
+  name: string;
+  pattern: string;
+  replacement: string;
+  category: 'pii' | 'secret' | 'code';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  action: 'mask' | 'block' | 'alert';
+}
+
+const PAGE_RULE_DEFS: Record<string, RuleObject[]> = {
+  email: [{ name: 'email', pattern: '\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b', replacement: '[EMAIL_REDACTED]', category: 'pii', severity: 'medium', action: 'mask' }],
+  phone: [
+    { name: 'phone_cn', pattern: '\\b1[3-9]\\d{9}\\b', replacement: '[PHONE_REDACTED]', category: 'pii', severity: 'medium', action: 'mask' },
+    { name: 'phone_intl', pattern: '\\+\\d{1,3}[-.\\s]?\\d{1,14}', replacement: '[PHONE_REDACTED]', category: 'pii', severity: 'low', action: 'mask' },
+  ],
+  idcard: [{ name: 'id_card_cn', pattern: '\\b\\d{17}[\\dXx]\\b', replacement: '[ID_REDACTED]', category: 'pii', severity: 'high', action: 'mask' }],
+  creditcard: [{ name: 'credit_card', pattern: '\\b(?:\\d{4}[-\\s]?){3}\\d{4}\\b', replacement: '[CARD_REDACTED]', category: 'pii', severity: 'high', action: 'mask' }],
+  ssn: [{ name: 'ssn_us', pattern: '\\b\\d{3}-\\d{2}-\\d{4}\\b', replacement: '[SSN_REDACTED]', category: 'pii', severity: 'high', action: 'mask' }],
+  ipv4: [{ name: 'ipv4', pattern: '\\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\b', replacement: '[IP_REDACTED]', category: 'pii', severity: 'low', action: 'mask' }],
+  apikey: [{ name: 'generic_secret_assignment', pattern: '(?i)\\b(api[_-]?key|apikey|secret[_-]?key|access[_-]?token|auth[_-]?token|passwd|password)\\b["\']?\\s*[:=]\\s*["\']?[A-Za-z0-9+/=_-]{12,}', replacement: '[SECRET_REDACTED]', category: 'secret', severity: 'high', action: 'block' }],
+};
+
+// 页面未暴露的 IR-023 保护规则：始终写入 rules，避免前端保存后凭据阻断/代码告警失效。
+const ALWAYS_ON_RULES: RuleObject[] = [
+  { name: 'aws_access_key', pattern: '\\bAKIA[0-9A-Z]{16}\\b', replacement: '[SECRET_REDACTED]', category: 'secret', severity: 'critical', action: 'block' },
+  { name: 'private_key_block', pattern: '-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY( BLOCK)?-----', replacement: '[SECRET_REDACTED]', category: 'secret', severity: 'critical', action: 'block' },
+  { name: 'github_token', pattern: '\\bgh[pousr]_[A-Za-z0-9]{30,}\\b', replacement: '[SECRET_REDACTED]', category: 'secret', severity: 'critical', action: 'block' },
+  { name: 'openai_style_key', pattern: '\\bsk-[A-Za-z0-9_-]{20,}\\b', replacement: '[SECRET_REDACTED]', category: 'secret', severity: 'high', action: 'block' },
+  { name: 'jwt_token', pattern: '\\beyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{5,}\\b', replacement: '[SECRET_REDACTED]', category: 'secret', severity: 'high', action: 'block' },
+  { name: 'code_snippet', pattern: '(?m)(?:\\x60{3})|(?:^\\s*(?:def\\s+\\w+\\(|func\\s+\\w+\\(|class\\s+\\w+|import\\s+[\\w.]+|package\\s+\\w+|#include\\s*[<"]))', replacement: '[CODE_REDACTED]', category: 'code', severity: 'medium', action: 'alert' },
+];
+
+// 规则名 → 页面短名，用于从 spec 格式配置回读勾选状态。
+const RULE_TO_PAGE: Record<string, string> = {};
+Object.entries(PAGE_RULE_DEFS).forEach(([shortName, rules]) => {
+  rules.forEach(r => { RULE_TO_PAGE[r.name] = shortName; });
+});
+const ALL_BUILTIN_NAMES = new Set([...Object.values(PAGE_RULE_DEFS).flat().map(r => r.name), ...ALWAYS_ON_RULES.map(r => r.name)]);
 
 const BUILT_IN_RULE_OPTIONS = [
   { label: 'aiContentSec.piiGuard.email', value: 'email' },
@@ -35,12 +76,43 @@ interface FormState {
 
 const defaultFormState: FormState = {
   requestProtect: true,
-  responseProtect: true,
+  responseProtect: false,
   builtInRules: ['email', 'phone', 'idcard', 'creditcard', 'ssn', 'ipv4', 'apikey'],
-  customRules: [
-    { name: '自定义手机号', regex: '\\d{3}-\\d{4}-\\d{4}', replaceValue: '***-****-****' },
-    { name: '内部工号', regex: 'EMP\\d{6}', replaceValue: 'EMP******' },
-  ],
+  customRules: [],
+};
+
+// 兼容旧格式（checkRequest + 字符串数组 rules + customRules）与新格式（protect_request + 对象数组 rules）。
+const parseConfig = (cfg: any): FormState => {
+  const requestProtect = cfg.protect_request ?? cfg.checkRequest ?? defaultFormState.requestProtect;
+  const responseProtect = cfg.protect_response ?? cfg.checkResponse ?? defaultFormState.responseProtect;
+  const rawRules: any[] = Array.isArray(cfg.rules) ? cfg.rules : [];
+  const builtInRules: string[] = [];
+  let customRules: CustomRule[] = [];
+
+  if (rawRules.length > 0 && typeof rawRules[0] === 'string') {
+    // 旧格式：rules 是内置规则短名字符串数组
+    rawRules.forEach(name => {
+      if (RULE_TO_PAGE[name] && !builtInRules.includes(RULE_TO_PAGE[name])) builtInRules.push(RULE_TO_PAGE[name]);
+    });
+    customRules = Array.isArray(cfg.customRules) ? cfg.customRules : [];
+  } else if (rawRules.length > 0) {
+    // 新格式：rules 是对象数组
+    rawRules.forEach(r => {
+      const name = typeof r?.name === 'string' ? r.name : '';
+      if (!name) return;
+      const shortName = RULE_TO_PAGE[name];
+      if (shortName) {
+        if (!builtInRules.includes(shortName)) builtInRules.push(shortName);
+      } else if (!ALL_BUILTIN_NAMES.has(name)) {
+        customRules.push({ name, regex: r.pattern ?? '', replaceValue: r.replacement ?? '' });
+      }
+    });
+  } else {
+    // 空配置：插件将使用全部内置规则，页面勾选默认全部
+    builtInRules.push(...defaultFormState.builtInRules);
+  }
+
+  return { requestProtect, responseProtect, builtInRules, customRules };
 };
 
 const AiPiiGuardPage: React.FC = () => {
@@ -51,11 +123,9 @@ const AiPiiGuardPage: React.FC = () => {
   const [initialForm, setInitialForm] = useState<FormState>({ ...defaultFormState });
   const [pluginData, setPluginData] = useState<any>(null);
 
-  // 检测日志已迁移至「AI 内容安全 → 内容安全事件」统一入口（三权分立：配置员与审计员权限分离）
-
   // Modal state for custom rule CRUD
   const [modalVisible, setModalVisible] = useState(false);
-  const [editingIndex, setEditingIndex] = useState(-1); // -1 means adding new
+  const [editingIndex, setEditingIndex] = useState(-1);
   const [ruleName, setRuleName] = useState('');
   const [ruleRegex, setRuleRegex] = useState('');
   const [ruleReplaceValue, setRuleReplaceValue] = useState('');
@@ -71,12 +141,7 @@ const AiPiiGuardPage: React.FC = () => {
           try {
             const cfg = yaml.load(res.rawConfigurations) as any;
             if (cfg) {
-              const parsed: FormState = {
-                requestProtect: cfg.checkRequest ?? defaultFormState.requestProtect,
-                responseProtect: cfg.checkResponse ?? defaultFormState.responseProtect,
-                builtInRules: cfg.rules ?? defaultFormState.builtInRules,
-                customRules: cfg.customRules ?? defaultFormState.customRules,
-              };
+              const parsed = parseConfig(cfg);
               setForm(parsed);
               setInitialForm(parsed);
             }
@@ -107,12 +172,30 @@ const AiPiiGuardPage: React.FC = () => {
     }
   };
 
-  const buildRawConfig = () => yaml.dump({
-    checkRequest: form.requestProtect,
-    checkResponse: form.responseProtect,
-    rules: form.builtInRules,
-    customRules: form.customRules,
-  });
+  const buildRawConfig = () => {
+    const rules: RuleObject[] = [];
+    form.builtInRules.forEach(shortName => {
+      (PAGE_RULE_DEFS[shortName] ?? []).forEach(r => rules.push({ ...r }));
+    });
+    ALWAYS_ON_RULES.forEach(r => rules.push({ ...r }));
+    form.customRules.forEach(c => {
+      if (!c.name || !c.regex) return;
+      rules.push({
+        name: c.name,
+        pattern: c.regex,
+        replacement: c.replaceValue || '[REDACTED]',
+        category: 'pii',
+        severity: 'medium',
+        action: 'mask',
+      });
+    });
+    return yaml.dump({
+      protect_request: form.requestProtect,
+      protect_response: form.responseProtect,
+      log_matches: true,
+      rules,
+    });
+  };
 
   const handleSave = async () => {
     try {
@@ -294,7 +377,7 @@ const AiPiiGuardPage: React.FC = () => {
         </div>
       </Card>
 
-      {/* Zone 3.5: 自定义 PII 规则 · Card 分区块，extra Button primary small */}
+      {/* Zone 3.5: 自定义 PII 规则 */}
       <Card
         title={t('aiContentSec.piiGuard.customRules')}
         style={{ marginBottom: 16 }}
@@ -312,8 +395,6 @@ const AiPiiGuardPage: React.FC = () => {
           size="small"
         />
       </Card>
-
-      {/* Zone 4: 检测日志已迁移至「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离） */}
 
       {/* Modal for adding/editing custom rules */}
       <Modal

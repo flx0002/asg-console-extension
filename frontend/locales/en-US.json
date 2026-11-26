@@ -890,7 +890,21 @@
       "passed": "Passed",
       "highRisk": "High Risk",
       "mediumRisk": "Medium Risk",
-      "lowRisk": "Low Risk"
+      "lowRisk": "Low Risk",
+      "serviceName": "Service Name",
+      "servicePort": "Service Port",
+      "serviceHost": "Service Host (Aliyun content moderation endpoint)",
+      "accessKey": "Access Key (AK)",
+      "secretKey": "Secret Key (SK)",
+      "requestCheckService": "Request Check Service",
+      "responseCheckService": "Response Check Service",
+      "requestContentJsonPath": "Request Content JSONPath",
+      "responseContentJsonPath": "Response Content JSONPath",
+      "responseStreamContentJsonPath": "Stream Response Content JSONPath",
+      "denyCode": "Deny Status Code",
+      "protocol": "Protocol (openai / original)",
+      "requiredHint": "Please fill in service host, access key and secret key",
+      "serviceHint": "This plugin integrates Aliyun Content Moderation (spec v2.0.3) and requires a valid endpoint with AK/SK. Do not enable it in this environment without service credentials."
     },
     "piiGuard": {
       "requestProtect": "Request Protection",
