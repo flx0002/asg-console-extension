@@ -1,6 +1,6 @@
 /* eslint-disable max-len, no-nested-ternary */
 import React, { useState, useEffect } from 'react';
-import { Card, Switch, Input, InputNumber, Table, Tag, Button, message, Space, Modal, Select, Popconfirm, Typography } from 'antd';
+import { Card, Switch, Input, InputNumber, Table, Tag, Button, message, Space, Modal, Popconfirm, Typography } from 'antd';
 import { useRequest } from 'ahooks';
 import { getGlobalPluginInstance, updateGlobalPluginInstance, updateRoutePluginInstance } from '@/services';
 import { GlobalSwitchHint, RouteScopeCard, useRouteScope } from '../_route-scope';
@@ -28,7 +28,6 @@ interface PresetRule {
 interface CustomRule {
   key: string;
   keyword: string;
-  matchMode: string;
   enabled: boolean;
 }
 
@@ -63,10 +62,12 @@ const initialPresetRules: PresetRule[] = [
   },
 ];
 
+// request-block 插件契约只支持 block_bodies 包含匹配，无匹配方式字段；
+// 原 matchMode（contains/regex）既不生效也不回显，故移除该假配置。
 const initialCustomRules: CustomRule[] = [
-  { key: '1', keyword: '越狱', matchMode: 'contains', enabled: true },
-  { key: '2', keyword: 'jailbreak', matchMode: 'contains', enabled: true },
-  { key: '3', keyword: 'DAN\\s+mode', matchMode: 'regex', enabled: false },
+  { key: '1', keyword: '越狱', enabled: true },
+  { key: '2', keyword: 'jailbreak', enabled: true },
+  { key: '3', keyword: 'DAN\\s+mode', enabled: false },
 ];
 
 const AiKeywordFilterPage: React.FC = () => {
@@ -79,9 +80,11 @@ const AiKeywordFilterPage: React.FC = () => {
 
   // 检测日志已迁移至「AI 内容安全 → 内容安全事件」统一入口（三权分立：配置员与审计员权限分离）
 
-  // Rule state
+  // Rule state（presetSnapshot/customSnapshot 保存上次加载或保存时的规则，供重置还原）
   const [presetRules, setPresetRules] = useState<PresetRule[]>(initialPresetRules);
   const [customRules, setCustomRules] = useState<CustomRule[]>(initialCustomRules);
+  const [presetSnapshot, setPresetSnapshot] = useState<PresetRule[]>(initialPresetRules);
+  const [customSnapshot, setCustomSnapshot] = useState<CustomRule[]>(initialCustomRules);
 
   // Modal state
   const [modalVisible, setModalVisible] = useState(false);
@@ -90,7 +93,6 @@ const AiKeywordFilterPage: React.FC = () => {
 
   // Custom rule form
   const [editKeyword, setEditKeyword] = useState('');
-  const [editMatchMode, setEditMatchMode] = useState('contains');
 
   // Preset rule form
   const [editRuleName, setEditRuleName] = useState('');
@@ -119,14 +121,19 @@ const AiKeywordFilterPage: React.FC = () => {
               };
               setForm(parsed);
               setInitialForm(parsed);
-              if (hasBodies) {
-                const set = new Set(bodies);
-                setPresetRules(prev => prev.map(r => ({ ...r, enabled: r.keywords.some(k => set.has(k)) })));
-                setCustomRules(prev => prev.map(r => ({ ...r, enabled: set.has(r.keyword) })));
-              }
+              // 从 block_bodies 还原每条规则的启用态；hasBodies=false（含 requestBodyFilter 关闭）
+              // 时全部置为 false，保证界面与下发配置一致，并同步进重置快照。
+              const set = new Set(bodies);
+              const restoredPreset = initialPresetRules.map(r => ({ ...r, enabled: hasBodies && r.keywords.some(k => set.has(k)) }));
+              const restoredCustom = initialCustomRules.map(r => ({ ...r, enabled: hasBodies && set.has(r.keyword) }));
+              setPresetRules(restoredPreset);
+              setCustomRules(restoredCustom);
+              setPresetSnapshot(restoredPreset);
+              setCustomSnapshot(restoredCustom);
             }
           } catch {
-            // ignore parse error, use defaults
+            // 存量 YAML 解析失败：明确提示，避免用户误把默认值当作存量配置后保存覆盖
+            message.error(t('aiContentSec.loadFailed'));
           }
         }
       },
@@ -145,6 +152,7 @@ const AiKeywordFilterPage: React.FC = () => {
       const params = { ...pluginData, enabled: checked };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       setEnabled(checked);
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
@@ -174,6 +182,7 @@ const AiKeywordFilterPage: React.FC = () => {
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       if (scope.selected.length) {
         const failed: string[] = [];
         await Promise.all(scope.selected.map(async (n) => {
@@ -185,6 +194,8 @@ const AiKeywordFilterPage: React.FC = () => {
         await scope.reload();
       }
       setInitialForm({ ...form });
+      setPresetSnapshot(presetRules.map(r => ({ ...r })));
+      setCustomSnapshot(customRules.map(r => ({ ...r })));
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
       message.error(t('aiContentSec.saveFailed'));
@@ -193,6 +204,8 @@ const AiKeywordFilterPage: React.FC = () => {
 
   const handleReset = () => {
     setForm({ ...initialForm });
+    setPresetRules(presetSnapshot.map(r => ({ ...r })));
+    setCustomRules(customSnapshot.map(r => ({ ...r })));
   };
 
   const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
@@ -204,7 +217,6 @@ const AiKeywordFilterPage: React.FC = () => {
     setModalType('custom');
     setEditingIndex(-1);
     setEditKeyword('');
-    setEditMatchMode('contains');
     setModalVisible(true);
   };
 
@@ -213,7 +225,6 @@ const AiKeywordFilterPage: React.FC = () => {
     setModalType('custom');
     setEditingIndex(index);
     setEditKeyword(rule.keyword);
-    setEditMatchMode(rule.matchMode);
     setModalVisible(true);
   };
 
@@ -225,9 +236,8 @@ const AiKeywordFilterPage: React.FC = () => {
     if (editingIndex === -1) {
       // Add
       const newRule: CustomRule = {
-        key: Date.now().toString(),
+        key: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         keyword: editKeyword.trim(),
-        matchMode: editMatchMode,
         enabled: true,
       };
       setCustomRules(prev => [...prev, newRule]);
@@ -235,7 +245,7 @@ const AiKeywordFilterPage: React.FC = () => {
       // Edit
       setCustomRules(prev =>
         prev.map((r, i) =>
-          (i === editingIndex ? { ...r, keyword: editKeyword.trim(), matchMode: editMatchMode } : r)));
+          (i === editingIndex ? { ...r, keyword: editKeyword.trim() } : r)));
     }
     setModalVisible(false);
   };
@@ -277,7 +287,7 @@ const AiKeywordFilterPage: React.FC = () => {
     if (editingIndex === -1) {
       // Add
       const newRule: PresetRule = {
-        key: Date.now().toString(),
+        key: `preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: editRuleName.trim(),
         keywords,
         scenario: editScenario.trim(),
@@ -305,12 +315,6 @@ const AiKeywordFilterPage: React.FC = () => {
     } else {
       handlePresetSave();
     }
-  };
-
-  const matchModeLabel = (mode: string) => {
-    if (mode === 'contains') return t('aiContentSec.keywordFilter.matchContains');
-    if (mode === 'regex') return t('aiContentSec.keywordFilter.matchRegex');
-    return mode;
   };
 
   const presetColumns = [
@@ -359,7 +363,7 @@ const AiKeywordFilterPage: React.FC = () => {
             title={t('aiContentSec.keywordFilter.deleteConfirm')}
             onConfirm={() => handlePresetDelete(index)}
             okText={t('aiContentSec.keywordFilter.delete')}
-            cancelText={t('aiContentSec.keywordFilter.edit')}
+            cancelText={t('aiContentSec.cancel')}
           >
             <a style={{ color: '#ff4d4f' }}>{t('aiContentSec.keywordFilter.delete')}</a>
           </Popconfirm>
@@ -373,12 +377,6 @@ const AiKeywordFilterPage: React.FC = () => {
       title: t('aiContentSec.keywordFilter.keyword'),
       dataIndex: 'keyword',
       key: 'keyword',
-    },
-    {
-      title: t('aiContentSec.keywordFilter.matchMode'),
-      dataIndex: 'matchMode',
-      key: 'matchMode',
-      render: (mode: string) => <Tag color={mode === 'regex' ? 'purple' : 'blue'}>{matchModeLabel(mode)}</Tag>,
     },
     {
       title: t('aiContentSec.keywordFilter.ruleStatus'),
@@ -404,7 +402,7 @@ const AiKeywordFilterPage: React.FC = () => {
             title={t('aiContentSec.keywordFilter.deleteConfirm')}
             onConfirm={() => handleCustomDelete(index)}
             okText={t('aiContentSec.keywordFilter.delete')}
-            cancelText={t('aiContentSec.keywordFilter.edit')}
+            cancelText={t('aiContentSec.cancel')}
           >
             <a style={{ color: '#ff4d4f' }}>{t('aiContentSec.keywordFilter.delete')}</a>
           </Popconfirm>
@@ -487,13 +485,6 @@ const AiKeywordFilterPage: React.FC = () => {
           <Typography.Text type="secondary" style={{ display: 'block', fontSize: 12, marginBottom: 8 }}>
             {t('aiContentSec.keywordFilter.scopeHint')}
           </Typography.Text>
-
-          <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end' }}>
-            <Space>
-              <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
-              <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
-            </Space>
-          </div>
         </div>
       </Card>
 
@@ -527,7 +518,13 @@ const AiKeywordFilterPage: React.FC = () => {
         />
       </Card>
 
-      {/* Zone 4: 拦截日志已迁移至「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离） */}
+      {/* Zone 4: 保存动作（整页配置作用于所有卡片，置于全部内容卡之后） */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
+        <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
+      </div>
+
+      {/* Zone 5: 拦截日志已迁移至「AI 内容安全 → 内容安全事件」（三权分立：配置与审计分离） */}
 
       {/* Modal for Add/Edit */}
       <Modal
@@ -539,7 +536,7 @@ const AiKeywordFilterPage: React.FC = () => {
         onOk={handleModalOk}
         onCancel={() => setModalVisible(false)}
         okText={t('aiContentSec.saveConfig')}
-        cancelText={t('aiContentSec.resetConfig')}
+        cancelText={t('aiContentSec.cancel')}
       >
         {modalType === 'custom' ? (
           <>
@@ -549,19 +546,6 @@ const AiKeywordFilterPage: React.FC = () => {
                 value={editKeyword}
                 onChange={e => setEditKeyword(e.target.value)}
                 placeholder={t('aiContentSec.keywordFilter.keywordPlaceholder')}
-              />
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ marginBottom: 6, fontWeight: 500 }}>{t('aiContentSec.keywordFilter.matchMode')}</div>
-              <Select
-                value={editMatchMode}
-                onChange={v => setEditMatchMode(v)}
-                style={{ width: '100%' }}
-                placeholder={t('aiContentSec.keywordFilter.matchModePlaceholder')}
-                options={[
-                  { value: 'contains', label: t('aiContentSec.keywordFilter.matchContains') },
-                  { value: 'regex', label: t('aiContentSec.keywordFilter.matchRegex') },
-                ]}
               />
             </div>
           </>

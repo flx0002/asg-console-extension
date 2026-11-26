@@ -128,7 +128,10 @@ export function useRouteScope(pluginName: string): RouteScope {
 export const RouteScopeCard: React.FC<{
   scope: RouteScope;
   getRawConfig: () => string;
-}> = ({ scope, getRawConfig }) => {
+  // 可选：保存作用范围前的配置校验（如凭据必填），返回 false 则阻止提交。
+  // 不传则不校验，保持其他页面行为不变。
+  validate?: () => boolean;
+}> = ({ scope, getRawConfig, validate }) => {
   const { t } = useTranslation();
   const [keyword, setKeyword] = useState('');
   const [filter, setFilter] = useState<'all' | 'selected' | 'unselected'>('all');
@@ -281,7 +284,10 @@ export const RouteScopeCard: React.FC<{
               type="primary"
               loading={scope.saving}
               disabled={!dirty}
-              onClick={() => scope.applyScope(getRawConfig())}
+              onClick={() => {
+                if (validate && !validate()) return;
+                scope.applyScope(getRawConfig());
+              }}
             >
               {t('aiContentSec.routeScope.saveScope')}
             </Button>

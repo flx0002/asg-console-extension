@@ -21,6 +21,67 @@ const BASE_ENGINE = 'SecRuleEngine On';
 // mode → 命中动作：block=拦截(deny,403)，detect=仅检测放行(pass)
 const actionFor = (mode: string): string => (mode === 'block' ? 'deny,status:403' : 'pass');
 
+// SecRule action 段处理：deny/block/drop/reject 是拦截动作（大小写无关），
+// status:N 是配套状态码；msg:'...' 文案里即使含这些字样也不算动作。
+const BLOCK_ACTION_RE = /^(deny|block|drop|reject)$/i;
+const STATUS_RE = /^status\s*:\s*\d+$/i;
+
+// 提取 SecRule 行尾的 action 段（含外层双引号）。正则允许单引号 msg 内含双引号，
+// 例如 msg:'say "deny" now'——否则会把 msg 尾部误当 action 段导致拦截动作漏判/漏中和。
+const ACTION_SEG_RE = /"(?:[^"']|'[^']*')*"\s*$/;
+// 从正则 match（形如 "id:..,deny,msg:'..'"）中取出不含外层引号的 body
+const actionBodyOf = (match: string): string => match.replace(/\s*$/, '').slice(1, -1);
+
+// 按逗号切 action 段，但跳过引号内的逗号（msg:'a,b,c' 必须整体算一个 token）。
+// neutralize 与 hasBlockAction 共用此解析器，保证"中和什么"与"判定什么"口径一致。
+const splitAction = (body: string): string[] => {
+  const tokens: string[] = [];
+  let cur = '';
+  let quote = '';
+  for (const ch of body) {
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = '';
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+    } else if (ch === ',') {
+      tokens.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  tokens.push(cur);
+  return tokens;
+};
+
+// 仅检测模式下中和自定义规则里的拦截动作：只改 action 段（行尾最后一组引号内），
+// 不碰 @rx 模式串与 msg:'...' 文案。中和后丢弃 action 段内所有 status:N。
+const neutralizeDenyAction = (line: string): string => line.replace(ACTION_SEG_RE, (match) => {
+  const tokens = splitAction(actionBodyOf(match));
+  const hasBlock = tokens.some((tk) => BLOCK_ACTION_RE.test(tk.trim()));
+  if (!hasBlock) return match;
+  const out: string[] = [];
+  tokens.forEach((tk) => {
+    const trimmed = tk.trim();
+    if (BLOCK_ACTION_RE.test(trimmed)) {
+      out.push(tk.replace(trimmed, 'pass'));
+    } else if (!STATUS_RE.test(trimmed)) {
+      out.push(tk);
+    }
+  });
+  return `"${out.join(',')}"`;
+});
+
+// 回读命中模式：action 段存在独立拦截动作 token 才视为拦截，
+// msg:'...,deny...' 文案不算（splitAction 保证 msg 整体是一个 token）。
+const hasBlockAction = (lines: string[]): boolean => lines.some((line) => {
+  const m = line.match(ACTION_SEG_RE);
+  if (!m) return false;
+  return splitAction(actionBodyOf(m[0])).some((tk) => BLOCK_ACTION_RE.test(tk.trim()));
+});
+
 // 每个预置规则集内真实 SecRule 模板中的 __ACT__ 占位符在保存时按 mode 替换。
 interface PresetRuleSet {
   key: string;
@@ -118,6 +179,7 @@ const AiWafPage: React.FC = () => {
   const [initialForm, setInitialForm] = useState<FormState>({ ...defaultFormState });
   const [pluginData, setPluginData] = useState<any>(null);
   const [presetRules, setPresetRules] = useState(PRESET_RULE_SETS);
+  const [presetSnapshot, setPresetSnapshot] = useState<PresetRuleSet[]>(PRESET_RULE_SETS);
 
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [detailRule, setDetailRule] = useState<PresetRuleSet | null>(null);
@@ -146,17 +208,20 @@ const AiWafPage: React.FC = () => {
                 requestDetect: has('SecRequestBodyAccess On'),
                 responseDetect: has('SecResponseBodyAccess On'),
                 enableOwaspCrs: cfg.useCRS ?? defaultFormState.enableOwaspCrs,
-                // 命中动作反推模式：出现 deny 视为拦截，否则视为仅检测
-                ruleEngineMode: has(',deny') ? 'block' : 'detect',
+                // 命中动作反推模式：action 段出现拦截动作视为拦截，否则仅检测
+                ruleEngineMode: hasBlockAction(sec) ? 'block' : 'detect',
                 customRules: splitSecRules(sec).custom || defaultFormState.customRules,
               };
               setForm(parsed);
               setInitialForm(parsed);
-              // 预置启用态：其 id 前缀是否出现在 secRules
-              setPresetRules((prev) => prev.map((p) => ({ ...p, enabled: sec.some((s) => s.includes(p.idPrefix)) })));
+              // 预置启用态：其 id 前缀是否出现在 secRules；同步进重置快照
+              const restored = PRESET_RULE_SETS.map((p) => ({ ...p, enabled: sec.some((s) => s.includes(p.idPrefix)) }));
+              setPresetRules(restored);
+              setPresetSnapshot(restored);
             }
           } catch {
-            // ignore parse error, use defaults
+            // 存量 YAML 解析失败：明确提示，避免用户误把默认值当作存量配置后保存覆盖
+            message.error(t('aiContentSec.loadFailed'));
           }
         }
       },
@@ -175,6 +240,7 @@ const AiWafPage: React.FC = () => {
       const params = { ...pluginData, enabled: checked };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       setEnabled(checked);
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
@@ -195,7 +261,9 @@ const AiWafPage: React.FC = () => {
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.length > 0)
-      .forEach((l) => out.push(l));
+      // 仅检测模式下中和自定义规则的拦截动作（只改 action 段，不碰匹配串/msg），
+      // 否则默认样例自带的 deny,status:403 会绕过 mode 真拦截；也与回读 hasBlockAction 一致。
+      .forEach((l) => out.push(f.ruleEngineMode === 'detect' ? neutralizeDenyAction(l) : l));
     return out;
   };
 
@@ -210,6 +278,7 @@ const AiWafPage: React.FC = () => {
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       if (scope.selected.length) {
         const failed: string[] = [];
         await Promise.all(scope.selected.map(async (n) => {
@@ -221,6 +290,7 @@ const AiWafPage: React.FC = () => {
         await scope.reload();
       }
       setInitialForm({ ...form });
+      setPresetSnapshot(presetRules.map((p) => ({ ...p })));
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
       message.error(t('aiContentSec.saveFailed'));
@@ -229,6 +299,7 @@ const AiWafPage: React.FC = () => {
 
   const handleReset = () => {
     setForm({ ...initialForm });
+    setPresetRules(presetSnapshot.map((p) => ({ ...p })));
   };
 
   const updateField = <K extends keyof FormState>(key: K, value: FormState[K]) => {
@@ -384,10 +455,6 @@ const AiWafPage: React.FC = () => {
             )}
           </div>
 
-          <div style={{ marginTop: 24, display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
-            <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
-          </div>
         </div>
       </Card>
 
@@ -420,12 +487,17 @@ const AiWafPage: React.FC = () => {
         />
         <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
           <Space>
-            <Button type="primary" onClick={handleSave}>{t('aiContentSec.waf.saveRule')}</Button>
             <Button onClick={handleSyntaxCheck}>{t('aiContentSec.waf.syntaxCheck')}</Button>
             <Button onClick={handleFormat}>{t('aiContentSec.waf.format')}</Button>
           </Space>
         </div>
       </Card>
+
+      {/* Zone 4: 保存动作（整页配置作用于所有卡片，置于全部内容卡之后） */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
+        <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
+      </div>
 
       {/* Detail Modal：展示该预置规则集的真实 SecRule 内容（按当前命中模式呈现动作） */}
       <Modal

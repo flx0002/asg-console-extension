@@ -90,6 +90,10 @@ const FIELD_META: Record<FieldKey, Record<string, { zh: string; en: string; colo
   detectMode: {
     deny: { zh: '拦截', en: 'Deny', color: 'red' },
     monitor: { zh: '仅告警', en: 'Monitor', color: 'orange' },
+    // PII 插件回填规则 action，中文界面按实际动作显示而非透出英文。
+    block: { zh: '拦截', en: 'Block', color: 'red' },
+    mask: { zh: '脱敏', en: 'Mask', color: 'orange' },
+    alert: { zh: '告警', en: 'Alert', color: 'orange' },
   },
 };
 

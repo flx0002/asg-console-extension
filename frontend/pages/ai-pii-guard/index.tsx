@@ -146,7 +146,8 @@ const AiPiiGuardPage: React.FC = () => {
               setInitialForm(parsed);
             }
           } catch {
-            // ignore parse error, use defaults
+            // 存量 YAML 解析失败：明确提示，避免用户误把默认值当作存量配置后保存覆盖
+            message.error(t('aiContentSec.loadFailed'));
           }
         }
       },
@@ -165,6 +166,7 @@ const AiPiiGuardPage: React.FC = () => {
       const params = { ...pluginData, enabled: checked };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       setEnabled(checked);
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
@@ -203,6 +205,7 @@ const AiPiiGuardPage: React.FC = () => {
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       if (scope.selected.length) {
         const failed: string[] = [];
         await Promise.all(scope.selected.map(async (n) => {
@@ -252,7 +255,7 @@ const AiPiiGuardPage: React.FC = () => {
 
   const handleModalOk = () => {
     if (!ruleName || !ruleRegex) {
-      message.warning('请填写规则名称和正则表达式');
+      message.warning(t('aiContentSec.piiGuard.ruleRequired'));
       return;
     }
     const newRule: CustomRule = { name: ruleName, regex: ruleRegex, replaceValue: ruleReplaceValue };
@@ -293,7 +296,7 @@ const AiPiiGuardPage: React.FC = () => {
             title={t('aiContentSec.piiGuard.deleteConfirm')}
             onConfirm={() => handleDeleteRule(index)}
             okText={t('aiContentSec.piiGuard.delete')}
-            cancelText={t('aiContentSec.piiGuard.edit')}
+            cancelText={t('aiContentSec.cancel')}
           >
             <a style={{ color: '#ff4d4f' }}>{t('aiContentSec.piiGuard.delete')}</a>
           </Popconfirm>
@@ -367,13 +370,6 @@ const AiPiiGuardPage: React.FC = () => {
             />
           </div>
 
-          <Divider />
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-            <Space>
-              <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
-              <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
-            </Space>
-          </div>
         </div>
       </Card>
 
@@ -390,11 +386,17 @@ const AiPiiGuardPage: React.FC = () => {
         <Table
           dataSource={form.customRules}
           columns={customRuleColumns}
-          rowKey="name"
+          rowKey={(_, i) => `pii-custom-${i}`}
           pagination={false}
           size="small"
         />
       </Card>
+
+      {/* Zone 4: 保存动作（整页配置作用于所有卡片，置于全部内容卡之后） */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig')}</Button>
+        <Button onClick={handleReset}>{t('aiContentSec.resetConfig')}</Button>
+      </div>
 
       {/* Modal for adding/editing custom rules */}
       <Modal

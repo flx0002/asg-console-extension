@@ -40,12 +40,14 @@ const auditPut = (params: any, summary: string) => request.put(
 );
 
 interface RuleItem { name: string; regex: string; matchType: string; }
-interface KeywordRuleGroup { name: string; patterns: string[]; enabled: boolean; }
-interface AdvisoryRule { name: string; disclaimer: string; enabled: boolean; }
+// 字段对齐数据面 ai-prompt-guard 插件契约（KeywordRuleGroup/AdvisoryRule struct）：
+// 拦截组读 keywords + patterns，免责组读 keywords + advice；缺任一则整组/整条被跳过。
+interface KeywordRuleGroup { name: string; keywords: string[]; patterns: string[]; enabled: boolean; }
+interface AdvisoryRule { name: string; keywords: string[]; advice: string; enabled: boolean; }
 
 interface ComplianceCategory {
-  code: string; name: string; mode: 'intercept' | 'advisory';
-  patterns?: string[]; disclaimer?: string;
+  code: string; name: string; mode: 'block' | 'advisory';
+  keywords?: string[]; patterns?: string[]; advice?: string;
 }
 
 const COMPLIANCE_SECTIONS: { categories: ComplianceCategory[] }[] = (appAData as any).sections || [];
@@ -62,12 +64,12 @@ const defaultAllowRules: RuleItem[] = [];  // 本页可编辑；后端存量缺�
 const buildDefaultKeywordRules = (): KeywordRuleGroup[] =>
   ALL_COMPLIANCE_CATEGORIES
     .filter((c) => c.mode !== 'advisory')
-    .map((c) => ({ name: `${c.code} ${c.name}`, patterns: c.patterns || [], enabled: true }));
+    .map((c) => ({ name: `${c.code} ${c.name}`, keywords: c.keywords || [], patterns: c.patterns || [], enabled: true }));
 
 const buildDefaultAdvisoryRules = (): AdvisoryRule[] =>
   ALL_COMPLIANCE_CATEGORIES
     .filter((c) => c.mode === 'advisory')
-    .map((c) => ({ name: `${c.code} ${c.name}`, disclaimer: c.disclaimer || '', enabled: true }));
+    .map((c) => ({ name: `${c.code} ${c.name}`, keywords: c.keywords || [], advice: c.advice || '', enabled: true }));
 
 // 归一化后端 detectMode：兼容存量旧写法（后端不读的 `mode` 与 block/detect 别名）。
 // 与数据面 ai-prompt-guard parseConfig 的归一口径保持一致：deny=拦截 / monitor=仅告警。
@@ -136,7 +138,8 @@ const AiPromptGuardPage: React.FC = () => {
               setInitialForm(parsed);
             }
           } catch {
-            /* keep defaults */
+            // 存量 YAML 解析失败：明确提示，避免用户误把默认值当作存量配置后保存覆盖
+            message.error(t('aiContentSec.loadFailed'));
           }
         }
       },
@@ -151,6 +154,7 @@ const AiPromptGuardPage: React.FC = () => {
       const params = { ...pluginData, enabled: checked };
       delete params.configurations;
       await auditPut(params, `${checked ? '开启' : '关闭'}提示注入防护`);
+      setPluginData(params);
       setEnabled(checked);
       message.success(t('aiContentSec.saveSuccess'));
     } catch { message.error(t('aiContentSec.saveFailed')); }
@@ -173,6 +177,7 @@ const AiPromptGuardPage: React.FC = () => {
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await auditPut(params, `保存提示注入防护配置（拒绝规则 ${form.denyRules.length} 条、放行规则 ${form.allowRules.length} 条）`);
+      setPluginData(params);
       if (scope.selected.length) {
         const failed: string[] = [];
         await Promise.all(scope.selected.map(async (n: string) => {
@@ -378,7 +383,7 @@ const AiPromptGuardPage: React.FC = () => {
       {/* Zone 7: 保存动作 */}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
         <Button type="primary" onClick={handleSave}>{t('aiContentSec.saveConfig', '保存配置')}</Button>
-        <Button onClick={handleReset}>{t('aiContentSec.resetConfig', '撤销改动')}</Button>
+        <Button onClick={handleReset}>{t('aiContentSec.resetConfig', '重置')}</Button>
       </div>
 
       {/* Rule edit modal */}

@@ -86,7 +86,8 @@ const AiSecurityGuardPage: React.FC = () => {
               setInitialForm(parsed);
             }
           } catch {
-            // ignore parse error, use defaults
+            // 存量 YAML 解析失败：明确提示，避免用户误把默认值当作存量配置后保存覆盖
+            message.error(t('aiContentSec.loadFailed'));
           }
         }
       },
@@ -105,6 +106,7 @@ const AiSecurityGuardPage: React.FC = () => {
       const params = { ...pluginData, enabled: checked };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       setEnabled(checked);
       message.success(t('aiContentSec.saveSuccess'));
     } catch {
@@ -130,16 +132,23 @@ const AiSecurityGuardPage: React.FC = () => {
     protocol: form.protocol,
   });
 
-  const handleSave = async () => {
+  // 凭据必填校验：handleSave 与「保存作用范围」共用，避免后者绕过校验写入空凭据
+  const validateConfig = () => {
     if (!form.serviceHost || !form.accessKey || !form.secretKey) {
       message.warning(t('aiContentSec.securityGuard.requiredHint'));
-      return;
+      return false;
     }
+    return true;
+  };
+
+  const handleSave = async () => {
+    if (!validateConfig()) return;
     try {
       const rawConfig = buildRawConfig();
       const params = { ...pluginData, enabled, rawConfigurations: rawConfig };
       delete params.configurations;
       await updateGlobalPluginInstance(PLUGIN_NAME, params);
+      setPluginData(params);
       if (scope.selected.length) {
         const failed: string[] = [];
         await Promise.all(scope.selected.map(async (n) => {
@@ -193,7 +202,7 @@ const AiSecurityGuardPage: React.FC = () => {
         <GlobalSwitchHint />
       </Card>
 
-      <RouteScopeCard scope={scope} getRawConfig={buildRawConfig} />
+      <RouteScopeCard scope={scope} getRawConfig={buildRawConfig} validate={validateConfig} />
 
       <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('aiContentSec.securityGuard.serviceHint')} />
 
