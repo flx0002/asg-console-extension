@@ -341,6 +341,7 @@ HIDDEN_SUBMENUS=(
   menu.systemSettings
   menu.logsAuditChainLogs
   menu.logsAuditChainTracking
+  menu.aiSecurityGuard
 )
 python3 - "$SRC/pages/_defaultProps.tsx" "${HIDDEN_SUBMENUS[@]}" <<'PYEOF_CULL_SUB'
 import sys
