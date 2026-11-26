@@ -90,9 +90,9 @@ const parseConfig = (cfg: any): FormState => {
   let customRules: CustomRule[] = [];
 
   if (rawRules.length > 0 && typeof rawRules[0] === 'string') {
-    // 旧格式：rules 是内置规则短名字符串数组
-    rawRules.forEach(name => {
-      if (RULE_TO_PAGE[name] && !builtInRules.includes(RULE_TO_PAGE[name])) builtInRules.push(RULE_TO_PAGE[name]);
+    // 旧格式：rules 直接存页面短名（email/phone/idcard/...），不是插件规则名
+    rawRules.forEach(shortName => {
+      if (PAGE_RULE_DEFS[shortName] && !builtInRules.includes(shortName)) builtInRules.push(shortName);
     });
     customRules = Array.isArray(cfg.customRules) ? cfg.customRules : [];
   } else if (rawRules.length > 0) {
